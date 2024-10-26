@@ -40,7 +40,7 @@ import app.openconnect.core.VPNLog;
 
 @ReportsCrashes(
 		mode = ReportingInteractionMode.DIALOG,
-		resDialogText = R.string.crash_dialog_text,
+		resDialogText = R.string.crash_dialog_text, // FIXME: don't use R.strings as attributes here
 		resDialogCommentPrompt = R.string.crash_dialog_comment_prompt,
 
 		formUri = "https://kpc.cloudant.com/acra-openconnect/_design/acra-storage/_update/report",

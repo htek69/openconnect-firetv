@@ -1,9 +1,11 @@
-apply plugin: 'com.android.application'
+plugins {
+    id 'com.android.application'
+}
 
 android {
+    namespace "app.openconnect"
     compileSdkVersion 24
     defaultConfig {
-        applicationId "app.openconnect"
         minSdkVersion 14
         targetSdkVersion 19
         versionCode 1119
@@ -30,6 +32,9 @@ android {
     lintOptions {
         disable 'MissingTranslation'
         disable 'ExtraTranslation'
+    }
+    buildFeatures {
+        aidl true
     }
 }
 
