@@ -38,17 +38,17 @@ import app.openconnect.core.FragCache;
 import app.openconnect.core.ProfileManager;
 import app.openconnect.core.VPNLog;
 
-@ReportsCrashes(
-		mode = ReportingInteractionMode.DIALOG,
-		resDialogText = R.string.crash_dialog_text, // FIXME: don't use R.strings as attributes here
-		resDialogCommentPrompt = R.string.crash_dialog_comment_prompt,
-
-		formUri = "https://kpc.cloudant.com/acra-openconnect/_design/acra-storage/_update/report",
-		formUriBasicAuthLogin="ineintlynnoveristimedesc",
-		formUriBasicAuthPassword="mUmkrQIOKd3HalLf5AQuyxpA",
-
-		formKey = ""
-)
+//@ReportsCrashes(
+//		mode = ReportingInteractionMode.DIALOG,
+//		resDialogText = R.string.crash_dialog_text, // FIXME: don't use R.strings as attributes here
+//		resDialogCommentPrompt = R.string.crash_dialog_comment_prompt,
+//
+//		formUri = "https://kpc.cloudant.com/acra-openconnect/_design/acra-storage/_update/report",
+//		formUriBasicAuthLogin="ineintlynnoveristimedesc",
+//		formUriBasicAuthPassword="mUmkrQIOKd3HalLf5AQuyxpA",
+//
+//		formKey = ""
+//)
 
 public class Application extends android.app.Application {
 
@@ -100,7 +100,7 @@ public class Application extends android.app.Application {
 	public void onCreate() {
 		super.onCreate();
 
-		setupACRA();
+//		setupACRA();
 		System.loadLibrary("openconnect");
 		System.loadLibrary("stoken");
 		ProfileManager.init(getApplicationContext());

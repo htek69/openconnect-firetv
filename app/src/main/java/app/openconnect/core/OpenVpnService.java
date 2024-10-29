@@ -166,7 +166,7 @@ public class OpenVpnService extends VpnService {
 		intent.setAction(Intent.ACTION_MAIN);
 		intent.addCategory(Intent.CATEGORY_LAUNCHER);
 
-		PendingIntent startLW = PendingIntent.getActivity(this, 0, intent, 0);
+		PendingIntent startLW = PendingIntent.getActivity(this, 0, intent, 0x02000000);
 		return startLW;
 	}
 
@@ -295,7 +295,7 @@ public class OpenVpnService extends VpnService {
 		String pre = (mbit ? "kMGTPE" : "KMGTPE").charAt(exp-1) + (mbit ? "" : "");
 		if(mbit)
 			return String.format(Locale.getDefault(),"%.1f %sbit", bytes / Math.pow(unit, exp), pre);
-		else 
+		else
 			return String.format(Locale.getDefault(),"%.1f %sB", bytes / Math.pow(unit, exp), pre);
 	}
 

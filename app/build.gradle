@@ -6,8 +6,8 @@ android {
     namespace "app.openconnect"
     compileSdkVersion 24
     defaultConfig {
-        minSdkVersion 14
-        targetSdkVersion 19
+        minSdkVersion 23
+        targetSdkVersion 33
         versionCode 1119
         versionName "1.11+multi"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
