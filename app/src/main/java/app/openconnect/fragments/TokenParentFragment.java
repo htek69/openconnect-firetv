@@ -39,127 +39,128 @@ import android.view.ViewGroup;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Spinner;
+
 import app.openconnect.R;
 import app.openconnect.VpnProfile;
 import app.openconnect.core.ProfileManager;
 
 public class TokenParentFragment extends Fragment {
 
-	public static final String TAG = "OpenConnect";
+    public static final String TAG = "OpenConnect";
 
-	public static final String PREF_TOKEN_UUID = "token_uuid";
+    public static final String PREF_TOKEN_UUID = "token_uuid";
 
-	private SharedPreferences mPrefs;
-	private List<VpnProfile> mVpnProfileList;
+    private SharedPreferences mPrefs;
+    private List<VpnProfile> mVpnProfileList;
 
-	private boolean mFastRedraw = true;
-	private int mSelected;
+    private boolean mFastRedraw = true;
+    private int mSelected;
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
-    		Bundle savedInstanceState) {
-    	super.onCreateView(inflater, container, savedInstanceState);
+                             Bundle savedInstanceState) {
+        super.onCreateView(inflater, container, savedInstanceState);
 
-    	mPrefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+        mPrefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
 
-    	View v = inflater.inflate(R.layout.token_diag_parent, container, false);
-    	return v;
+        View v = inflater.inflate(R.layout.token_diag_parent, container, false);
+        return v;
     }
 
     private void setFrag(VpnProfile v, boolean animate) {
-		Fragment frag = new TokenDiagFragment();
-		if (v != null) {
-			Bundle b = new Bundle();
-			b.putString(TokenDiagFragment.EXTRA_UUID, v.getUUIDString());
-			frag.setArguments(b);
-		}
+        Fragment frag = new TokenDiagFragment();
+        if (v != null) {
+            Bundle b = new Bundle();
+            b.putString(TokenDiagFragment.EXTRA_UUID, v.getUUIDString());
+            frag.setArguments(b);
+        }
 
-		FragmentTransaction ft = getFragmentManager().beginTransaction();
-		if (animate) {
-			ft.setCustomAnimations(R.animator.fade_in, R.animator.fade_out);
-		}
-		ft.replace(R.id.frag_container, frag).commit();
+        FragmentTransaction ft = getFragmentManager().beginTransaction();
+        if (animate) {
+            ft.setCustomAnimations(R.animator.fade_in, R.animator.fade_out);
+        }
+        ft.replace(R.id.frag_container, frag).commit();
     }
 
     private void refreshProfileSelection(int pos) {
-    	VpnProfile v = null;
+        VpnProfile v = null;
 
-    	if (!mFastRedraw && pos == mSelected) {
-    		return;
-    	}
+        if (!mFastRedraw && pos == mSelected) {
+            return;
+        }
 
-    	if (pos < mVpnProfileList.size()) {
-    		v = mVpnProfileList.get(pos);
-    	}
-    	setFrag(v, !mFastRedraw);
-		mFastRedraw = false;
-		mSelected = pos;
+        if (pos < mVpnProfileList.size()) {
+            v = mVpnProfileList.get(pos);
+        }
+        setFrag(v, !mFastRedraw);
+        mFastRedraw = false;
+        mSelected = pos;
 
-		String UUID = (v == null) ? "" : v.getUUIDString();
-		mPrefs.edit().putString(PREF_TOKEN_UUID, UUID).apply();
+        String UUID = (v == null) ? "" : v.getUUIDString();
+        mPrefs.edit().putString(PREF_TOKEN_UUID, UUID).apply();
     }
 
     private void populateProfileList() {
-		// always refresh this on resume, as the list may have changed
-		List<VpnProfile> allvpn = new ArrayList<VpnProfile>(ProfileManager.getProfiles());
-		Collections.sort(allvpn);
+        // always refresh this on resume, as the list may have changed
+        List<VpnProfile> allvpn = new ArrayList<VpnProfile>(ProfileManager.getProfiles());
+        Collections.sort(allvpn);
 
-		String lastUUID = mPrefs.getString(PREF_TOKEN_UUID, null);
-		int i = 0, lastIdx = 0;
+        String lastUUID = mPrefs.getString(PREF_TOKEN_UUID, null);
+        int i = 0, lastIdx = 0;
 
-    	List<String> choiceList = new ArrayList<String>();
-    	mVpnProfileList = new ArrayList<VpnProfile>();
+        List<String> choiceList = new ArrayList<String>();
+        mVpnProfileList = new ArrayList<VpnProfile>();
 
-		for (VpnProfile v : allvpn) {
-			if (!v.mPrefs.getString("software_token", "").equals("securid")) {
-				continue;
-			}
-			String t = v.mPrefs.getString("token_string", "").trim();
-			if (t.equals("")) {
-				continue;
-			}
+        for (VpnProfile v : allvpn) {
+            if (!v.mPrefs.getString("software_token", "").equals("securid")) {
+                continue;
+            }
+            String t = v.mPrefs.getString("token_string", "").trim();
+            if (t.equals("")) {
+                continue;
+            }
 
-			mVpnProfileList.add(v);
-			choiceList.add(v.getName());
+            mVpnProfileList.add(v);
+            choiceList.add(v.getName());
 
-			if (v.getUUIDString().equals(lastUUID)) {
-				lastIdx = i;
-			}
-			i++;
-		}
+            if (v.getUUIDString().equals(lastUUID)) {
+                lastIdx = i;
+            }
+            i++;
+        }
 
-		if (choiceList.size() == 0) {
-			choiceList.add("-----------");
-		}
+        if (choiceList.size() == 0) {
+            choiceList.add("-----------");
+        }
 
-    	ArrayAdapter<String> adapter = new ArrayAdapter<String>(getActivity(),
-    			android.R.layout.simple_spinner_item, choiceList);
-    	adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(getActivity(),
+                android.R.layout.simple_spinner_item, choiceList);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
 
-    	Spinner sp = (Spinner)getActivity().findViewById(R.id.vpn_spinner);
-    	sp.setAdapter(adapter);
-    	sp.setSelection(lastIdx >= 0 ? lastIdx : 0);
-    	sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+        Spinner sp = getActivity().findViewById(R.id.vpn_spinner);
+        sp.setAdapter(adapter);
+        sp.setSelection(lastIdx >= 0 ? lastIdx : 0);
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
 
-			@Override
-			public void onItemSelected(AdapterView<?> parent, View view,
-					int position, long id) {
-				refreshProfileSelection(position);
-			}
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view,
+                                       int position, long id) {
+                refreshProfileSelection(position);
+            }
 
-			@Override
-			public void onNothingSelected(AdapterView<?> parent) {
-			}
-		});
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+            }
+        });
 
-		refreshProfileSelection(lastIdx);
+        refreshProfileSelection(lastIdx);
     }
 
     @Override
     public void onResume() {
-    	super.onResume();
-    	mFastRedraw = true;
-		populateProfileList();
+        super.onResume();
+        mFastRedraw = true;
+        populateProfileList();
     }
 
 }

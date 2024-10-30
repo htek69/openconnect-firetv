@@ -36,6 +36,7 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.StringWriter;
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -46,24 +47,24 @@ import android.util.Log;
 
 public class AssetExtractor {
 
-	public static final String TAG = "OpenConnect";
+    public static final String TAG = "OpenConnect";
 
-	public static final int FL_FORCE = 0x01;
-	public static final int FL_NOEXEC = 0x02;
+    public static final int FL_FORCE = 0x01;
+    public static final int FL_NOEXEC = 0x02;
 
-	private static final int BUFLEN = 65536;
+    private static final int BUFLEN = 65536;
 
     private static long crc32(File f)
-    		throws FileNotFoundException, IOException {
+            throws IOException {
         FileInputStream in = new FileInputStream(f);
         CRC32 crcMaker = new CRC32();
         byte[] buffer = new byte[BUFLEN];
 
         while (true) {
-        	int len = in.read(buffer);
-        	if (len == -1) {
-        		break;
-        	}
+            int len = in.read(buffer);
+            if (len == -1) {
+                break;
+            }
             crcMaker.update(buffer, 0, len);
         }
         in.close();
@@ -71,19 +72,19 @@ public class AssetExtractor {
     }
 
     private static void writeStream(InputStream in, File file)
-    		throws FileNotFoundException, IOException {
-    	FileOutputStream out = new FileOutputStream(file);
+            throws IOException {
+        FileOutputStream out = new FileOutputStream(file);
 
-    	byte[] buffer = new byte[BUFLEN];
+        byte[] buffer = new byte[BUFLEN];
 
-    	while (true) {
-    		int len = in.read(buffer);
-    		if (len == -1) {
-    			break;
-    		}
-    	    out.write(buffer, 0, len);
-    	}
-    	out.close();
+        while (true) {
+            int len = in.read(buffer);
+            if (len == -1) {
+                break;
+            }
+            out.write(buffer, 0, len);
+        }
+        out.close();
     }
 
     private static String getArch() {
@@ -99,89 +100,89 @@ public class AssetExtractor {
         }
     }
 
-	public static boolean extractAll(Context ctx, int flags, String path) {
-		String patterns[] = { "assets/raw/noarch", "assets/raw/" + getArch() };
+    public static boolean extractAll(Context ctx, int flags, String path) {
+        String[] patterns = {"assets/raw/noarch", "assets/raw/" + getArch()};
 
-		if (path == null) {
-			path = ctx.getFilesDir().getAbsolutePath();
-		} else if (!path.endsWith(File.separator)) {
-			path = path + File.separator;
-		}
+        if (path == null) {
+            path = ctx.getFilesDir().getAbsolutePath();
+        } else if (!path.endsWith(File.separator)) {
+            path = path + File.separator;
+        }
 
-		try {
-			ZipFile zf = new ZipFile(ctx.getPackageCodePath());
-			for (Enumeration<?> e = zf.entries(); e.hasMoreElements(); ) {
-				ZipEntry ze = (ZipEntry)e.nextElement();
-				if (ze.isDirectory()) {
-					continue;
-				}
+        try {
+            ZipFile zf = new ZipFile(ctx.getPackageCodePath());
+            for (Enumeration<?> e = zf.entries(); e.hasMoreElements(); ) {
+                ZipEntry ze = (ZipEntry) e.nextElement();
+                if (ze.isDirectory()) {
+                    continue;
+                }
 
-				String fname = ze.getName();
+                String fname = ze.getName();
 
-				for (String prefix : patterns) {
-					if (!fname.startsWith(prefix)) {
-						continue;
-					}
-					fname = path + fname.substring(prefix.length());
+                for (String prefix : patterns) {
+                    if (!fname.startsWith(prefix)) {
+                        continue;
+                    }
+                    fname = path + fname.substring(prefix.length());
 
-					File file = new File(fname);
-					if ((flags & FL_FORCE) == 0 && file.exists() && crc32(file) == ze.getCrc()) {
-						Log.d(TAG, "AssetExtractor: skipping " + fname);
-						continue;
-					}
-					Log.i(TAG, "AssetExtractor: writing " + fname);
-					writeStream(zf.getInputStream(ze), file);
-					if ((flags & FL_NOEXEC) == 0) {
-						file.setExecutable(true);
-					}
-				}
-			}
-			zf.close();
-		} catch (IOException e) {
-			Log.e(TAG, "AssetExtractor: caught exception", e);
-			return false;
-		}
-		return true;
-	}
+                    File file = new File(fname);
+                    if ((flags & FL_FORCE) == 0 && file.exists() && crc32(file) == ze.getCrc()) {
+                        Log.d(TAG, "AssetExtractor: skipping " + fname);
+                        continue;
+                    }
+                    Log.i(TAG, "AssetExtractor: writing " + fname);
+                    writeStream(zf.getInputStream(ze), file);
+                    if ((flags & FL_NOEXEC) == 0) {
+                        file.setExecutable(true);
+                    }
+                }
+            }
+            zf.close();
+        } catch (IOException e) {
+            Log.e(TAG, "AssetExtractor: caught exception", e);
+            return false;
+        }
+        return true;
+    }
 
-	public static boolean extractAll(Context ctx) {
-		return extractAll(ctx, 0, null);
-	}
+    public static boolean extractAll(Context ctx) {
+        return extractAll(ctx, 0, null);
+    }
 
-	private static String readAndClose(Reader reader)
-			throws UnsupportedEncodingException, IOException {
-		StringWriter sw = new StringWriter();
-    	char[] buffer = new char[BUFLEN];
+    private static String readAndClose(Reader reader)
+            throws IOException {
+        StringWriter sw = new StringWriter();
+        char[] buffer = new char[BUFLEN];
 
-    	while (true) {
-    		int len = reader.read(buffer);
-    		if (len == -1) {
-    			break;
-    		}
-    		sw.write(buffer, 0, len);
-    	}
-		reader.close();
-    	return sw.toString();
-	}
+        while (true) {
+            int len = reader.read(buffer);
+            if (len == -1) {
+                break;
+            }
+            sw.write(buffer, 0, len);
+        }
+        reader.close();
+        return sw.toString();
+    }
 
-	public static String readString(Context ctx, String name) {
-		try {
-			InputStream in = ctx.getAssets().open(name);
-	    	Reader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
-			return readAndClose(reader);
-		} catch (IOException e) {
-			Log.e(TAG, "AssetExtractor: readString exception", e);
-		}
-		return null;
-	}
+    public static String readString(Context ctx, String name) {
+        try {
+            InputStream in = ctx.getAssets().open(name);
+            Reader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+            return readAndClose(reader);
+        } catch (IOException e) {
+            Log.e(TAG, "AssetExtractor: readString exception", e);
+        }
+        return null;
+    }
 
-	public static String readStringFromFile(String filename) {
-		try {
-			BufferedReader reader = new BufferedReader(new FileReader(filename));
-			return readAndClose(reader);
-		} catch (IOException e) {
-			Log.e(TAG, "AssetExtractor: readString exception", e);
-		}
-		return null;
-	}
+    public static String readStringFromFile(String filename) {
+        try {
+            BufferedReader reader = new BufferedReader(new FileReader(filename));
+            return readAndClose(reader);
+        } catch (IOException e) {
+            Log.e(TAG, "AssetExtractor: readString exception", e);
+        }
+        return null;
+    }
 }

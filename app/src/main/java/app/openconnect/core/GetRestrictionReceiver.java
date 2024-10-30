@@ -52,7 +52,7 @@ public class GetRestrictionReceiver extends BroadcastReceiver {
                 ArrayList<RestrictionEntry> restrictionEntries = initRestrictions(context);
 
                 extras.putParcelableArrayList(Intent.EXTRA_RESTRICTIONS_LIST, restrictionEntries);
-                result.setResult(Activity.RESULT_OK,null,extras);
+                result.setResult(Activity.RESULT_OK, null, extras);
                 result.finish();
             }
         }.run();
@@ -60,7 +60,7 @@ public class GetRestrictionReceiver extends BroadcastReceiver {
 
     private ArrayList<RestrictionEntry> initRestrictions(Context context) {
         ArrayList<RestrictionEntry> restrictions = new ArrayList<RestrictionEntry>();
-        RestrictionEntry allowChanges = new RestrictionEntry("allow_changes",false);
+        RestrictionEntry allowChanges = new RestrictionEntry("allow_changes", false);
         allowChanges.setTitle(context.getString(R.string.allow_vpn_changes));
         restrictions.add(allowChanges);
 

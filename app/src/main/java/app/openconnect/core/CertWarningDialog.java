@@ -25,74 +25,75 @@
 package app.openconnect.core;
 
 import app.openconnect.R;
+
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
 
 public class CertWarningDialog extends UserDialog
-	implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
+        implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
 
-	public static final int RESULT_NO = 0;
-	public static final int RESULT_ONCE = 1;
-	public static final int RESULT_ALWAYS = 2;
+    public static final int RESULT_NO = 0;
+    public static final int RESULT_ONCE = 1;
+    public static final int RESULT_ALWAYS = 2;
 
-	public String mHostname;
-	public String mCertSHA1;
-	public String mReason;
+    public String mHostname;
+    public String mCertSHA1;
+    public String mReason;
 
-	private int mAccept = RESULT_NO;
-	private AlertDialog mAlert;
+    private int mAccept = RESULT_NO;
+    private AlertDialog mAlert;
 
-	public CertWarningDialog(SharedPreferences prefs, String hostname, String certSHA1, String reason) {
-		super(prefs);
-		mHostname = hostname;
-		mCertSHA1 = certSHA1;
-		mReason = reason;
-	}
+    public CertWarningDialog(SharedPreferences prefs, String hostname, String certSHA1, String reason) {
+        super(prefs);
+        mHostname = hostname;
+        mCertSHA1 = certSHA1;
+        mReason = reason;
+    }
 
-	@Override
-	public Object earlyReturn() {
-		return null;
-	}
+    @Override
+    public Object earlyReturn() {
+        return null;
+    }
 
-	@Override
-	public void onStart(Context context) {
-		super.onStart(context);
-		mAlert = new AlertDialog.Builder(context)
-			.setTitle(R.string.cert_warning_title)
-			.setMessage(context.getString(R.string.cert_warning_message,
-					mHostname, mReason, mCertSHA1))
-			.setPositiveButton(R.string.cert_warning_always_connect, this)
-			.setNeutralButton(R.string.cert_warning_just_once, this)
-			.setNegativeButton(R.string.no, this)
-			.create();
-		mAlert.setOnDismissListener(this);
-		mAlert.show();
-	}
+    @Override
+    public void onStart(Context context) {
+        super.onStart(context);
+        mAlert = new AlertDialog.Builder(context)
+                .setTitle(R.string.cert_warning_title)
+                .setMessage(context.getString(R.string.cert_warning_message,
+                        mHostname, mReason, mCertSHA1))
+                .setPositiveButton(R.string.cert_warning_always_connect, this)
+                .setNeutralButton(R.string.cert_warning_just_once, this)
+                .setNegativeButton(R.string.no, this)
+                .create();
+        mAlert.setOnDismissListener(this);
+        mAlert.show();
+    }
 
-	@Override
-	public void onDismiss(DialogInterface dialog) {
-		// catches Pos/Neg/Neutral and Back button presses
-		finish(mAccept);
-		mAlert = null;
-	}
+    @Override
+    public void onDismiss(DialogInterface dialog) {
+        // catches Pos/Neg/Neutral and Back button presses
+        finish(mAccept);
+        mAlert = null;
+    }
 
-	@Override
-	public void onClick(DialogInterface dialog, int which) {
-		if (which == DialogInterface.BUTTON_POSITIVE) {
-			mAccept = RESULT_ALWAYS;
-		} else if (which == DialogInterface.BUTTON_NEUTRAL) {
-			mAccept = RESULT_ONCE;
-		}
-	}
+    @Override
+    public void onClick(DialogInterface dialog, int which) {
+        if (which == DialogInterface.BUTTON_POSITIVE) {
+            mAccept = RESULT_ALWAYS;
+        } else if (which == DialogInterface.BUTTON_NEUTRAL) {
+            mAccept = RESULT_ONCE;
+        }
+    }
 
-	@Override
-	public void onStop(Context context) {
-		super.onStop(context);
-		finish(null);
-		if (mAlert != null) {
-			mAlert.dismiss();
-		}
-	}
+    @Override
+    public void onStop(Context context) {
+        super.onStop(context);
+        finish(null);
+        if (mAlert != null) {
+            mAlert.dismiss();
+        }
+    }
 }

@@ -24,6 +24,7 @@
  */
 
 package app.openconnect.fragments;
+
 import java.io.File;
 import java.util.Map;
 
@@ -46,44 +47,45 @@ import android.preference.PreferenceManager;
 import android.preference.Preference.OnPreferenceChangeListener;
 import android.preference.Preference.OnPreferenceClickListener;
 import android.preference.PreferenceFragment;
+
 import app.openconnect.R;
 import app.openconnect.api.ExternalAppDatabase;
 import app.openconnect.core.DeviceStateReceiver;
 
 public class GeneralSettings extends PreferenceFragment
-		implements OnPreferenceClickListener, OnClickListener, OnSharedPreferenceChangeListener {
+        implements OnPreferenceClickListener, OnClickListener, OnSharedPreferenceChangeListener {
 
-	private ExternalAppDatabase mExtapp;
-	private PreferenceManager mPrefs;
+    private ExternalAppDatabase mExtapp;
+    private PreferenceManager mPrefs;
 
-	@Override
-	public void onCreate(Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
 
 
-		// Load the preferences from an XML resource
-		addPreferencesFromResource(R.xml.general_settings);
+        // Load the preferences from an XML resource
+        addPreferencesFromResource(R.xml.general_settings);
 
-		Preference loadtun = findPreference("loadTunModule");
-		if(!isTunModuleAvailable())
-			loadtun.setEnabled(false);
+        Preference loadtun = findPreference("loadTunModule");
+        if (!isTunModuleAvailable())
+            loadtun.setEnabled(false);
 
-		mExtapp = new ExternalAppDatabase(getActivity());
+        mExtapp = new ExternalAppDatabase(getActivity());
 
-		for (String s : new String[] { "netchangereconnect", "screenoff", "trace_log" }) {
-			findPreference(s).setOnPreferenceChangeListener(new OnPreferenceChangeListener() {
-				@Override
-				public boolean onPreferenceChange(Preference arg0, Object arg1) {
-					Intent intent = new Intent(DeviceStateReceiver.PREF_CHANGED);
-					getActivity().sendBroadcast(intent, permission.ACCESS_NETWORK_STATE);
-					return true;
-				}
-			});
-		}
+        for (String s : new String[]{"netchangereconnect", "screenoff", "trace_log"}) {
+            findPreference(s).setOnPreferenceChangeListener(new OnPreferenceChangeListener() {
+                @Override
+                public boolean onPreferenceChange(Preference arg0, Object arg1) {
+                    Intent intent = new Intent(DeviceStateReceiver.PREF_CHANGED);
+                    getActivity().sendBroadcast(intent, permission.ACCESS_NETWORK_STATE);
+                    return true;
+                }
+            });
+        }
 
-		mPrefs = getPreferenceManager();
+        mPrefs = getPreferenceManager();
         SharedPreferences sp = mPrefs.getSharedPreferences();
-        for (Map.Entry<String,?> entry : sp.getAll().entrySet()) {
+        for (Map.Entry<String, ?> entry : sp.getAll().entrySet()) {
             this.onSharedPreferenceChanged(sp, entry.getKey());
         }
 
@@ -92,10 +94,10 @@ public class GeneralSettings extends PreferenceFragment
 		clearapi.setOnPreferenceClickListener(this);
 		setClearApiSummary();
 		*/
-	}
+    }
 
     @Override
-	public void onResume() {
+    public void onResume() {
         super.onResume();
         getPreferenceScreen().getSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(this);
@@ -108,77 +110,76 @@ public class GeneralSettings extends PreferenceFragment
                 .unregisterOnSharedPreferenceChangeListener(this);
     }
 
-	public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
-    	Preference pref = findPreference(key);
-		if (pref instanceof ListPreference) {
-			/* update all spinner prefs so the summary shows the current value */
-			ListPreference lpref = (ListPreference)pref;
-			lpref.setValue(sp.getString(key, ""));
-			pref.setSummary(lpref.getEntry());
-		}
+    public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
+        Preference pref = findPreference(key);
+        if (pref instanceof ListPreference) {
+            /* update all spinner prefs so the summary shows the current value */
+            ListPreference lpref = (ListPreference) pref;
+            lpref.setValue(sp.getString(key, ""));
+            pref.setSummary(lpref.getEntry());
+        }
     }
 
-	private void setClearApiSummary() {
-		Preference clearapi = findPreference("clearapi");
+    private void setClearApiSummary() {
+        Preference clearapi = findPreference("clearapi");
 
-		if(mExtapp.getExtAppList().isEmpty()) {
-			clearapi.setEnabled(false);
-			clearapi.setSummary(R.string.no_external_app_allowed);
-		} else { 
-			clearapi.setEnabled(true);
-			clearapi.setSummary(getString(R.string.allowed_apps,getExtAppList(", ")));
-		}
-	}
+        if (mExtapp.getExtAppList().isEmpty()) {
+            clearapi.setEnabled(false);
+            clearapi.setSummary(R.string.no_external_app_allowed);
+        } else {
+            clearapi.setEnabled(true);
+            clearapi.setSummary(getString(R.string.allowed_apps, getExtAppList(", ")));
+        }
+    }
 
-	private String getExtAppList(String delim) {
-		ApplicationInfo app;
-		PackageManager pm = getActivity().getPackageManager();
+    private String getExtAppList(String delim) {
+        ApplicationInfo app;
+        PackageManager pm = getActivity().getPackageManager();
 
-		String applist=null;
-		for (String packagename : mExtapp.getExtAppList()) {
-			try {
-				app = pm.getApplicationInfo(packagename, 0);
-				if (applist==null)
-					applist = "";
-				else
-					applist += delim;
-				applist+=app.loadLabel(pm);
+        String applist = null;
+        for (String packagename : mExtapp.getExtAppList()) {
+            try {
+                app = pm.getApplicationInfo(packagename, 0);
+                if (applist == null)
+                    applist = "";
+                else
+                    applist += delim;
+                applist += app.loadLabel(pm);
 
-			} catch (NameNotFoundException e) {
-				// App not found. Remove it from the list
-				mExtapp.removeApp(packagename);
-			}
-		}
+            } catch (NameNotFoundException e) {
+                // App not found. Remove it from the list
+                mExtapp.removeApp(packagename);
+            }
+        }
 
-		return applist;
-	}
+        return applist;
+    }
 
-	private boolean isTunModuleAvailable() {
-		// Check if the tun module exists on the file system
+    private boolean isTunModuleAvailable() {
+        // Check if the tun module exists on the file system
         return new File("/system/lib/modules/tun.ko").length() > 10;
     }
 
-	@Override
-	public boolean onPreferenceClick(Preference preference) { 
-		if(preference.getKey().equals("clearapi")){
-			Builder builder = new AlertDialog.Builder(getActivity());
-			builder.setPositiveButton(R.string.clear, this);
-			builder.setNegativeButton(android.R.string.cancel, null);
-			builder.setMessage(getString(R.string.clearappsdialog,getExtAppList("\n")));
-			builder.show();
-		}
-			
-		return true;
-	}
+    @Override
+    public boolean onPreferenceClick(Preference preference) {
+        if (preference.getKey().equals("clearapi")) {
+            Builder builder = new AlertDialog.Builder(getActivity());
+            builder.setPositiveButton(R.string.clear, this);
+            builder.setNegativeButton(android.R.string.cancel, null);
+            builder.setMessage(getString(R.string.clearappsdialog, getExtAppList("\n")));
+            builder.show();
+        }
 
-	@Override
-	public void onClick(DialogInterface dialog, int which) {
-		if( which == Dialog.BUTTON_POSITIVE){
-			mExtapp.clearAllApiApps();
-			setClearApiSummary();
-		}
-	}
+        return true;
+    }
 
+    @Override
+    public void onClick(DialogInterface dialog, int which) {
+        if (which == Dialog.BUTTON_POSITIVE) {
+            mExtapp.clearAllApiApps();
+            setClearApiSummary();
+        }
+    }
 
 
 }

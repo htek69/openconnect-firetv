@@ -55,6 +55,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+
 import app.openconnect.ConnectionEditorActivity;
 import app.openconnect.R;
 import app.openconnect.VpnProfile;
@@ -67,276 +68,276 @@ import app.openconnect.core.VPNConnector;
 
 public class VPNProfileList extends ListFragment {
 
-	private static final int MENU_ADD_PROFILE = 1;
+    private static final int MENU_ADD_PROFILE = 1;
 
-	private ArrayAdapter<VpnProfile> mArrayadapter;
-	private CommonMenu mDropdown;
+    private ArrayAdapter<VpnProfile> mArrayadapter;
+    private CommonMenu mDropdown;
 
-	private AlertDialog mDialog;
-	private EditText mDialogEntry;
-	private Button mReconnectButton;
+    private AlertDialog mDialog;
+    private EditText mDialogEntry;
+    private Button mReconnectButton;
 
-	private VPNConnector mConn;
+    private VPNConnector mConn;
 
-	private class VPNArrayAdapter extends ArrayAdapter<VpnProfile> {
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setHasOptionsMenu(true);
+    }
 
-		public VPNArrayAdapter(Context context, int resource, int textViewResourceId) {
-			super(context, resource, textViewResourceId);
-		}
+    @Override
+    public void onPause() {
+        super.onPause();
+        if (mDialog != null) {
+            FragCache.put("VPNProfileList", "mDialogEntry", mDialogEntry.getText().toString());
+            mDialog.dismiss();
+            mDialog = null;
+        } else {
+            FragCache.put("VPNProfileList", "mDialogEntry", null);
+        }
+    }
 
-		@Override
-		public View getView(final int position, View convertView, ViewGroup parent) {
-			View v = super.getView(position, convertView, parent);
+    @Override
+    public View onCreateView(LayoutInflater inflater, ViewGroup container,
+                             Bundle savedInstanceState) {
+        final View v = inflater.inflate(R.layout.vpn_profile_list, container, false);
 
-			View titleview = v.findViewById(R.id.vpn_list_item_left);
-			titleview.setOnClickListener(new OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					VpnProfile profile =(VpnProfile) getListAdapter().getItem(position);
-					startVPN(profile);
-				}
-			});
+        TextView newvpntext = v.findViewById(R.id.add_new_vpn_hint);
+        newvpntext.setText(Html.fromHtml(getString(R.string.add_new_vpn_hint), new MiniImageGetter(), null));
 
-			View settingsview = v.findViewById(R.id.quickedit_settings);
-			settingsview.setOnClickListener(new OnClickListener() {
-				@Override
-				public void onClick(View v) {
-					VpnProfile editProfile = (VpnProfile) getListAdapter().getItem(position);
-					editVPN(editProfile);
-				}
-			});
+        mArrayadapter = new VPNArrayAdapter(getActivity(), R.layout.vpn_list_item, R.id.vpn_item_title);
+        setListAdapter(mArrayadapter);
 
-			return v;
-		}
-	}
+        mReconnectButton = v.findViewById(R.id.reconnect_button);
+        mReconnectButton.setOnClickListener(new OnClickListener() {
+            @Override
+            public void onClick(View arg0) {
+                if (mConn.service.getConnectionState() ==
+                        OpenConnectManagementThread.STATE_DISCONNECTED) {
+                    mConn.service.startReconnectActivity(getActivity());
+                }
+            }
+        });
 
-	@Override
-	public void onCreate(Bundle savedInstanceState) {
-		super.onCreate(savedInstanceState);
-		setHasOptionsMenu(true);
-	}
+        mConn = new VPNConnector(getActivity(), false) {
+            @Override
+            public void onUpdate(OpenVpnService service) {
+                String profileName = service.getReconnectName();
+                if (profileName != null) {
+                    mReconnectButton.setText(getString(R.string.reconnect_to, profileName));
+                    v.findViewById(R.id.reconnect_box).setVisibility(View.VISIBLE);
+                }
+            }
+        };
 
-	@Override
-	public void onPause() {
-		super.onPause();
-		if (mDialog != null) {
-			FragCache.put("VPNProfileList", "mDialogEntry", mDialogEntry.getText().toString());
-			mDialog.dismiss();
-			mDialog = null;
-		} else {
-			FragCache.put("VPNProfileList", "mDialogEntry", null);
-		}
-	}
-
-	class MiniImageGetter implements ImageGetter {
-		@Override
-		public Drawable getDrawable(String source) {
-			Drawable d = null;
-			if ("ic_menu_add".equals(source))
-				d = getActivity().getResources().getDrawable(android.R.drawable.ic_menu_add);
-			else if("ic_menu_archive".equals(source))
-				d = getActivity().getResources().getDrawable(R.drawable.ic_menu_archive);
-
-			if (d != null) {
-				d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
-				return d;
-			} else {
-				return null;
-			}
-		}
-	}
-
-	@Override
-	public View onCreateView(LayoutInflater inflater, ViewGroup container,
-			Bundle savedInstanceState) {
-		final View v = inflater.inflate(R.layout.vpn_profile_list, container,false);
-
-		TextView newvpntext = (TextView) v.findViewById(R.id.add_new_vpn_hint);
-		newvpntext.setText(Html.fromHtml(getString(R.string.add_new_vpn_hint),new MiniImageGetter(),null));
-
-		mArrayadapter = new VPNArrayAdapter(getActivity(), R.layout.vpn_list_item, R.id.vpn_item_title);
-		setListAdapter(mArrayadapter);
-
-		mReconnectButton = (Button)v.findViewById(R.id.reconnect_button);
-    	mReconnectButton.setOnClickListener(new OnClickListener() {
-			@Override
-			public void onClick(View arg0) {
-				if (mConn.service.getConnectionState() ==
-						OpenConnectManagementThread.STATE_DISCONNECTED) {
-					mConn.service.startReconnectActivity(getActivity());
-				}
-			}
-    	});
-
-    	mConn = new VPNConnector(getActivity(), false) {
-			@Override
-			public void onUpdate(OpenVpnService service) {
-				String profileName = service.getReconnectName();
-				if (profileName != null) {
-					mReconnectButton.setText(getString(R.string.reconnect_to, profileName));
-					v.findViewById(R.id.reconnect_box).setVisibility(View.VISIBLE);
-				}
-			}
-    	};
-
-		return v;
-	}
+        return v;
+    }
 
     @Override
     public void onDestroyView() {
-    	mConn.unbind();
-    	super.onDestroyView();
+        mConn.unbind();
+        super.onDestroyView();
     }
 
-	class VpnProfileNameComperator implements Comparator<VpnProfile> {
+    @Override
+    public void onResume() {
+        super.onResume();
 
-		@Override
-		public int compare(VpnProfile lhs, VpnProfile rhs) {
-			return lhs.mName.compareTo(rhs.mName);
-		}
+        // always refresh this on resume, as the list may have changed
+        List<VpnProfile> allvpn = new ArrayList<VpnProfile>(ProfileManager.getProfiles());
+        Collections.sort(allvpn);
 
-	}
+        mArrayadapter.clear();
+        mArrayadapter.addAll(allvpn);
 
-	@Override
-	public void onResume() {
-		super.onResume();
+        String s = FragCache.get("VPNProfileList", "mDialogEntry");
+        if (s != null) {
+            onAddProfileClicked(s);
+        }
+    }
 
-		// always refresh this on resume, as the list may have changed
-		List<VpnProfile> allvpn = new ArrayList<VpnProfile>(ProfileManager.getProfiles());
-		Collections.sort(allvpn);
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        menu.add(Menu.NONE, MENU_ADD_PROFILE, Menu.NONE, R.string.menu_add_profile)
+                .setIcon(android.R.drawable.ic_menu_add)
+                .setAlphabeticShortcut('a')
+                .setTitleCondensed(getActivity().getString(R.string.add))
+                .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+        mDropdown = new CommonMenu(getActivity(), menu, false);
+    }
 
-		mArrayadapter.clear();
-		mArrayadapter.addAll(allvpn);
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        final int itemId = item.getItemId();
+        if (itemId == MENU_ADD_PROFILE) {
+            onAddProfileClicked("");
+            return true;
+        } else if (mDropdown.onOptionsItemSelected(item)) {
+            return true;
+        } else {
+            return super.onOptionsItemSelected(item);
+        }
+    }
 
-		String s = FragCache.get("VPNProfileList", "mDialogEntry");
-		if (s != null) {
-			onAddProfileClicked(s);
-		}
-	}
+    private void handleNewVPNEntry() {
+        String name = mDialogEntry.getText().toString();
 
-	@Override
-	public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
-		menu.add(Menu.NONE, MENU_ADD_PROFILE, Menu.NONE, R.string.menu_add_profile)
-			.setIcon(android.R.drawable.ic_menu_add)
-			.setAlphabeticShortcut('a')
-			.setTitleCondensed(getActivity().getString(R.string.add))
-			.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
-		mDropdown = new CommonMenu(getActivity(), menu, false);
-	}
+        mDialog.dismiss();
+        mDialog = null;
 
-	@Override
-	public boolean onOptionsItemSelected(MenuItem item) {
-		final int itemId = item.getItemId();
-		if (itemId == MENU_ADD_PROFILE) {
-			onAddProfileClicked("");
-			return true;
-		} else if (mDropdown.onOptionsItemSelected(item)) {
-			return true;
-		} else {
-			return super.onOptionsItemSelected(item);
-		}
-	}
+        name = name.replaceAll("\\s", "");
+        if (!name.equals("")) {
+            FeedbackFragment.recordProfileAdd(getActivity());
+            editVPN(ProfileManager.create(name));
+        }
+    }
 
-	private void handleNewVPNEntry() {
-		String name = mDialogEntry.getText().toString();
+    private void onAddProfileClicked(String savedEntry) {
+        final Context context = getActivity();
+        if (context != null) {
+            View v = View.inflate(context, R.layout.add_new_vpn, null);
 
-		mDialog.dismiss();
-		mDialog = null;
+            mDialogEntry = v.findViewById(R.id.entry);
+            mDialogEntry.setText(savedEntry);
 
-		name = name.replaceAll("\\s", "");
-		if (!name.equals("")) {
-			FeedbackFragment.recordProfileAdd(getActivity());
-			editVPN(ProfileManager.create(name));
-		}
-	}
+            AlertDialog.Builder builder = new AlertDialog.Builder(context)
+                    .setTitle(R.string.menu_add_profile)
+                    .setMessage(R.string.add_profile_hostname_prompt)
+                    .setView(v);
 
-	private void onAddProfileClicked(String savedEntry) {
-		final Context context = getActivity();
-		if (context != null) {
-			View v = View.inflate(context, R.layout.add_new_vpn, null);
+            builder.setPositiveButton(android.R.string.ok,
+                    new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            handleNewVPNEntry();
+                        }
+                    });
+            builder.setNegativeButton(android.R.string.cancel, null);
 
-			mDialogEntry = (EditText)v.findViewById(R.id.entry);
-			mDialogEntry.setText(savedEntry);
+            EditText et = v.findViewById(R.id.entry);
+            et.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+                @Override
+                public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
+                    if (actionId == EditorInfo.IME_ACTION_DONE ||
+                            (keyEvent != null &&
+                                    keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
+                                    keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
+                        handleNewVPNEntry();
+                        return true;
+                    } else {
+                        return false;
+                    }
+                }
+            });
 
-			AlertDialog.Builder builder = new AlertDialog.Builder(context)
-				.setTitle(R.string.menu_add_profile)
-				.setMessage(R.string.add_profile_hostname_prompt)
-				.setView(v);
+            mDialog = builder.create();
 
-			builder.setPositiveButton(android.R.string.ok,
-					new DialogInterface.OnClickListener() {
-				@Override
-				public void onClick(DialogInterface dialog, int which) {
-					handleNewVPNEntry();
-				}
-			});
-			builder.setNegativeButton(android.R.string.cancel, null);
+            mDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+                @Override
+                public void onDismiss(DialogInterface dialog) {
+                    mDialog = null;
+                }
+            });
 
-			EditText et = (EditText)v.findViewById(R.id.entry);
-			et.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-				@Override
-				public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
-					if (actionId == EditorInfo.IME_ACTION_DONE ||
-							(keyEvent != null &&
-									keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
-									keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
-						handleNewVPNEntry();
-						return true;
-					} else {
-						return false;
-					}
-				}
-			});
+            mDialog.show();
 
-			mDialog = builder.create();
+            // Block user from entering an empty hostname
 
-			mDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
-				@Override
-				public void onDismiss(DialogInterface dialog) {
-					mDialog = null;
-				}
-			});
+            final Button okButton = mDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            okButton.setEnabled(!savedEntry.equals(""));
 
-			mDialog.show();
+            mDialogEntry.addTextChangedListener(new TextWatcher() {
+                @Override
+                public void afterTextChanged(Editable arg0) {
+                    okButton.setEnabled(mDialogEntry.getText().length() != 0);
+                }
 
-			// Block user from entering an empty hostname
+                @Override
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                }
 
-			final Button okButton = mDialog.getButton(AlertDialog.BUTTON_POSITIVE);
-			okButton.setEnabled(!savedEntry.equals(""));
+                @Override
+                public void onTextChanged(CharSequence s, int start, int before, int count) {
+                }
+            });
+        }
 
-			mDialogEntry.addTextChangedListener(new TextWatcher() {
-				@Override
-				public void afterTextChanged(Editable arg0) {
-					okButton.setEnabled(mDialogEntry.getText().length() != 0);
-				}
+    }
 
-				@Override
-				public void beforeTextChanged(CharSequence s, int start, int count, int after) {
-				}
+    private void editVPN(VpnProfile profile) {
+        String pfx = getActivity().getPackageName();
+        Intent vprefintent = new Intent(getActivity(), ConnectionEditorActivity.class)
+                .putExtra(pfx + ".profileUUID", profile.getUUID().toString())
+                .putExtra(pfx + ".profileName", profile.getName());
 
-				@Override
-				public void onTextChanged(CharSequence s, int start, int before, int count) {
-				}
-			});
-		}
+        startActivity(vprefintent);
+    }
 
-	}
+    private void startVPN(VpnProfile profile) {
+        Intent intent = new Intent(getActivity(), GrantPermissionsActivity.class);
+        String pkg = getActivity().getPackageName();
 
-	private void editVPN(VpnProfile profile) {
-		String pfx = getActivity().getPackageName();
-		Intent vprefintent = new Intent(getActivity(), ConnectionEditorActivity.class)
-			.putExtra(pfx + ".profileUUID", profile.getUUID().toString())
-			.putExtra(pfx + ".profileName", profile.getName());
+        intent.putExtra(pkg + GrantPermissionsActivity.EXTRA_UUID, profile.getUUID().toString());
+        intent.setAction(Intent.ACTION_MAIN);
+        startActivity(intent);
+    }
 
-		startActivity(vprefintent);
-	}
+    private class VPNArrayAdapter extends ArrayAdapter<VpnProfile> {
 
-	private void startVPN(VpnProfile profile) {
-		Intent intent = new Intent(getActivity(), GrantPermissionsActivity.class);
-		String pkg = getActivity().getPackageName();
+        public VPNArrayAdapter(Context context, int resource, int textViewResourceId) {
+            super(context, resource, textViewResourceId);
+        }
 
-		intent.putExtra(pkg + GrantPermissionsActivity.EXTRA_UUID, profile.getUUID().toString());
-		intent.setAction(Intent.ACTION_MAIN);
-		startActivity(intent);
-	}
+        @Override
+        public View getView(final int position, View convertView, ViewGroup parent) {
+            View v = super.getView(position, convertView, parent);
+
+            View titleview = v.findViewById(R.id.vpn_list_item_left);
+            titleview.setOnClickListener(new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    VpnProfile profile = (VpnProfile) getListAdapter().getItem(position);
+                    startVPN(profile);
+                }
+            });
+
+            View settingsview = v.findViewById(R.id.quickedit_settings);
+            settingsview.setOnClickListener(new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    VpnProfile editProfile = (VpnProfile) getListAdapter().getItem(position);
+                    editVPN(editProfile);
+                }
+            });
+
+            return v;
+        }
+    }
+
+    class MiniImageGetter implements ImageGetter {
+        @Override
+        public Drawable getDrawable(String source) {
+            Drawable d = null;
+            if ("ic_menu_add".equals(source))
+                d = getActivity().getResources().getDrawable(android.R.drawable.ic_menu_add);
+            else if ("ic_menu_archive".equals(source))
+                d = getActivity().getResources().getDrawable(R.drawable.ic_menu_archive);
+
+            if (d != null) {
+                d.setBounds(0, 0, d.getIntrinsicWidth(), d.getIntrinsicHeight());
+                return d;
+            } else {
+                return null;
+            }
+        }
+    }
+
+    class VpnProfileNameComperator implements Comparator<VpnProfile> {
+
+        @Override
+        public int compare(VpnProfile lhs, VpnProfile rhs) {
+            return lhs.mName.compareTo(rhs.mName);
+        }
+
+    }
 }

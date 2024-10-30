@@ -38,59 +38,59 @@ import de.robv.android.xposed.XposedHelpers;
 
 public class Xposed implements IXposedHookZygoteInit {
 
-	public static final String PKG_NAME = "app.openconnect";
+    public static final String PKG_NAME = "app.openconnect";
 
-	@Override
-	public void initZygote(StartupParam startupParam) throws Throwable {
+    @Override
+    public void initZygote(StartupParam startupParam) throws Throwable {
 
-		final Class<?> clazz0 = XposedHelpers.findClass("android.net.BaseNetworkStateTracker", null);
-		final String className = "com.android.server.connectivity.Vpn";
+        final Class<?> clazz0 = XposedHelpers.findClass("android.net.BaseNetworkStateTracker", null);
+        final String className = "com.android.server.connectivity.Vpn";
 
-		XposedHelpers.findAndHookMethod(className, null, "prepare",
-				String.class, String.class, new XC_MethodHook() {
+        XposedHelpers.findAndHookMethod(className, null, "prepare",
+                String.class, String.class, new XC_MethodHook() {
 
-			@Override
-			protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-				Object a[] = param.args;
-				if (PKG_NAME.equals(a[0]) && a[1] == null) {
-					// Normally ConfirmDialog calls prepare("app.openconnect", null) to see whether
-					// to prompt the user.  prepare() returns false unless we've already been authorized.
-					// We will swap the argument order so the prepare() call succeeds.
-					a[1] = a[0];
-					a[0] = null;
-					XposedBridge.log("OpenConnect: bypassing VPN confirmation dialog");
-				}
-			}
-		});
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        Object[] a = param.args;
+                        if (PKG_NAME.equals(a[0]) && a[1] == null) {
+                            // Normally ConfirmDialog calls prepare("app.openconnect", null) to see whether
+                            // to prompt the user.  prepare() returns false unless we've already been authorized.
+                            // We will swap the argument order so the prepare() call succeeds.
+                            a[1] = a[0];
+                            a[0] = null;
+                            XposedBridge.log("OpenConnect: bypassing VPN confirmation dialog");
+                        }
+                    }
+                });
 
-		XposedHelpers.findAndHookMethod(className, null, "enforceControlPermission",
-				new XC_MethodHook() {
+        XposedHelpers.findAndHookMethod(className, null, "enforceControlPermission",
+                new XC_MethodHook() {
 
-			@Override
-			protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-				// prepare() normally expects to get called from the system-managed
-				// confirmation dialog; it will throw a SecurityException if some other
-				// caller tries to permit VPN access.  Override this check when appropriate.
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        // prepare() normally expects to get called from the system-managed
+                        // confirmation dialog; it will throw a SecurityException if some other
+                        // caller tries to permit VPN access.  Override this check when appropriate.
 
-				// Same as UserHandle.getAppId(), but without using the hidden API
-				int appId = Binder.getCallingUid() % 100000;
+                        // Same as UserHandle.getAppId(), but without using the hidden API
+                        int appId = Binder.getCallingUid() % 100000;
 
-				try {
-					Field f = clazz0.getDeclaredField("mContext");
-					f.setAccessible(true);
-					Context mContext = (Context)f.get(param.thisObject);
-					PackageManager pm = mContext.getPackageManager();
-					ApplicationInfo app = pm.getApplicationInfo(PKG_NAME, 0);
+                        try {
+                            Field f = clazz0.getDeclaredField("mContext");
+                            f.setAccessible(true);
+                            Context mContext = (Context) f.get(param.thisObject);
+                            PackageManager pm = mContext.getPackageManager();
+                            ApplicationInfo app = pm.getApplicationInfo(PKG_NAME, 0);
 
-					if (appId == app.uid) {
-						// return early, skipping Android's checks
-						param.setResult(null);
-					}
-				} catch (Exception e) {
-					XposedBridge.log("OpenConnect: exception checking UIDs: " + e.getLocalizedMessage());
-				}
-			}
-		});
+                            if (appId == app.uid) {
+                                // return early, skipping Android's checks
+                                param.setResult(null);
+                            }
+                        } catch (Exception e) {
+                            XposedBridge.log("OpenConnect: exception checking UIDs: " + e.getLocalizedMessage());
+                        }
+                    }
+                });
 
-	}
+    }
 }

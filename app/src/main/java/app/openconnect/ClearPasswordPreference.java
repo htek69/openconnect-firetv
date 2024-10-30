@@ -42,11 +42,11 @@ public class ClearPasswordPreference extends DialogPreference {
         if (positiveResult) {
             PreferenceManager mPrefs = getPreferenceManager();
             SharedPreferences sp = mPrefs.getSharedPreferences();
-            for (Map.Entry<String,?> entry : sp.getAll().entrySet()) {
-            	String key = entry.getKey();
-            	if (key.startsWith("FORMDATA-") || key.startsWith("ACCEPTED-CERT-")) {
-            		sp.edit().putString(key, "").commit();
-            	}
+            for (Map.Entry<String, ?> entry : sp.getAll().entrySet()) {
+                String key = entry.getKey();
+                if (key.startsWith("FORMDATA-") || key.startsWith("ACCEPTED-CERT-")) {
+                    sp.edit().putString(key, "").commit();
+                }
             }
         }
     }

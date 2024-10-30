@@ -54,17 +54,15 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.TextView;
 
 public class ConnectionEditorFragment extends PreferenceFragment
-		implements OnSharedPreferenceChangeListener {
-
-	PreferenceManager mPrefs;
-	VpnProfile mProfile;
-	String mUUID;
-
-    HashMap<String,Integer> fileSelectMap = new HashMap<String,Integer>();
+        implements OnSharedPreferenceChangeListener {
 
     private final int IDX_TOKEN_STRING = 65536;
+    PreferenceManager mPrefs;
+    VpnProfile mProfile;
+    String mUUID;
+    HashMap<String, Integer> fileSelectMap = new HashMap<String, Integer>();
 
-	@Override
+    @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
@@ -83,13 +81,13 @@ public class ConnectionEditorFragment extends PreferenceFragment
         // Preference = (ListPreference)mPrefs.findPreference("vpn_protocol");
 
         SharedPreferences sp = mPrefs.getSharedPreferences();
-        for (Map.Entry<String,?> entry : sp.getAll().entrySet()) {
+        for (Map.Entry<String, ?> entry : sp.getAll().entrySet()) {
             updatePref(sp, entry.getKey());
         }
     }
 
     @Override
-	public void onResume() {
+    public void onResume() {
         super.onResume();
         getPreferenceScreen().getSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(this);
@@ -113,37 +111,37 @@ public class ConnectionEditorFragment extends PreferenceFragment
 
         Preference pref = findPreference(key);
         if (pref != null) {
-			if (pref instanceof ListPreference) {
-				/* update all spinner prefs so the summary shows the current value */
-				ListPreference lpref = (ListPreference)pref;
-				lpref.setValue(value);
-				pref.setSummary(lpref.getEntry());
-			} else {
-				/* for ShowTextPreference entries, hide the filename */
-				if (fileSelectMap.containsKey(key) && !value.equals("")) {
-					pref.setSummary(getString(R.string.stored));
-				} else {
-					pref.setSummary(value);
-				}
-			}
-			if (pref instanceof EditTextPreference) {
-				final EditTextPreference etpref = (EditTextPreference)pref;
-				etpref.getEditText().setOnEditorActionListener(new TextView.OnEditorActionListener() {
-					@Override
-					public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
-						if (actionId == EditorInfo.IME_ACTION_DONE ||
-								(keyEvent != null &&
-										keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
-										keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
-							etpref.onClick(etpref.getDialog(), Dialog.BUTTON_POSITIVE);
-							etpref.getDialog().dismiss();
-							return true;
-						} else {
-							return false;
-						}
-					}
-				});
-			}
+            if (pref instanceof ListPreference) {
+                /* update all spinner prefs so the summary shows the current value */
+                ListPreference lpref = (ListPreference) pref;
+                lpref.setValue(value);
+                pref.setSummary(lpref.getEntry());
+            } else {
+                /* for ShowTextPreference entries, hide the filename */
+                if (fileSelectMap.containsKey(key) && !value.equals("")) {
+                    pref.setSummary(getString(R.string.stored));
+                } else {
+                    pref.setSummary(value);
+                }
+            }
+            if (pref instanceof EditTextPreference) {
+                final EditTextPreference etpref = (EditTextPreference) pref;
+                etpref.getEditText().setOnEditorActionListener(new TextView.OnEditorActionListener() {
+                    @Override
+                    public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
+                        if (actionId == EditorInfo.IME_ACTION_DONE ||
+                                (keyEvent != null &&
+                                        keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
+                                        keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
+                            etpref.onClick(etpref.getDialog(), Dialog.BUTTON_POSITIVE);
+                            etpref.getDialog().dismiss();
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    }
+                });
+            }
         }
 
         /* disable_xml_post is only applicable to anyconnect */
@@ -171,78 +169,78 @@ public class ConnectionEditorFragment extends PreferenceFragment
         }
 
         if (key.equals("profile_name")) {
-        	((ConnectionEditorActivity)getActivity()).setProfileName(value);
+            ((ConnectionEditorActivity) getActivity()).setProfileName(value);
         }
     }
 
-	public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
-		updatePref(sp, key);
-	}
+    public void onSharedPreferenceChanged(SharedPreferences sp, String key) {
+        updatePref(sp, key);
+    }
 
-	private void setClickListeners() {
-		for (int idx = 0; idx < ProfileManager.fileSelectKeys.length; idx++) {
-			String key = ProfileManager.fileSelectKeys[idx];
-			Preference p = findPreference(key);
-			fileSelectMap.put(key, idx);
+    private void setClickListeners() {
+        for (int idx = 0; idx < ProfileManager.fileSelectKeys.length; idx++) {
+            String key = ProfileManager.fileSelectKeys[idx];
+            Preference p = findPreference(key);
+            fileSelectMap.put(key, idx);
 
-			/* Start up a FileSelect activity to import data from the filesystem */
-			p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
-				@Override
-				public boolean onPreferenceClick(Preference preference) {
-					Integer idx = fileSelectMap.get(preference.getKey());
-					if (idx == null) {
-						return false;
-					}
+            /* Start up a FileSelect activity to import data from the filesystem */
+            p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
+                @Override
+                public boolean onPreferenceClick(Preference preference) {
+                    Integer idx = fileSelectMap.get(preference.getKey());
+                    if (idx == null) {
+                        return false;
+                    }
 
-					Intent startFC = new Intent(getActivity(), FileSelect.class);
-					startFC.putExtra(FileSelect.START_DATA, Environment.getExternalStorageDirectory().getPath());
-					startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
-					startFC.putExtra(FileSelect.NO_INLINE_SELECTION, true);
+                    Intent startFC = new Intent(getActivity(), FileSelect.class);
+                    startFC.putExtra(FileSelect.START_DATA, Environment.getExternalStorageDirectory().getPath());
+                    startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
+                    startFC.putExtra(FileSelect.NO_INLINE_SELECTION, true);
 
-					startActivityForResult(startFC, idx);
-					return false;
-				}
-			});
-		}
+                    startActivityForResult(startFC, idx);
+                    return false;
+                }
+            });
+        }
 
-		Preference p = findPreference("token_string");
-		/* The TokenImport activity will set the token_string preference for us */
-		p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
-			@Override
-			public boolean onPreferenceClick(Preference preference) {
-				Intent intent = new Intent(getActivity(), TokenImportActivity.class);
-				intent.putExtra(TokenImportActivity.EXTRA_UUID, mUUID);
-				startActivityForResult(intent, IDX_TOKEN_STRING);
-				return false;
-			}
-		});
-	}
+        Preference p = findPreference("token_string");
+        /* The TokenImport activity will set the token_string preference for us */
+        p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
+            @Override
+            public boolean onPreferenceClick(Preference preference) {
+                Intent intent = new Intent(getActivity(), TokenImportActivity.class);
+                intent.putExtra(TokenImportActivity.EXTRA_UUID, mUUID);
+                startActivityForResult(intent, IDX_TOKEN_STRING);
+                return false;
+            }
+        });
+    }
 
-	@Override
-	public void onActivityResult(int idx, int resultCode, Intent data) {
-		super.onActivityResult(idx, resultCode, data);
+    @Override
+    public void onActivityResult(int idx, int resultCode, Intent data) {
+        super.onActivityResult(idx, resultCode, data);
 
-		if (resultCode != Activity.RESULT_OK) {
-			return;
-		}
+        if (resultCode != Activity.RESULT_OK) {
+            return;
+        }
 
-		SharedPreferences prefs = mPrefs.getSharedPreferences();
-		if (idx >= IDX_TOKEN_STRING) {
-			updatePref(prefs, "token_string");
-			updatePref(prefs, "software_token");
-		} else {
-			String path = data.getStringExtra(FileSelect.RESULT_DATA);
-			String key = ProfileManager.fileSelectKeys[idx];
-			ShowTextPreference p = (ShowTextPreference)findPreference(key);
+        SharedPreferences prefs = mPrefs.getSharedPreferences();
+        if (idx >= IDX_TOKEN_STRING) {
+            updatePref(prefs, "token_string");
+            updatePref(prefs, "software_token");
+        } else {
+            String path = data.getStringExtra(FileSelect.RESULT_DATA);
+            String key = ProfileManager.fileSelectKeys[idx];
+            ShowTextPreference p = (ShowTextPreference) findPreference(key);
 
-			if (path == null) {
-				ProfileManager.deleteFilePref(mProfile, key);
-			} else {
-				path = ProfileManager.storeFilePref(mProfile, key, path);
-			}
+            if (path == null) {
+                ProfileManager.deleteFilePref(mProfile, key);
+            } else {
+                path = ProfileManager.storeFilePref(mProfile, key, path);
+            }
 
-			p.setText(path);
-			updatePref(prefs, key);
-		}
-	}
+            p.setText(path);
+            updatePref(prefs, key);
+        }
+    }
 }

@@ -24,6 +24,7 @@
 
 package app.openconnect;
 
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,462 +53,456 @@ import android.widget.Spinner;
 import android.widget.TextView;
 
 public class AuthFormHandler extends UserDialog
-		implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
+        implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
 
-	public static final String TAG = "OpenConnect";
+    public static final String TAG = "OpenConnect";
+    private static final int BATCH_MODE_DISABLED = 0;
+    private static final int BATCH_MODE_EMPTY_ONLY = 1;
+    private static final int BATCH_MODE_ENABLED = 2;
+    private static final int BATCH_MODE_ABORTED = 3;
+    private final LibOpenConnect.AuthForm mForm;
+    private Context mContext;
+    private boolean isOK;
+    private AlertDialog mAlert;
+    private CheckBox savePassword = null;
+    private boolean noSave = false;
+    private final String formPfx;
+    private int batchMode = BATCH_MODE_DISABLED;
+    private final boolean mAuthgroupSet;
+    private boolean mAllFilled = true;
+    private TextView mFirstEmptyText;
+    private TextView mFirstText;
+    private final LinearLayout.LayoutParams fillWidth =
+            new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
 
-	private LibOpenConnect.AuthForm mForm;
-	private Context mContext;
-	private boolean isOK;
-	private AlertDialog mAlert;
+    public AuthFormHandler(SharedPreferences prefs, LibOpenConnect.AuthForm form, boolean authgroupSet,
+                           String lastFormDigest) {
+        super(prefs);
 
-	private CheckBox savePassword = null;
-	private boolean noSave = false;
-	private String formPfx;
+        mForm = form;
+        mAuthgroupSet = authgroupSet;
+        formPfx = getFormPrefix(mForm);
+        noSave = getBooleanPref("disable_username_caching");
 
-	private int batchMode = BATCH_MODE_DISABLED;
-	private boolean mAuthgroupSet;
-	private boolean mAllFilled = true;
+        String s = getStringPref("batch_mode");
+        if (s.equals("empty_only")) {
+            batchMode = BATCH_MODE_EMPTY_ONLY;
+        } else if (s.equals("enabled")) {
+            batchMode = BATCH_MODE_ENABLED;
+        }
 
-	private TextView mFirstEmptyText;
-	private TextView mFirstText;
+        // If the server is sending us the same form twice in a row, that probably
+        // means there's a problem with the data we are sending back.  Either prompt
+        // the user, or abort.
+        if (formPfx.equals(lastFormDigest)) {
+            if (batchMode == BATCH_MODE_EMPTY_ONLY) {
+                batchMode = BATCH_MODE_DISABLED;
+            } else if (batchMode == BATCH_MODE_ENABLED) {
+                batchMode = BATCH_MODE_ABORTED;
+            }
+        }
+    }
 
-	private static final int BATCH_MODE_DISABLED = 0;
-	private static final int BATCH_MODE_EMPTY_ONLY = 1;
-	private static final int BATCH_MODE_ENABLED = 2;
-	private static final int BATCH_MODE_ABORTED = 3;
+    public String getFormDigest() {
+        return formPfx;
+    }
 
-	public AuthFormHandler(SharedPreferences prefs, LibOpenConnect.AuthForm form, boolean authgroupSet,
-			String lastFormDigest) {
-		super(prefs);
+    @Override
+    public void onDismiss(DialogInterface dialog) {
+        // catches OK, Cancel, and Back button presses
+        if (isOK) {
+            saveAndStore();
+        }
+        finish(isOK ? LibOpenConnect.OC_FORM_RESULT_OK : LibOpenConnect.OC_FORM_RESULT_CANCELLED);
+    }
 
-		mForm = form;
-		mAuthgroupSet = authgroupSet;
-		formPfx = getFormPrefix(mForm);
-		noSave = getBooleanPref("disable_username_caching");
+    @Override
+    public void onClick(DialogInterface dialog, int which) {
+        if (which == DialogInterface.BUTTON_POSITIVE) {
+            isOK = true;
+        }
+    }
 
-		String s = getStringPref("batch_mode");
-		if (s.equals("empty_only")) {
-			batchMode = BATCH_MODE_EMPTY_ONLY;
-		} else if (s.equals("enabled")) {
-			batchMode = BATCH_MODE_ENABLED;
-		}
+    private String digest(String s) {
+        String out = "";
+        if (s == null) {
+            s = "";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("MD5");
+            StringBuilder sb = new StringBuilder();
+            byte[] d = digest.digest(s.getBytes(StandardCharsets.UTF_8));
+            for (byte dd : d) {
+                sb.append(String.format("%02x", dd));
+            }
+            out = sb.toString();
+        } catch (Exception e) {
+            Log.e(TAG, "MessageDigest failed", e);
+        }
+        return out;
+    }
 
-		// If the server is sending us the same form twice in a row, that probably
-		// means there's a problem with the data we are sending back.  Either prompt
-		// the user, or abort.
-		if (formPfx.equals(lastFormDigest)) {
-			if (batchMode == BATCH_MODE_EMPTY_ONLY) {
-				batchMode = BATCH_MODE_DISABLED;
-			} else if (batchMode == BATCH_MODE_ENABLED) {
-				batchMode = BATCH_MODE_ABORTED;
-			}
-		}
-	}
+    private String getOptDigest(LibOpenConnect.FormOpt opt) {
+        StringBuilder in = new StringBuilder();
 
-	public String getFormDigest() {
-		return formPfx;
-	}
+        switch (opt.type) {
+            case LibOpenConnect.OC_FORM_OPT_SELECT:
+                for (LibOpenConnect.FormChoice ch : opt.choices) {
+                    in.append(digest(ch.name));
+                    in.append(digest(ch.label));
+                }
+                /* falls through */
+            case LibOpenConnect.OC_FORM_OPT_TEXT:
+            case LibOpenConnect.OC_FORM_OPT_PASSWORD:
+                in.append(":" + opt.type + ":");
+                in.append(digest(opt.name));
+                in.append(digest(opt.label));
+        }
+        return digest(in.toString());
+    }
 
-	@Override
-	public void onDismiss(DialogInterface dialog) {
-		// catches OK, Cancel, and Back button presses
-		if (isOK) {
-			saveAndStore();
-		}
-		finish(isOK ? LibOpenConnect.OC_FORM_RESULT_OK : LibOpenConnect.OC_FORM_RESULT_CANCELLED);
-	}
+    private String getFormPrefix(LibOpenConnect.AuthForm form) {
+        StringBuilder in = new StringBuilder();
 
-	@Override
-	public void onClick(DialogInterface dialog, int which) {
-		if (which == DialogInterface.BUTTON_POSITIVE) {
-			isOK = true;
-		}
-	}
+        for (LibOpenConnect.FormOpt opt : form.opts) {
+            in.append(getOptDigest(opt));
+        }
+        return "FORMDATA-" + digest(in.toString()) + "-";
+    }
 
-	private String digest(String s) {
-		String out = "";
-		if (s == null) {
-			s = "";
-		}
-		try {
-			MessageDigest digest = MessageDigest.getInstance("MD5");
-			StringBuilder sb = new StringBuilder();
-			byte d[] = digest.digest(s.getBytes("UTF-8"));
-			for (byte dd : d) {
-				sb.append(String.format("%02x", dd));
-			}
-			out = sb.toString();
-		} catch (Exception e) {
-			Log.e(TAG, "MessageDigest failed", e);
-		}
-		return out;
-	}
+    private void fixPadding(View v) {
+    }
 
-	private String getOptDigest(LibOpenConnect.FormOpt opt) {
-		StringBuilder in = new StringBuilder();
+    private LinearLayout newHorizLayout(String label) {
+        LinearLayout ll = new LinearLayout(mContext);
+        ll.setOrientation(LinearLayout.HORIZONTAL);
+        ll.setLayoutParams(fillWidth);
+        fixPadding(ll);
 
-		switch (opt.type) {
-		case LibOpenConnect.OC_FORM_OPT_SELECT:
-			for (LibOpenConnect.FormChoice ch : opt.choices) {
-				in.append(digest(ch.name));
-				in.append(digest(ch.label));
-			}
-			/* falls through */
-		case LibOpenConnect.OC_FORM_OPT_TEXT:
-		case LibOpenConnect.OC_FORM_OPT_PASSWORD:
-			in.append(":" + Integer.toString(opt.type) + ":");
-			in.append(digest(opt.name));
-			in.append(digest(opt.label));
-		}
-		return digest(in.toString());
-	}
+        TextView tv = new TextView(mContext);
+        tv.setText(label);
+        ll.addView(tv);
 
-	private String getFormPrefix(LibOpenConnect.AuthForm form) {
-		StringBuilder in = new StringBuilder();
+        return ll;
+    }
 
-		for (LibOpenConnect.FormOpt opt : form.opts) {
-			in.append(getOptDigest(opt));
-		}
-		return "FORMDATA-" + digest(in.toString()) + "-";
-	}
+    private LinearLayout newTextBlank(LibOpenConnect.FormOpt opt, String defval) {
+        LinearLayout ll = newHorizLayout(opt.label);
 
-	private void fixPadding(View v) {
-	}
+        TextView tv = new EditText(mContext);
+        tv.setLayoutParams(fillWidth);
+        if (defval == null) {
+            defval = opt.value != null ? opt.value : "";
+        }
+        tv.setText(defval);
 
-	private LinearLayout.LayoutParams fillWidth =
-			new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+        if (mFirstEmptyText == null && defval.equals("")) {
+            mFirstEmptyText = tv;
+        }
+        if (mFirstText == null) {
+            mFirstText = tv;
+        }
 
-	private LinearLayout newHorizLayout(String label) {
-		LinearLayout ll = new LinearLayout(mContext);
-		ll.setOrientation(LinearLayout.HORIZONTAL);
-		ll.setLayoutParams(fillWidth);
-		fixPadding(ll);
+        int baseType = (opt.flags & LibOpenConnect.OC_FORM_OPT_NUMERIC) != 0 ?
+                InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT;
+        if (opt.type == LibOpenConnect.OC_FORM_OPT_PASSWORD) {
+            tv.setInputType(baseType | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            tv.setTransformationMethod(PasswordTransformationMethod.getInstance());
+        } else {
+            tv.setInputType(baseType | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        }
+        tv.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
+                if (actionId == EditorInfo.IME_ACTION_DONE ||
+                        (keyEvent != null &&
+                                keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
+                                keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
+                    isOK = true;
+                    mAlert.dismiss();
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+        });
 
-		TextView tv = new TextView(mContext);
-		tv.setText(label);
-		ll.addView(tv);
+        opt.userData = tv;
+        ll.addView(tv);
+        return ll;
+    }
 
-		return ll;
-	}
+    private void spinnerSelect(LibOpenConnect.FormOpt opt, int index) {
+        LibOpenConnect.FormChoice fc = opt.choices.get(index);
+        String s = fc.name != null ? fc.name : "";
 
-	private LinearLayout newTextBlank(LibOpenConnect.FormOpt opt, String defval) {
-		LinearLayout ll = newHorizLayout(opt.label);
+        if (opt.userData == null) {
+            // first run
+            opt.userData = s;
+        } else if (!s.equals(opt.userData)) {
+            opt.value = s;
+            mAlert.dismiss();
+            finish(LibOpenConnect.OC_FORM_RESULT_NEWGROUP);
+        }
+    }
 
-		TextView tv = new EditText(mContext);
-		tv.setLayoutParams(fillWidth);
-		if (defval == null) {
-			defval = opt.value != null ? opt.value : "";
-		}
-		tv.setText(defval);
+    private LinearLayout newDropdown(final LibOpenConnect.FormOpt opt, int selection) {
+        List<String> choiceList = new ArrayList<String>();
 
-		if (mFirstEmptyText == null && defval.equals("")) {
-			mFirstEmptyText = tv;
-		}
-		if (mFirstText == null) {
-			mFirstText = tv;
-		}
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(mContext,
+                android.R.layout.simple_spinner_item, choiceList);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
 
-		int baseType = (opt.flags & LibOpenConnect.OC_FORM_OPT_NUMERIC) != 0 ?
-				InputType.TYPE_CLASS_NUMBER : InputType.TYPE_CLASS_TEXT;
-		if (opt.type == LibOpenConnect.OC_FORM_OPT_PASSWORD) {
-			tv.setInputType(baseType | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-			tv.setTransformationMethod(PasswordTransformationMethod.getInstance());
-		} else {
-			tv.setInputType(baseType | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-		}
-		tv.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-			@Override
-			public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
-				if (actionId == EditorInfo.IME_ACTION_DONE ||
-						(keyEvent != null &&
-								keyEvent.getKeyCode() == KeyEvent.KEYCODE_ENTER &&
-								keyEvent.getAction() == KeyEvent.ACTION_DOWN)) {
-					isOK = true;
-					mAlert.dismiss();
-					return true;
-				} else {
-					return false;
-				}
-			}
-		});
+        for (LibOpenConnect.FormChoice fc : opt.choices) {
+            choiceList.add(fc.label);
+        }
 
-		opt.userData = tv;
-		ll.addView(tv);
-		return ll;
-	}
+        Spinner sp = new Spinner(mContext);
+        sp.setAdapter(adapter);
+        sp.setLayoutParams(fillWidth);
 
-	private void spinnerSelect(LibOpenConnect.FormOpt opt, int index) {
-		LibOpenConnect.FormChoice fc = opt.choices.get((int)index);
-		String s = fc.name != null ? fc.name : "";
+        sp.setSelection(selection);
+        spinnerSelect(opt, selection);
 
-		if (opt.userData == null) {
-			// first run
-			opt.userData = s;
-		} else if (!s.equals(opt.userData)) {
-			opt.value = s;
-			mAlert.dismiss();
-			finish(LibOpenConnect.OC_FORM_RESULT_NEWGROUP);
-		}
-	}
+        sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
 
-	private LinearLayout newDropdown(final LibOpenConnect.FormOpt opt, int selection) {
-		List<String> choiceList = new ArrayList<String>();
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view,
+                                       int position, long id) {
+                spinnerSelect(opt, (int) id);
+            }
 
-	    ArrayAdapter<String> adapter = new ArrayAdapter<String>(mContext,
-	    		android.R.layout.simple_spinner_item, choiceList);
-	    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            @Override
+            public void onNothingSelected(AdapterView<?> arg0) {
+            }
+        });
 
-	    for (LibOpenConnect.FormChoice fc : opt.choices) {
-	    	choiceList.add(fc.label);
-	    };
+        LinearLayout ll = newHorizLayout(opt.label);
+        ll.addView(sp);
 
-		Spinner sp = new Spinner(mContext);
-		sp.setAdapter(adapter);
-		sp.setLayoutParams(fillWidth);
+        return ll;
+    }
 
-		sp.setSelection(selection);
-		spinnerSelect(opt, selection);
+    private CheckBox newSavePasswordView(boolean isChecked) {
+        CheckBox cb = new CheckBox(mContext);
+        cb.setText(R.string.save_password);
+        cb.setChecked(isChecked);
+        fixPadding(cb);
+        return cb;
+    }
 
-		sp.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+    private void saveAndStore() {
+        for (LibOpenConnect.FormOpt opt : mForm.opts) {
+            if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
+                continue;
+            }
+            switch (opt.type) {
+                case LibOpenConnect.OC_FORM_OPT_TEXT: {
+                    TextView tv = (TextView) opt.userData;
+                    String s = tv.getText().toString();
+                    if (!noSave) {
+                        setStringPref(formPfx + getOptDigest(opt), s);
+                    }
+                    opt.value = s;
+                    break;
+                }
+                case LibOpenConnect.OC_FORM_OPT_PASSWORD: {
+                    TextView tv = (TextView) opt.userData;
+                    String s = tv.getText().toString();
+                    if (savePassword != null) {
+                        boolean checked = savePassword.isChecked();
+                        setStringPref(formPfx + getOptDigest(opt), checked ? s : "");
+                        setStringPref(formPfx + "savePass", checked ? "true" : "false");
+                    }
+                    opt.value = s;
+                    break;
+                }
+                case LibOpenConnect.OC_FORM_OPT_SELECT:
+                    String s = (String) opt.userData;
+                    if (!noSave) {
+                        setStringPref(formPfx + getOptDigest(opt), s);
+                        if ("group_list".equals(opt.name)) {
+                            setStringPref("authgroup", s);
+                        }
+                    }
+                    opt.value = s;
+                    break;
+            }
+        }
+    }
 
-			@Override
-			public void onItemSelected(AdapterView<?> parent, View view,
-					int position, long id) {
-				spinnerSelect(opt, (int)id);
-			}
+    // If the user had saved a preferred authgroup, submit a NEWGROUP request before rendering the form
+    public boolean setAuthgroup() {
+        LibOpenConnect.FormOpt opt = mForm.authgroupOpt;
+        if (opt == null) {
+            return false;
+        }
 
-			@Override
-			public void onNothingSelected(AdapterView<?> arg0) {
-			}
-		});
+        String authgroup = getStringPref("authgroup");
+        if (authgroup.equals("")) {
+            return false;
+        }
 
-		LinearLayout ll = newHorizLayout(opt.label);
-		ll.addView(sp);
+        LibOpenConnect.FormChoice selected = opt.choices.get(mForm.authgroupSelection);
+        if (mAuthgroupSet || authgroup.equals(selected.name)) {
+            // already good to go
+            opt.value = authgroup;
+            return false;
+        }
+        for (LibOpenConnect.FormChoice ch : opt.choices) {
+            if (authgroup.equals(ch.name)) {
+                opt.value = authgroup;
+                return true;
+            }
+        }
+        Log.w(TAG, "saved authgroup '" + authgroup + "' not present in " + opt.name + " dropdown");
+        return false;
+    }
 
-		return ll;
-	}
+    public Object earlyReturn() {
+        if (setAuthgroup()) {
+            return LibOpenConnect.OC_FORM_RESULT_NEWGROUP;
+        }
+        if (batchMode != BATCH_MODE_EMPTY_ONLY && batchMode != BATCH_MODE_ENABLED) {
+            return null;
+        }
 
-	private CheckBox newSavePasswordView(boolean isChecked) {
-		CheckBox cb = new CheckBox(mContext);
-		cb.setText(R.string.save_password);
-		cb.setChecked(isChecked);
-		fixPadding(cb);
-		return cb;
-	}
+        // do a quick pass through all prompts to see if we can fill in the
+        // answers without bugging the user
+        for (LibOpenConnect.FormOpt opt : mForm.opts) {
+            if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
+                continue;
+            }
+            switch (opt.type) {
+                case LibOpenConnect.OC_FORM_OPT_PASSWORD:
+                case LibOpenConnect.OC_FORM_OPT_TEXT:
+                    String defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
+                    if (defval.equals("")) {
+                        return null;
+                    }
+                    opt.value = defval;
+                    break;
+                case LibOpenConnect.OC_FORM_OPT_SELECT:
+                    if (opt.value == null) {
+                        return null;
+                    }
+                    break;
+            }
+        }
+        return LibOpenConnect.OC_FORM_RESULT_OK;
+    }
 
-	private void saveAndStore() {
-		for (LibOpenConnect.FormOpt opt : mForm.opts) {
-			if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
-				continue;
-			}
-			switch (opt.type) {
-			case LibOpenConnect.OC_FORM_OPT_TEXT: {
-				TextView tv = (TextView)opt.userData;
-				String s = tv.getText().toString();
-				if (!noSave) {
-					setStringPref(formPfx + getOptDigest(opt), s);
-				}
-				opt.value = s;
-				break;
-			}
-			case LibOpenConnect.OC_FORM_OPT_PASSWORD: {
-				TextView tv = (TextView)opt.userData;
-				String s = tv.getText().toString();
-				if (savePassword != null) {
-					boolean checked = savePassword.isChecked();
-					setStringPref(formPfx + getOptDigest(opt), checked ? s : "");
-					setStringPref(formPfx + "savePass", checked ? "true" : "false");
-				}
-				opt.value = s;
-				break;
-			}
-			case LibOpenConnect.OC_FORM_OPT_SELECT:
-				String s = (String)opt.userData;
-				if (!noSave) {
-					setStringPref(formPfx + getOptDigest(opt), s);
-					if ("group_list".equals(opt.name)) {
-						setStringPref("authgroup", s);
-					}
-				}
-				opt.value = s;
-				break;
-			}
-		}
-	}
+    public void onStart(Context context) {
+        final AuthFormHandler h = this;
 
-	// If the user had saved a preferred authgroup, submit a NEWGROUP request before rendering the form
-	public boolean setAuthgroup() {
-		LibOpenConnect.FormOpt opt = mForm.authgroupOpt;
-		if (opt == null) {
-			return false;
-		}
+        super.onStart(context);
+        mContext = context;
+        isOK = false;
 
-		String authgroup = getStringPref("authgroup");
-		if (authgroup.equals("")) {
-			return false;
-		}
+        float scale = mContext.getResources().getDisplayMetrics().density;
+        LinearLayout v = new LinearLayout(mContext);
+        v.setOrientation(LinearLayout.VERTICAL);
+        v.setPadding((int) (14 * scale), (int) (2 * scale), (int) (10 * scale), (int) (2 * scale));
 
-		LibOpenConnect.FormChoice selected = opt.choices.get(mForm.authgroupSelection);
-		if (mAuthgroupSet || authgroup.equals(selected.name)) {
-			// already good to go
-			opt.value = authgroup;
-			return false;
-		}
-		for (LibOpenConnect.FormChoice ch : opt.choices) {
-			if (authgroup.equals(ch.name)) {
-				opt.value = authgroup;
-				return true;
-			}
-		}
-		Log.w(TAG, "saved authgroup '" + authgroup + "' not present in " + opt.name + " dropdown");
-		return false;
-	}
+        boolean hasPassword = false, hasUserOptions = false;
+        String defval;
 
-	public Object earlyReturn() {
-		if (setAuthgroup()) {
-			return LibOpenConnect.OC_FORM_RESULT_NEWGROUP;
-		}
-		if (batchMode != BATCH_MODE_EMPTY_ONLY && batchMode != BATCH_MODE_ENABLED) {
-			return null;
-		}
+        mFirstText = mFirstEmptyText = null;
+        for (LibOpenConnect.FormOpt opt : mForm.opts) {
+            if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
+                continue;
+            }
+            switch (opt.type) {
+                case LibOpenConnect.OC_FORM_OPT_PASSWORD:
+                    hasPassword = true;
+                    /* falls through */
+                case LibOpenConnect.OC_FORM_OPT_TEXT:
+                    defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
+                    if (defval.equals("")) {
+                        if (opt.value != null && !opt.value.equals("")) {
+                            defval = opt.value;
+                        } else {
+                            /* note that this gets remembered across redraws */
+                            mAllFilled = false;
+                        }
+                    }
+                    v.addView(newTextBlank(opt, defval));
+                    hasUserOptions = true;
+                    break;
+                case LibOpenConnect.OC_FORM_OPT_SELECT:
+                    if (opt.choices.size() == 0) {
+                        break;
+                    }
 
-		// do a quick pass through all prompts to see if we can fill in the
-		// answers without bugging the user
-		for (LibOpenConnect.FormOpt opt : mForm.opts) {
-			if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
-				continue;
-			}
-			switch (opt.type) {
-			case LibOpenConnect.OC_FORM_OPT_PASSWORD:
-			case LibOpenConnect.OC_FORM_OPT_TEXT:
-				String defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
-				if (defval.equals("")) {
-					return null;
-				}
-				opt.value = defval;
-				break;
-			case LibOpenConnect.OC_FORM_OPT_SELECT:
-				if (opt.value == null) {
-					return null;
-				}
-				break;
-			}
-		}
-		return LibOpenConnect.OC_FORM_RESULT_OK;
-	}
+                    int selection = 0;
+                    if (opt == mForm.authgroupOpt) {
+                        selection = mForm.authgroupSelection;
+                    } else {
+                        // do any servers actually use non-authgroup downdowns?
+                        defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
+                        for (int i = 0; i < opt.choices.size(); i++) {
+                            if (opt.choices.get(i).name.equals(defval)) {
+                                selection = i;
+                            }
+                        }
+                    }
+                    v.addView(newDropdown(opt, selection));
+                    hasUserOptions = true;
+                    break;
+            }
+        }
+        if (hasPassword && !noSave) {
+            boolean savePass = !getStringPref(formPfx + "savePass").equals("false");
+            savePassword = newSavePasswordView(savePass);
+            v.addView(savePassword);
+        }
 
-	public void onStart(Context context) {
-		final AuthFormHandler h = this;
+        if (batchMode == BATCH_MODE_ABORTED) {
+            finish(LibOpenConnect.OC_FORM_RESULT_CANCELLED);
+            return;
+        }
 
-		super.onStart(context);
-		mContext = context;
-		isOK = false;
+        if ((batchMode == BATCH_MODE_EMPTY_ONLY && mAllFilled) ||
+                batchMode == BATCH_MODE_ENABLED || !hasUserOptions) {
+            saveAndStore();
+            finish(LibOpenConnect.OC_FORM_RESULT_OK);
+            return;
+        }
 
-		float scale = mContext.getResources().getDisplayMetrics().density;
-		LinearLayout v = new LinearLayout(mContext);
-		v.setOrientation(LinearLayout.VERTICAL);
-		v.setPadding((int)(14*scale), (int)(2*scale), (int)(10*scale), (int)(2*scale));
+        mAlert = new AlertDialog.Builder(mContext)
+                .setView(v)
+                .setTitle(mContext.getString(R.string.login_title, getStringPref("profile_name")))
+                .setPositiveButton(R.string.ok, h)
+                .setNegativeButton(R.string.cancel, h)
+                .create();
+        mAlert.setOnDismissListener(h);
 
-		boolean hasPassword = false, hasUserOptions = false;
-		String defval;
+        if (mForm.message != null) {
+            // Truncate long messages so they don't ruin the dialog
+            String s = mForm.message.trim();
+            if (s.length() > 128) {
+                s = s.substring(0, 128);
+            }
+            if (s.length() > 0) {
+                mAlert.setMessage(s);
+            }
+        }
 
-		mFirstText = mFirstEmptyText = null;
-		for (LibOpenConnect.FormOpt opt : mForm.opts) {
-			if ((opt.flags & LibOpenConnect.OC_FORM_OPT_IGNORE) != 0) {
-				continue;
-			}
-			switch (opt.type) {
-			case LibOpenConnect.OC_FORM_OPT_PASSWORD:
-				hasPassword = true;
-				/* falls through */
-			case LibOpenConnect.OC_FORM_OPT_TEXT:
-				defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
-				if (defval.equals("")) {
-					if (opt.value != null && !opt.value.equals("")) {
-						defval = opt.value;
-					} else {
-						/* note that this gets remembered across redraws */
-						mAllFilled = false;
-					}
-				}
-				v.addView(newTextBlank(opt, defval));
-				hasUserOptions = true;
-				break;
-			case LibOpenConnect.OC_FORM_OPT_SELECT:
-				if (opt.choices.size() == 0) {
-					break;
-				}
+        mAlert.show();
 
-				int selection = 0;
-				if (opt == mForm.authgroupOpt) {
-					selection = mForm.authgroupSelection;
-				} else {
-					// do any servers actually use non-authgroup downdowns?
-					defval = noSave ? "" : getStringPref(formPfx + getOptDigest(opt));
-					for (int i = 0; i < opt.choices.size(); i++) {
-						if (opt.choices.get(i).name.equals(defval)) {
-							selection = i;
-						}
-					}
-				}
-				v.addView(newDropdown(opt, selection));
-				hasUserOptions = true;
-				break;
-			}
-		}
-		if (hasPassword && !noSave) {
-			boolean savePass = !getStringPref(formPfx + "savePass").equals("false");
-			savePassword = newSavePasswordView(savePass);
-			v.addView(savePassword);
-		}
+        TextView focus = mFirstEmptyText != null ? mFirstEmptyText : mFirstText;
+        if (focus != null) {
+            focus.append("");
+            focus.requestFocus();
+        }
+    }
 
-		if (batchMode == BATCH_MODE_ABORTED) {
-			finish(LibOpenConnect.OC_FORM_RESULT_CANCELLED);
-			return;
-		}
-
-		if ((batchMode == BATCH_MODE_EMPTY_ONLY && mAllFilled) ||
-			batchMode == BATCH_MODE_ENABLED || !hasUserOptions) {
-			saveAndStore();
-			finish(LibOpenConnect.OC_FORM_RESULT_OK);
-			return;
-		}
-
-		mAlert = new AlertDialog.Builder(mContext)
-				.setView(v)
-				.setTitle(mContext.getString(R.string.login_title, getStringPref("profile_name")))
-				.setPositiveButton(R.string.ok, h)
-				.setNegativeButton(R.string.cancel, h)
-				.create();
-		mAlert.setOnDismissListener(h);
-
-		if (mForm.message != null) {
-			// Truncate long messages so they don't ruin the dialog
-			String s = mForm.message.trim();
-			if (s.length() > 128) {
-				s = s.substring(0, 128);
-			}
-			if (s.length() > 0) {
-				mAlert.setMessage(s);
-			}
-		}
-
-		mAlert.show();
-
-		TextView focus = mFirstEmptyText != null ? mFirstEmptyText : mFirstText;
-		if (focus != null) {
-			focus.append("");
-			focus.requestFocus();
-		}
-	}
-
-	public void onStop(Context context) {
-		super.onStop(context);
-		if (mAlert != null) {
-			saveAndStore();
-			mAlert.dismiss();
-			mAlert = null;
-		}
-	}
+    public void onStop(Context context) {
+        super.onStop(context);
+        if (mAlert != null) {
+            saveAndStore();
+            mAlert.dismiss();
+            mAlert = null;
+        }
+    }
 }

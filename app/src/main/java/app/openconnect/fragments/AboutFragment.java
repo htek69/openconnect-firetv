@@ -36,32 +36,33 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.widget.TextView;
+
 import app.openconnect.R;
 
-public class AboutFragment extends Fragment  {
+public class AboutFragment extends Fragment {
 
-	public static final String TAG = "OpenConnect";
+    public static final String TAG = "OpenConnect";
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
-    		Bundle savedInstanceState) {
-    	Activity activity = getActivity();
+                             Bundle savedInstanceState) {
+        Activity activity = getActivity();
 
-    	View v = inflater.inflate(R.layout.about, container, false);
-    	TextView ver = (TextView) v.findViewById(R.id.version);
+        View v = inflater.inflate(R.layout.about, container, false);
+        TextView ver = v.findViewById(R.id.version);
 
-		try {
-			PackageInfo packageinfo = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0);
-			ver.setText("OpenConnect for Android v" + packageinfo.versionName);
-		} catch (NameNotFoundException e) {
-			Log.e(TAG, "can't retrieve package version");
-		}
+        try {
+            PackageInfo packageinfo = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0);
+            ver.setText("OpenConnect for Android v" + packageinfo.versionName);
+        } catch (NameNotFoundException e) {
+            Log.e(TAG, "can't retrieve package version");
+        }
 
-    	WebView contents = (WebView)v.findViewById(R.id.about_contents);
-    	contents.loadUrl("file:///android_asset/about.html");
-    	contents.setBackgroundColor(0);
+        WebView contents = v.findViewById(R.id.about_contents);
+        contents.loadUrl("file:///android_asset/about.html");
+        contents.setBackgroundColor(0);
 
-    	return v;
+        return v;
     }
 
 }
