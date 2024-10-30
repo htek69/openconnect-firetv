@@ -4,12 +4,13 @@ plugins {
 
 android {
     namespace "app.openconnect"
-    compileSdkVersion 24
     defaultConfig {
-        minSdkVersion 23
-        targetSdkVersion 33
-        versionCode 1119
-        versionName "1.11+multi"
+        minSdk 23
+        targetSdk 33
+        compileSdk 34
+
+        versionCode 1120
+        versionName "1.12"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
