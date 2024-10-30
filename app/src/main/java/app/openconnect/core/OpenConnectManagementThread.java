@@ -658,7 +658,8 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
         setState(STATE_CONNECTED);
         updateStatPref("connect");
 
-        mOC.setupDTLS(60);
+        if(getBoolPref("use_dtls"))
+            mOC.setupDTLS(60);
 
         while (true) {
             if (mOC.mainloop(300, LibOpenConnect.RECONNECT_INTERVAL_MIN) < 0) {
