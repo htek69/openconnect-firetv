@@ -35,20 +35,21 @@ import app.openconnect.TokenImportActivity;
 import app.openconnect.VpnProfile;
 import app.openconnect.core.ProfileManager;
 
+import android.app.Activity;
 import android.app.Dialog;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
+import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.preference.EditTextPreference;
 import android.preference.ListPreference;
-import android.preference.Preference;
 import android.preference.Preference.OnPreferenceClickListener;
+import android.preference.Preference;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceManager;
-import android.app.Activity;
-import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
-import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
 import android.widget.TextView;
@@ -187,17 +188,17 @@ public class ConnectionEditorFragment extends PreferenceFragment
             p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
                 @Override
                 public boolean onPreferenceClick(Preference preference) {
+                    // TODO: add a way to unset a file.
                     Integer idx = fileSelectMap.get(preference.getKey());
                     if (idx == null) {
                         return false;
                     }
 
-                    Intent startFC = new Intent(getActivity(), FileSelect.class);
-                    startFC.putExtra(FileSelect.START_DATA, Environment.getExternalStorageDirectory().getPath());
-                    startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
-                    startFC.putExtra(FileSelect.NO_INLINE_SELECTION, true);
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
 
-                    startActivityForResult(startFC, idx);
+                    startActivityForResult(intent, idx);
                     return false;
                 }
             });
@@ -229,17 +230,12 @@ public class ConnectionEditorFragment extends PreferenceFragment
             updatePref(prefs, "token_string");
             updatePref(prefs, "software_token");
         } else {
-            String path = data.getStringExtra(FileSelect.RESULT_DATA);
+            Uri path = data.getData();
             String key = ProfileManager.fileSelectKeys[idx];
             ShowTextPreference p = (ShowTextPreference) findPreference(key);
+            String new_path = ProfileManager.storeFilePref(mProfile, key, path);
 
-            if (path == null) {
-                ProfileManager.deleteFilePref(mProfile, key);
-            } else {
-                path = ProfileManager.storeFilePref(mProfile, key, path);
-            }
-
-            p.setText(path);
+            p.setText(new_path);
             updatePref(prefs, key);
         }
     }

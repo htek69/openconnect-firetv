@@ -24,6 +24,8 @@
 
 package app.openconnect;
 
+import java.io.FileNotFoundException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -117,7 +119,7 @@ public class TokenImportActivity extends Activity {
             if (URI != null) {
                 if (URI.getScheme().equals("file")) {
                     // User clicked on an sdtid file
-                    readFromFile(URI.getPath());
+                    readFromFile(URI);
                     return;
                 } else {
                     // We will have a URI string iff the user clicked on a recognized link from another
@@ -173,10 +175,10 @@ public class TokenImportActivity extends Activity {
         findViewById(R.id.token_string_import).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Intent startFC = new Intent(TokenImportActivity.this, FileSelect.class);
-                startFC.putExtra(FileSelect.START_DATA, Environment.getExternalStorageDirectory().getPath());
-                startFC.putExtra(FileSelect.NO_INLINE_SELECTION, true);
-                startActivityForResult(startFC, 0);
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                startActivityForResult(intent, 0);
             }
         });
 
@@ -363,11 +365,16 @@ public class TokenImportActivity extends Activity {
         }
     }
 
-    private boolean readFromFile(String filename) {
+    private boolean readFromFile(Uri file) {
         StringBuilder out = new StringBuilder();
 
-        String s = AssetExtractor.readStringFromFile(filename);
-        if (s == null || s.length() == 0) {
+        String s = null;
+        try {
+            InputStream fileStream = getContentResolver().openInputStream(file);
+            s = AssetExtractor.readStringFromStream(fileStream);
+        } catch (FileNotFoundException e) {}
+
+        if (s == null || s.isEmpty()) {
             return false;
         }
 
@@ -402,7 +409,7 @@ public class TokenImportActivity extends Activity {
     public void onActivityResult(int idx, int resultCode, Intent data) {
         super.onActivityResult(idx, resultCode, data);
         if (resultCode == Activity.RESULT_OK) {
-            readFromFile(data.getStringExtra(FileSelect.RESULT_DATA));
+            readFromFile(data.getData());
             return;
         }
         /* User canceled */
