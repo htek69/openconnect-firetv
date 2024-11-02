@@ -103,13 +103,13 @@ test/build-debug:
       - ./OpenConnect.debug.apk
 
 test/lint:
-  extends: .base_test_runner
+  extends: .base_report_runner
   allow_failure: true
   script:
     - ./gradlew lint --no-daemon --build-cache -s
 
 test/test:
-  extends: .base_test_runner
+  extends: .base_report_runner
   script:
     - ./gradlew test --no-daemon --build-cache -s
 
