@@ -35,13 +35,13 @@ import android.util.Log;
 
 public class DeviceStateReceiver extends BroadcastReceiver {
 
-    public static final String TAG = "OpenConnect";
+	public static final String TAG = "OpenConnect";
 
-    public static final String PREF_CHANGED = "app.openconnect.PREF_CHANGED";
+	public static final String PREF_CHANGED = "app.openconnect.PREF_CHANGED";
 
-    private final OpenVPNManagement mManagement;
+    private OpenVPNManagement mManagement;
 
-    private final SharedPreferences mPrefs;
+    private SharedPreferences mPrefs;
     private boolean mPauseOnScreenOff;
     private boolean mNetchangeReconnect;
 
@@ -64,34 +64,37 @@ public class DeviceStateReceiver extends BroadcastReceiver {
     }
 
     private void updatePauseState() {
-        boolean pause = mPauseOnScreenOff && mScreenOff && !mKeepaliveActive;
-        if (mNetworkOff) {
-            pause = true;
-        }
-        if (pause && !mPaused) {
-            Log.i(TAG, "pausing: mScreenOff=" + mScreenOff + " mNetworkOff=" + mNetworkOff);
-            mManagement.pause();
-        } else if (!pause && mPaused) {
-            Log.i(TAG, "resuming: mScreenOff=" + mScreenOff + " mNetworkOff=" + mNetworkOff);
-            mManagement.resume();
-        }
-        mPaused = pause;
+    	boolean pause = false;
+    	if (mPauseOnScreenOff && mScreenOff && !mKeepaliveActive) {
+    		pause = true;
+    	}
+    	if (mNetworkOff) {
+    		pause = true;
+    	}
+    	if (pause && !mPaused) {
+    		Log.i(TAG, "pausing: mScreenOff=" + mScreenOff + " mNetworkOff=" + mNetworkOff);
+    		mManagement.pause();
+    	} else if (!pause && mPaused) {
+    		Log.i(TAG, "resuming: mScreenOff=" + mScreenOff + " mNetworkOff=" + mNetworkOff);
+    		mManagement.resume();
+    	}
+    	mPaused = pause;
     }
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        String s = intent.getAction();
+    	String s = intent.getAction();
 
-        if (PREF_CHANGED.equals(s)) {
-            mManagement.prefChanged();
-            readPrefs();
+    	if (PREF_CHANGED.equals(s)) {
+    		mManagement.prefChanged();
+    		readPrefs();
             networkStateChange(context);
-        } else if (ConnectivityManager.CONNECTIVITY_ACTION.equals(s)) {
+    	} else if (ConnectivityManager.CONNECTIVITY_ACTION.equals(s)) {
             networkStateChange(context);
         } else if (Intent.ACTION_SCREEN_OFF.equals(s)) {
-            mScreenOff = true;
+        	mScreenOff = true;
         } else if (Intent.ACTION_SCREEN_ON.equals(s)) {
-            mScreenOff = false;
+        	mScreenOff = false;
         }
         updatePauseState();
     }
@@ -102,22 +105,22 @@ public class DeviceStateReceiver extends BroadcastReceiver {
         NetworkInfo networkInfo = conn.getActiveNetworkInfo();
 
         if (networkInfo == null || networkInfo.getState() != State.CONNECTED) {
-            mNetworkOff = true;
+        	mNetworkOff = true;
         } else {
-            int networkType = networkInfo.getType();
-            if (mNetworkType != -1 && mNetworkType != networkType) {
-                if (!mPaused && mNetchangeReconnect) {
-                    Log.i(TAG, "reconnecting due to network type change");
-                    mManagement.reconnect();
-                }
-            }
-            mNetworkType = networkType;
-            mNetworkOff = false;
+        	int networkType = networkInfo.getType();
+        	if (mNetworkType != -1 && mNetworkType != networkType) {
+        		if (!mPaused && mNetchangeReconnect) {
+        			Log.i(TAG, "reconnecting due to network type change");
+        			mManagement.reconnect();
+        		}
+        	}
+        	mNetworkType = networkType;
+        	mNetworkOff = false;
         }
     }
 
     public void setKeepalive(boolean active) {
-        mKeepaliveActive = active;
-        updatePauseState();
+    	mKeepaliveActive = active;
+    	updatePauseState();
     }
 }

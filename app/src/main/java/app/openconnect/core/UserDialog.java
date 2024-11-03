@@ -31,129 +31,130 @@ import android.content.SharedPreferences;
 import android.util.Log;
 
 public abstract class UserDialog {
-    public static final String TAG = "OpenConnect";
-    private static final HashMap<String, DeferredPref> mDeferredPrefs = new HashMap<String, DeferredPref>();
-    protected SharedPreferences mPrefs;
-    private Object mResult;
-    private boolean mDialogUp;
+	public static final String TAG = "OpenConnect";
 
-    public UserDialog(SharedPreferences prefs) {
-        mPrefs = prefs;
-    }
+	private Object mResult;
+	private boolean mDialogUp;
+	protected SharedPreferences mPrefs;
 
-    public static void clearDeferredPrefs() {
-        mDeferredPrefs.clear();
-    }
+	private static HashMap<String,DeferredPref> mDeferredPrefs = new HashMap<String,DeferredPref>();
 
-    public static void writeDeferredPrefs() {
-        for (DeferredPref p : mDeferredPrefs.values()) {
-            p.commit();
-        }
-        mDeferredPrefs.clear();
-    }
+	public UserDialog(SharedPreferences prefs) {
+		mPrefs = prefs;
+	}
 
-    public Object waitForResponse() {
-        while (mResult == null) {
-            synchronized (this) {
-                try {
-                    this.wait();
-                } catch (InterruptedException e) {
-                }
-            }
-        }
-        return mResult;
-    }
+	public Object waitForResponse() {
+		while (mResult == null) {
+			synchronized (this) {
+				try {
+					this.wait();
+				} catch (InterruptedException e) {
+				}
+			}
+		}
+		return mResult;
+	}
 
-    protected void finish(Object result) {
-        synchronized (this) {
-            if (mDialogUp) {
-                mResult = result;
-                this.notifyAll();
-            }
-        }
-    }
+	protected void finish(Object result) {
+		synchronized (this) {
+			if (mDialogUp) {
+				mResult = result;
+				this.notifyAll();
+			}
+		}
+	}
 
-    protected void setStringPref(String key, String value) {
-        mDeferredPrefs.put(key, new DeferredStringPref(mPrefs, key, value));
-    }
+	private abstract class DeferredPref {
+		protected SharedPreferences mPrefs;
+		protected String mKey;
 
-    protected String getStringPref(String key) {
-        try {
-            DeferredStringPref p = (DeferredStringPref) mDeferredPrefs.get(key);
-            return p.value;
-        } catch (ClassCastException e) {
-        } catch (NullPointerException e) {
-        }
-        return mPrefs.getString(key, "");
-    }
+		public DeferredPref(SharedPreferences prefs, String name) {
+			mPrefs = prefs;
+			mKey = name;
+		}
+		public abstract void commit();
+	}
 
-    protected void setBooleanPref(String key, boolean value) {
-        mDeferredPrefs.put(key, new DeferredBooleanPref(mPrefs, key, value));
-    }
+	private class DeferredStringPref extends DeferredPref {
+		public String value;
 
-    protected boolean getBooleanPref(String key) {
-        try {
-            DeferredBooleanPref p = (DeferredBooleanPref) mDeferredPrefs.get(key);
-            return p.value;
-        } catch (ClassCastException e) {
-        } catch (NullPointerException e) {
-        }
-        return mPrefs.getBoolean(key, false);
-    }
+		public DeferredStringPref(SharedPreferences prefs, String name, String newValue) {
+			super(prefs, name);
+			value = newValue;
+		}
 
-    // Render the dialog; called from the UI thread.  May not block.
-    public void onStart(Context context) {
-        mDialogUp = true;
-        Log.d(TAG, "rendering user dialog");
-    }
+		public void commit() {
+			mPrefs.edit().putString(mKey, value).commit();
+		}
+	}
 
-    // Dismiss a pending dialog, e.g. if the Activity is being torn down.  Called from the UI thread.
-    public void onStop(Context context) {
-        mDialogUp = false;
-        Log.d(TAG, "tearing down user dialog");
-    }
+	private class DeferredBooleanPref extends DeferredPref {
+		public boolean value;
 
-    // See if the dialog can be safely skipped based on SharedPreferences.  Called from the background thread.
-    public Object earlyReturn() {
-        Log.d(TAG, (mResult == null ? "not skipping" : "skipping") + " user dialog");
-        return mResult;
-    }
+		public DeferredBooleanPref(SharedPreferences prefs, String name, boolean newValue) {
+			super(prefs, name);
+			value = newValue;
+		}
 
-    private abstract class DeferredPref {
-        protected SharedPreferences mPrefs;
-        protected String mKey;
+		public void commit() {
+			mPrefs.edit().putBoolean(mKey, value).commit();
+		}
+	}
 
-        public DeferredPref(SharedPreferences prefs, String name) {
-            mPrefs = prefs;
-            mKey = name;
-        }
+	public static void clearDeferredPrefs() {
+		mDeferredPrefs.clear();
+	}
 
-        public abstract void commit();
-    }
+	public static void writeDeferredPrefs() {
+		for (DeferredPref p : mDeferredPrefs.values()) {
+			p.commit();
+		}
+		mDeferredPrefs.clear();
+	}
 
-    private class DeferredStringPref extends DeferredPref {
-        public String value;
+	protected void setStringPref(String key, String value) {
+		mDeferredPrefs.put(key, new DeferredStringPref(mPrefs, key, value));
+	}
 
-        public DeferredStringPref(SharedPreferences prefs, String name, String newValue) {
-            super(prefs, name);
-            value = newValue;
-        }
+	protected String getStringPref(String key) {
+		try {
+			DeferredStringPref p = (DeferredStringPref)mDeferredPrefs.get(key);
+			return p.value;
+		} catch (ClassCastException e) {
+		} catch (NullPointerException e) {
+		}
+		return mPrefs.getString(key, "");
+	}
 
-        public void commit() {
-            mPrefs.edit().putString(mKey, value).commit();
-        }
-    }
+	protected void setBooleanPref(String key, boolean value) {
+		mDeferredPrefs.put(key, new DeferredBooleanPref(mPrefs, key, value));
+	}
 
-    private class DeferredBooleanPref extends DeferredPref {
-        public boolean value;
+	protected boolean getBooleanPref(String key) {
+		try {
+			DeferredBooleanPref p = (DeferredBooleanPref)mDeferredPrefs.get(key);
+			return p.value;
+		} catch (ClassCastException e) {
+		} catch (NullPointerException e) {
+		}
+		return mPrefs.getBoolean(key, false);
+	}
 
-        public DeferredBooleanPref(SharedPreferences prefs, String name, boolean newValue) {
-            super(prefs, name);
-            value = newValue;
-        }
+	// Render the dialog; called from the UI thread.  May not block. 
+	public void onStart(Context context) {
+		mDialogUp = true;
+		Log.d(TAG, "rendering user dialog");
+	}
 
-        public void commit() {
-            mPrefs.edit().putBoolean(mKey, value).commit();
-        }
-    }
+	// Dismiss a pending dialog, e.g. if the Activity is being torn down.  Called from the UI thread.
+	public void onStop(Context context) {
+		mDialogUp = false;
+		Log.d(TAG, "tearing down user dialog");
+	}
+
+	// See if the dialog can be safely skipped based on SharedPreferences.  Called from the background thread.
+	public Object earlyReturn() {
+		Log.d(TAG, (mResult == null ? "not skipping" : "skipping") + " user dialog");
+		return mResult;
+	}
 }

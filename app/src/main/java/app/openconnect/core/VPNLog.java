@@ -43,158 +43,159 @@ import android.widget.TextView;
 
 public class VPNLog {
 
-    public static final String TAG = "OpenConnect";
+	public static final String TAG = "OpenConnect";
 
-    public static final String DEFAULT_TIME_FORMAT = "short";
+	public static final String DEFAULT_TIME_FORMAT = "short";
 
-    public static final int LEVEL_ERR = LibOpenConnect.PRG_ERR;
-    public static final int LEVEL_INFO = LibOpenConnect.PRG_INFO;
-    public static final int LEVEL_DEBUG = LibOpenConnect.PRG_DEBUG;
-    public static final int LEVEL_TRACE = LibOpenConnect.PRG_TRACE;
+	public static final int LEVEL_ERR = LibOpenConnect.PRG_ERR;
+	public static final int LEVEL_INFO = LibOpenConnect.PRG_INFO;
+	public static final int LEVEL_DEBUG = LibOpenConnect.PRG_DEBUG;
+	public static final int LEVEL_TRACE = LibOpenConnect.PRG_TRACE;
 
-    private static final int MAX_ENTRIES = 512;
-    private static VPNLog mInstance;
-    private final ArrayList<VPNLogItem> circ = new ArrayList<VPNLogItem>();
-    private LogArrayAdapter mArrayAdapter;
+	private static final int MAX_ENTRIES = 512;
+	private ArrayList<VPNLogItem> circ = new ArrayList<VPNLogItem>();
+	private LogArrayAdapter mArrayAdapter;
 
-    public VPNLog() {
-        VPNLog.mInstance = this;
-    }
+	private static VPNLog mInstance;
 
-    // this is all kind of hacky but we can't expect ACRA to establish a service
-    // connection to dump the application log (especially post-crash)
-    public static String dumpLast() {
-        if (mInstance == null) {
-            return "";
-        } else {
-            return mInstance.dump();
-        }
-    }
+	public class LogArrayAdapter extends BaseAdapter {
 
-    private void updateAdapter() {
-        if (mArrayAdapter != null) {
-            mArrayAdapter.notifyDataSetChanged();
-        }
-    }
+		private Context mContext;
+		private String mTimeFormat = "short";
 
-    public void add(int level, String msg) {
-        VPNLogItem li = new VPNLogItem(level, msg);
-        circ.add(li);
-        while (circ.size() > MAX_ENTRIES) {
-            circ.remove(0);
-        }
-        updateAdapter();
-    }
+		public LogArrayAdapter(Context context) {
+			mContext = context;
+		}
 
-    public void clear() {
-        circ.clear();
-        updateAdapter();
-    }
+		@Override
+		public int getCount() {
+			return circ.size();
+		}
 
-    public String dump() {
-        StringBuilder ret = new StringBuilder();
-        for (Object s : circ.toArray()) {
-            ret.append(s.toString() + "\n");
-        }
-        return ret.toString();
-    }
+		@Override
+		public Object getItem(int position) {
+			return circ.get(position);
+		}
 
-    public int saveToFile(String path) {
-        int ret = -1;
+		@Override
+		public long getItemId(int position) {
+			return position;
+		}
 
-        try {
-            ObjectOutputStream s = new ObjectOutputStream(new FileOutputStream(path));
+		@Override
+		public View getView(int position, View convertView, ViewGroup parent) {
+			TextView v;
+			if (convertView != null && convertView instanceof TextView) {
+				v = (TextView)convertView;
+			} else {
+				v = new TextView(mContext);
+			}
 
-            s.writeObject(circ.size());
-            for (VPNLogItem i : circ) {
-                s.writeObject(i);
-            }
-            s.close();
-            ret = 0;
-        } catch (FileNotFoundException e) {
-            Log.w(TAG, "file not found writing " + path, e);
-        } catch (IOException e) {
-            Log.w(TAG, "I/O error writing " + path, e);
-        }
-        return ret;
-    }
+			VPNLogItem li = (VPNLogItem)getItem(position);
+			v.setText(li.format(mContext, mTimeFormat));
+			return v;
+		}
 
-    public int restoreFromFile(String path) {
-        int ret = -1;
+		public void setTimeFormat(String timeFormat) {
+			mTimeFormat = timeFormat;
+			notifyDataSetChanged();
+		}
+	};
 
-        try {
-            ObjectInputStream s = new ObjectInputStream(new FileInputStream(path));
-            int records = (Integer) s.readObject();
+	public VPNLog() {
+		VPNLog.mInstance = this;
+	}
 
-            circ.clear();
-            for (; records > 0; records--) {
-                circ.add((VPNLogItem) s.readObject());
-            }
-            s.close();
-            ret = 0;
-        } catch (FileNotFoundException e) {
-            Log.d(TAG, "file not found reading " + path);
-        } catch (IOException e) {
-            Log.w(TAG, "I/O error reading " + path, e);
-        } catch (ClassNotFoundException e) {
-            Log.w(TAG, "Class not found reading " + path, e);
-        }
-        return ret;
-    }
+	private void updateAdapter() {
+		if (mArrayAdapter != null) {
+			mArrayAdapter.notifyDataSetChanged();
+		}
+	}
 
-    public LogArrayAdapter getArrayAdapter(Context mContext) {
-        if (mArrayAdapter != null) {
-            Log.w(TAG, "duplicate LogArrayAdapter registration");
-        }
-        mArrayAdapter = new LogArrayAdapter(mContext);
-        return mArrayAdapter;
-    }
+	public void add(int level, String msg) {
+		VPNLogItem li = new VPNLogItem(level, msg);
+		circ.add(li);
+		while (circ.size() > MAX_ENTRIES) {
+			circ.remove(0);
+		}
+		updateAdapter();
+	}
 
-    public void putArrayAdapter(LogArrayAdapter arrayAdapter) {
-        mArrayAdapter = null;
-    }
+	public void clear() {
+		circ.clear();
+		updateAdapter();
+	}
 
-    public class LogArrayAdapter extends BaseAdapter {
+	public String dump() {
+		StringBuilder ret = new StringBuilder();
+		for (Object s : circ.toArray()) {
+			ret.append(s.toString() + "\n");
+		}
+		return ret.toString();
+	}
 
-        private final Context mContext;
-        private String mTimeFormat = "short";
+	// this is all kind of hacky but we can't expect ACRA to establish a service
+	// connection to dump the application log (especially post-crash)
+	public static String dumpLast() {
+		if (mInstance == null) {
+			return "";
+		} else {
+			return mInstance.dump();
+		}
+	}
 
-        public LogArrayAdapter(Context context) {
-            mContext = context;
-        }
+	public int saveToFile(String path) {
+		int ret = -1;
 
-        @Override
-        public int getCount() {
-            return circ.size();
-        }
+		try {
+			ObjectOutputStream s = new ObjectOutputStream(new FileOutputStream(path));
 
-        @Override
-        public Object getItem(int position) {
-            return circ.get(position);
-        }
+			s.writeObject((Integer)circ.size());
+			for (VPNLogItem i : circ) {
+				s.writeObject(i);
+			}
+			s.close();
+			ret = 0;
+		} catch (FileNotFoundException e) {
+			Log.w(TAG, "file not found writing " + path, e);
+		} catch (IOException e) {
+			Log.w(TAG, "I/O error writing " + path, e);
+		}
+		return ret;
+	}
 
-        @Override
-        public long getItemId(int position) {
-            return position;
-        }
+	public int restoreFromFile(String path) {
+		int ret = -1;
 
-        @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            TextView v;
-            if (convertView != null && convertView instanceof TextView) {
-                v = (TextView) convertView;
-            } else {
-                v = new TextView(mContext);
-            }
+		try {
+			ObjectInputStream s = new ObjectInputStream(new FileInputStream(path));
+			int records = (Integer)s.readObject();
 
-            VPNLogItem li = (VPNLogItem) getItem(position);
-            v.setText(li.format(mContext, mTimeFormat));
-            return v;
-        }
+			circ.clear();
+			for (; records > 0; records--) {
+				circ.add((VPNLogItem)s.readObject());
+			}
+			s.close();
+			ret = 0;
+		} catch (FileNotFoundException e) {
+			Log.d(TAG, "file not found reading " + path);
+		} catch (IOException e) {
+			Log.w(TAG, "I/O error reading " + path, e);
+		} catch (ClassNotFoundException e) {
+			Log.w(TAG, "Class not found reading " + path, e);
+		}
+		return ret;
+	}
 
-        public void setTimeFormat(String timeFormat) {
-            mTimeFormat = timeFormat;
-            notifyDataSetChanged();
-        }
-    }
+	public LogArrayAdapter getArrayAdapter(Context mContext) {
+		if (mArrayAdapter != null) {
+			Log.w(TAG, "duplicate LogArrayAdapter registration");
+		}
+		mArrayAdapter = new LogArrayAdapter(mContext);
+		return mArrayAdapter;
+	}
+
+	public void putArrayAdapter(LogArrayAdapter arrayAdapter) {
+		mArrayAdapter = null;
+	}
 }

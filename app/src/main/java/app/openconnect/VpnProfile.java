@@ -39,16 +39,26 @@ public class VpnProfile implements Comparable<VpnProfile> {
 
     private UUID mUuid;
 
+    private void loadPrefs(SharedPreferences prefs) {
+    	mPrefs = prefs;
+
+    	String uuid = mPrefs.getString("profile_uuid", null);
+    	if (uuid != null) {
+    		mUuid = UUID.fromString(uuid);
+    	}
+    	mName = mPrefs.getString("profile_name", null);
+    }
+
     public VpnProfile(SharedPreferences prefs, String uuid, String name) {
-        prefs.edit()
-                .putString("profile_uuid", uuid)
-                .putString("profile_name", name)
-                .commit();
-        loadPrefs(prefs);
+    	prefs.edit()
+    		.putString("profile_uuid", uuid)
+    		.putString("profile_name", name)
+    		.commit();
+    	loadPrefs(prefs);
     }
 
     public VpnProfile(SharedPreferences prefs) {
-        loadPrefs(prefs);
+    	loadPrefs(prefs);
     }
 
     public VpnProfile(String name, String uuid) {
@@ -56,18 +66,11 @@ public class VpnProfile implements Comparable<VpnProfile> {
         mName = name;
     }
 
-    private void loadPrefs(SharedPreferences prefs) {
-        mPrefs = prefs;
-
-        String uuid = mPrefs.getString("profile_uuid", null);
-        if (uuid != null) {
-            mUuid = UUID.fromString(uuid);
-        }
-        mName = mPrefs.getString("profile_name", null);
-    }
-
     public boolean isValid() {
-        return mName != null && mUuid != null;
+    	if (mName == null || mUuid == null) {
+    		return false;
+    	}
+    	return true;
     }
 
     public UUID getUUID() {
@@ -89,11 +92,11 @@ public class VpnProfile implements Comparable<VpnProfile> {
         return mUuid.toString();
     }
 
-    @Override
-    public int compareTo(VpnProfile arg0) {
-        Locale def = Locale.getDefault();
-        return getName().toUpperCase(def).compareTo(arg0.getName().toUpperCase(def));
-    }
+	@Override
+	public int compareTo(VpnProfile arg0) {
+		Locale def = Locale.getDefault();
+		return getName().toUpperCase(def).compareTo(arg0.getName().toUpperCase(def));
+	}
 }
 
 

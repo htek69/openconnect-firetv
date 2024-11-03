@@ -26,7 +26,6 @@
 package app.openconnect;
 
 import app.openconnect.core.X509Utils;
-
 import android.app.Fragment;
 import android.content.Context;
 import android.content.Intent;
@@ -42,86 +41,87 @@ import android.widget.TextView;
 public class FileSelectLayout extends LinearLayout implements OnClickListener {
 
     private final boolean mIsCertificate;
-    private final TextView mDataView;
-    private String mData;
-    private Fragment mFragment;
-    private int mTaskId;
-    private final Button mSelectButton;
-    private boolean mBase64Encode;
-    private final String mTitle;
-    private boolean mShowClear;
-    private final TextView mDataDetails;
+    private TextView mDataView;
+	private String mData;
+	private Fragment mFragment;
+	private int mTaskId;
+	private Button mSelectButton;
+	private boolean mBase64Encode;
+	private String mTitle;
+	private boolean mShowClear;
+	private TextView mDataDetails;
 
-    public FileSelectLayout(Context context, AttributeSet attrset) {
-        super(context, attrset);
-        inflate(getContext(), R.layout.file_select, this);
+	public FileSelectLayout( Context context, AttributeSet attrset) {
+		super(context,attrset);
+		inflate(getContext(), R.layout.file_select, this);
 
-        TypedArray ta = context.obtainStyledAttributes(attrset, R.styleable.FileSelectLayout);
+		TypedArray ta = context.obtainStyledAttributes(attrset, R.styleable.FileSelectLayout);
 
-        mTitle = ta.getString(R.styleable.FileSelectLayout_title);
-        mIsCertificate = ta.getBoolean(R.styleable.FileSelectLayout_certificate, true);
+		mTitle = ta.getString(R.styleable.FileSelectLayout_title);
+        mIsCertificate = ta.getBoolean(R.styleable.FileSelectLayout_certificate,true);
 
-        TextView tview = findViewById(R.id.file_title);
-        tview.setText(mTitle);
+		TextView tview = (TextView) findViewById(R.id.file_title);
+		tview.setText(mTitle);
 
-        mDataView = findViewById(R.id.file_selected_item);
-        mDataDetails = findViewById(R.id.file_selected_description);
-        mSelectButton = findViewById(R.id.file_select_button);
-        mSelectButton.setOnClickListener(this);
+		mDataView = (TextView) findViewById(R.id.file_selected_item);
+		mDataDetails = (TextView) findViewById(R.id.file_selected_description);
+		mSelectButton = (Button) findViewById(R.id.file_select_button);
+		mSelectButton.setOnClickListener(this);
 
-        ta.recycle();
-    }
+		ta.recycle();
+	}
 
-    public void setFragment(Fragment fragment, int i) {
-        mTaskId = i;
-        mFragment = fragment;
-    }
+	public void setFragment(Fragment fragment, int i)
+	{
+		mTaskId = i;
+		mFragment = fragment;
+	}
 
-    public void getCertificateFileDialog() {
-        Intent startFC = new Intent(getContext(), FileSelect.class);
-        startFC.putExtra(FileSelect.START_DATA, mData);
-        startFC.putExtra(FileSelect.WINDOW_TITLE, mTitle);
-        if (mBase64Encode)
-            startFC.putExtra(FileSelect.DO_BASE64_ENCODE, true);
-        if (mShowClear)
-            startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
-        mFragment.startActivityForResult(startFC, mTaskId);
-    }
+	public void getCertificateFileDialog() {
+		Intent startFC = new Intent(getContext(),FileSelect.class);
+		startFC.putExtra(FileSelect.START_DATA, mData);
+		startFC.putExtra(FileSelect.WINDOW_TITLE,mTitle);
+		if(mBase64Encode)
+			startFC.putExtra(FileSelect.DO_BASE64_ENCODE, true);
+		if(mShowClear)
+			startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
+		mFragment.startActivityForResult(startFC,mTaskId);
+	}
 
 
-    public String getData() {
-        return mData;
-    }
+	public String getData() {
+		return mData;
+	}
 
-    public void setData(String data, Context c) {
-        mData = data;
-        if (data == null) {
-            mDataView.setText(mFragment.getString(R.string.no_data));
-            mDataDetails.setText("");
-        } else {
-            if (mData.startsWith(VpnProfile.INLINE_TAG))
-                mDataView.setText(R.string.inline_file_data);
-            else
-                mDataView.setText(data);
-            if (mIsCertificate)
-                mDataDetails.setText(X509Utils.getCertificateFriendlyName(c, data));
-        }
+	public void setData(String data, Context c) {
+		mData = data;
+		if(data==null) { 
+			mDataView.setText(mFragment.getString(R.string.no_data));
+			mDataDetails.setText("");
+		}else {
+			if(mData.startsWith(VpnProfile.INLINE_TAG))
+				mDataView.setText(R.string.inline_file_data);
+			else
+				mDataView.setText(data);
+            if(mIsCertificate)
+			    mDataDetails.setText(X509Utils.getCertificateFriendlyName(c,data));
+		}
 
-    }
+	}
 
-    @Override
-    public void onClick(View v) {
-        if (v == mSelectButton) {
-            getCertificateFileDialog();
-        }
-    }
+	@Override
+	public void onClick(View v) {
+		if(v == mSelectButton) {
+			getCertificateFileDialog();
+		}
+	}
 
-    public void setBase64Encode() {
-        mBase64Encode = true;
-    }
+	public void setBase64Encode() {
+		mBase64Encode =true;
+	}
 
-    public void setShowClear() {
-        mShowClear = true;
-    }
+	public void setShowClear() {
+		mShowClear=true;
+	}
 
 }

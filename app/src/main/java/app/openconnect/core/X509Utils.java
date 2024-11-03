@@ -30,13 +30,11 @@ import android.text.TextUtils;
 
 import app.openconnect.R;
 import app.openconnect.VpnProfile;
-
 import org.spongycastle.util.io.pem.PemObject;
 import org.spongycastle.util.io.pem.PemReader;
 
 
 import javax.security.auth.x500.X500Principal;
-
 import java.io.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
@@ -44,61 +42,63 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 
 public class X509Utils {
-    public static Certificate getCertificateFromFile(String certfilename) throws FileNotFoundException, CertificateException {
-        CertificateFactory certFact = CertificateFactory.getInstance("X.509");
+	public static Certificate getCertificateFromFile(String certfilename) throws FileNotFoundException, CertificateException {
+		CertificateFactory certFact = CertificateFactory.getInstance("X.509");
 
-        InputStream inStream;
+		InputStream inStream;
 
-        if (certfilename.startsWith(VpnProfile.INLINE_TAG)) {
+		if(certfilename.startsWith(VpnProfile.INLINE_TAG)) {
             // The java certificate reader is ... kind of stupid
             // It does NOT ignore chars before the --BEGIN ...
             int subIndex = certfilename.indexOf("-----BEGIN CERTIFICATE-----");
-            subIndex = Math.max(0, subIndex);
-            inStream = new ByteArrayInputStream(certfilename.substring(subIndex).getBytes());
+            subIndex = Math.max(0,subIndex);
+			inStream = new ByteArrayInputStream(certfilename.substring(subIndex).getBytes());
 
 
         } else {
-            inStream = new FileInputStream(certfilename);
+			inStream = new FileInputStream(certfilename);
         }
 
 
-        return certFact.generateCertificate(inStream);
-    }
+		return certFact.generateCertificate(inStream);
+	}
 
-    public static PemObject readPemObjectFromFile(String keyfilename) throws IOException {
+	public static PemObject readPemObjectFromFile (String keyfilename) throws IOException {
 
-        Reader inStream;
+		Reader inStream;
 
-        if (keyfilename.startsWith(VpnProfile.INLINE_TAG))
-            inStream = new StringReader(keyfilename.replace(VpnProfile.INLINE_TAG, ""));
-        else
-            inStream = new FileReader(new File(keyfilename));
+		if(keyfilename.startsWith(VpnProfile.INLINE_TAG))
+			inStream = new StringReader(keyfilename.replace(VpnProfile.INLINE_TAG,""));
+		else 
+			inStream = new FileReader(new File(keyfilename));
 
-        PemReader pr = new PemReader(inStream);
-        PemObject r = pr.readPemObject();
-        pr.close();
-        return r;
-    }
+		PemReader pr = new PemReader(inStream);
+		PemObject r = pr.readPemObject();
+		pr.close();
+		return r;
+	}
 
 
-    public static String getCertificateFriendlyName(Context c, String filename) {
-        if (!TextUtils.isEmpty(filename)) {
-            try {
-                X509Certificate cert = (X509Certificate) getCertificateFromFile(filename);
+
+
+	public static String getCertificateFriendlyName (Context c, String filename) {
+		if(!TextUtils.isEmpty(filename)) {
+			try {
+				X509Certificate cert = (X509Certificate) getCertificateFromFile(filename);
 
                 return getCertificateFriendlyName(cert);
 
-            } catch (Exception e) {
-                OpenVPN.logError("Could not read certificate" + e.getLocalizedMessage());
-            }
-        }
-        return c.getString(R.string.cannotparsecert);
-    }
+			} catch (Exception e) {
+				OpenVPN.logError("Could not read certificate" + e.getLocalizedMessage());
+			}
+		}
+		return c.getString(R.string.cannotparsecert);
+	}
 
     public static String getCertificateFriendlyName(X509Certificate cert) {
         X500Principal principal = cert.getSubjectX500Principal();
         //byte[] encodedSubject = principal.getEncoded();
-        String friendlyName = null;
+        String friendlyName=null;
 
         /* Hack so we do not have to ship a whole Spongy/bouncycastle */
         /*
@@ -131,7 +131,7 @@ public class X509Utils {
         */
 
         /* Fallback if the reflection method did not work */
-        if (friendlyName == null)
+        if(friendlyName==null)
             friendlyName = principal.getName();
 
 
@@ -139,7 +139,7 @@ public class X509Utils {
         // See: http://code.google.com/p/android/issues/detail?id=21531
 
         String[] parts = friendlyName.split(",");
-        for (int i = 0; i < parts.length; i++) {
+        for (int i=0;i<parts.length;i++){
             String part = parts[i];
             if (part.startsWith("1.2.840.113549.1.9.1=#16")) {
                 parts[i] = "email=" + ia5decode(part.replace("1.2.840.113549.1.9.1=#16", ""));
@@ -150,7 +150,7 @@ public class X509Utils {
     }
 
     public static boolean isPrintableChar(char c) {
-        Character.UnicodeBlock block = Character.UnicodeBlock.of(c);
+        Character.UnicodeBlock block = Character.UnicodeBlock.of( c );
         return (!Character.isISOControl(c)) &&
                 block != null &&
                 block != Character.UnicodeBlock.SPECIALS;
@@ -158,13 +158,13 @@ public class X509Utils {
 
     private static String ia5decode(String ia5string) {
         String d = "";
-        for (int i = 1; i < ia5string.length(); i = i + 2) {
-            String hexstr = ia5string.substring(i - 1, i + 1);
-            char c = (char) Integer.parseInt(hexstr, 16);
+        for (int i=1;i<ia5string.length();i=i+2) {
+            String hexstr = ia5string.substring(i-1,i+1);
+            char c = (char) Integer.parseInt(hexstr,16);
             if (isPrintableChar(c)) {
-                d += c;
-            } else if (i == 1 && (c == 0x12 || c == 0x1b)) {
-                // ignore
+                d+=c;
+            } else if (i==1 && (c==0x12 || c==0x1b)) {
+                ;   // ignore
             } else {
                 d += "\\x" + hexstr;
             }

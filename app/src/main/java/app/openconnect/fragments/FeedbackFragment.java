@@ -42,144 +42,147 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.View.OnClickListener;
 import android.widget.Button;
-
 import app.openconnect.FragActivity;
 import app.openconnect.R;
 
 public class FeedbackFragment extends Fragment {
 
-    public static final String TAG = "OpenConnect";
-    public static final String marketURI = "market://details?id=app.openconnect";
+	public static final String TAG = "OpenConnect";
+	public static final String marketURI = "market://details?id=app.openconnect";
 
-    /* ask for feedback exactly once, after NAGDAYS && NAGUSES */
-    private static final int nagDays = 14;
-    private static final long nagUses = 10;
-
-    private static void recordNag(Context ctx) {
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
-        sp.edit().putBoolean("feedback_nagged", true).commit();
-    }
-
-    private static boolean isNagOK(Context ctx) {
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
-
-        if (sp.getBoolean("feedback_nagged", false)) {
-            return false;
-        }
-
-        long first = sp.getLong("first_use", -1);
-        if (first == -1) {
-            return false;
-        }
-
-        Calendar now = Calendar.getInstance();
-        Calendar nagDay = Calendar.getInstance();
-        nagDay.setTimeInMillis(first);
-        nagDay.add(Calendar.DATE, nagDays);
-        if (!now.after(nagDay)) {
-            return false;
-        }
-
-        long numUses = sp.getLong("num_uses", 0);
-        return numUses >= nagUses;
-    }
-
-    public static void feedbackNag(Context ctx) {
-        if (!isNagOK(ctx)) {
-            return;
-        }
-        recordNag(ctx);
-
-        Intent intent = new Intent(ctx, FragActivity.class);
-        intent.putExtra(FragActivity.EXTRA_FRAGMENT_NAME, "FeedbackFragment");
-        ctx.startActivity(intent);
-    }
-
-    public static void recordUse(Context ctx, boolean success) {
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
-        if (sp.getLong("first_use", -1) == -1) {
-            long now = Calendar.getInstance().getTimeInMillis();
-            sp.edit().putLong("first_use", now).apply();
-        }
-        if (!success) {
-            return;
-        }
-
-        long numUses = sp.getLong("num_uses", 0);
-        sp.edit().putLong("num_uses", numUses + 1).apply();
-    }
-
-    public static void recordProfileAdd(Context ctx) {
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
-        long count = sp.getLong("num_profiles_added", 0) + 1;
-        sp.edit().putLong("num_profiles_added", count).apply();
-    }
+	/* ask for feedback exactly once, after NAGDAYS && NAGUSES */
+	private static final int nagDays = 14;
+	private static final long nagUses = 10;
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
-                             Bundle savedInstanceState) {
+    		Bundle savedInstanceState) {
 
-        View v = inflater.inflate(R.layout.feedback, container, false);
+    	View v = inflater.inflate(R.layout.feedback, container, false);
 
-        final Activity act = getActivity();
-        Button b;
+    	final Activity act = getActivity();
+    	Button b;
 
-        /*
-         * Adapted from:
-         * http://www.techrepublic.com/blog/software-engineer/get-more-positive-ratings-for-your-app-in-google-play/1111/
-         */
-        b = v.findViewById(R.id.i_love_it);
-        b.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View arg0) {
-                recordNag(act);
+    	/*
+    	 * Adapted from:
+    	 * http://www.techrepublic.com/blog/software-engineer/get-more-positive-ratings-for-your-app-in-google-play/1111/
+    	 */
+    	b = (Button)v.findViewById(R.id.i_love_it);
+    	b.setOnClickListener(new OnClickListener() {
+			@Override
+			public void onClick(View arg0) {
+				recordNag(act);
 
-                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(marketURI));
-                try {
-                    startActivity(i);
-                } catch (ActivityNotFoundException e) {
-                    /* not all devices have a handler for market:// URIs registered */
-                }
-                act.finish();
-            }
-        });
+				Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(marketURI));
+				try {
+					startActivity(i);
+				} catch (ActivityNotFoundException e) {
+					/* not all devices have a handler for market:// URIs registered */
+				}
+				act.finish();
+			}
+    	});
 
-        b = v.findViewById(R.id.needs_work);
-        b.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View arg0) {
-                recordNag(act);
+    	b = (Button)v.findViewById(R.id.needs_work);
+    	b.setOnClickListener(new OnClickListener() {
+			@Override
+			public void onClick(View arg0) {
+				recordNag(act);
 
-                String ver = "???";
-                try {
-                    PackageInfo packageinfo = act.getPackageManager().getPackageInfo(act.getPackageName(), 0);
-                    ver = packageinfo.versionName;
-                } catch (NameNotFoundException e) {
-                }
-                Intent i = new Intent(android.content.Intent.ACTION_SEND);
+				String ver = "???";
+				try {
+					PackageInfo packageinfo = act.getPackageManager().getPackageInfo(act.getPackageName(), 0);
+					ver = packageinfo.versionName;
+				} catch (NameNotFoundException e) {
+				}
+				Intent i = new Intent(android.content.Intent.ACTION_SEND);
 
-                i.putExtra(android.content.Intent.EXTRA_EMAIL, new String[]{"cernekee+oc@gmail.com"});
-                i.putExtra(android.content.Intent.EXTRA_SUBJECT, "ics-openconnect v" +
-                        ver + " - Needs Improvement!");
-                i.setType("plain/text");
+				i.putExtra(android.content.Intent.EXTRA_EMAIL, new String[] {"cernekee+oc@gmail.com"});
+				i.putExtra(android.content.Intent.EXTRA_SUBJECT, "ics-openconnect v" +
+						ver + " - Needs Improvement!");
+				i.setType("plain/text");
 
-                try {
-                    startActivity(i);
-                } catch (ActivityNotFoundException e) {
-                    /* this probably never happens */
-                }
-                act.finish();
-            }
-        });
+				try {
+					startActivity(i);
+				} catch (ActivityNotFoundException e) {
+					/* this probably never happens */
+				}
+				act.finish();
+			}
+    	});
 
-        b = v.findViewById(R.id.maybe_later);
-        b.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View arg0) {
-                act.finish();
-            }
-        });
+    	b = (Button)v.findViewById(R.id.maybe_later);
+    	b.setOnClickListener(new OnClickListener() {
+			@Override
+			public void onClick(View arg0) {
+				act.finish();
+			}
+    	});
 
-        return v;
+    	return v;
+    }
+
+    private static void recordNag(Context ctx) {
+    	SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
+    	sp.edit().putBoolean("feedback_nagged", true).commit();
+    }
+
+    private static boolean isNagOK(Context ctx) {
+    	SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
+
+    	if (sp.getBoolean("feedback_nagged", false)) {
+    		return false;
+    	}
+
+    	long first = sp.getLong("first_use", -1);
+    	if (first == -1) {
+    		return false;
+    	}
+
+    	Calendar now = Calendar.getInstance();
+    	Calendar nagDay = Calendar.getInstance();
+    	nagDay.setTimeInMillis(first);
+    	nagDay.add(Calendar.DATE, nagDays);
+    	if (!now.after(nagDay)) {
+    		return false;
+    	}
+
+    	long numUses = sp.getLong("num_uses", 0);
+    	if (numUses < nagUses) {
+    		return false;
+    	}
+
+    	return true;
+    }
+
+    public static void feedbackNag(Context ctx) {
+    	if (!isNagOK(ctx)) {
+    		return;
+    	}
+    	recordNag(ctx);
+
+		Intent intent = new Intent(ctx, FragActivity.class);
+		intent.putExtra(FragActivity.EXTRA_FRAGMENT_NAME, "FeedbackFragment");
+		ctx.startActivity(intent);
+    }
+
+    public static void recordUse(Context ctx, boolean success) {
+    	SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
+    	if (sp.getLong("first_use", -1) == -1) {
+    		long now = Calendar.getInstance().getTimeInMillis();
+    		sp.edit().putLong("first_use", now).apply();
+    	}
+    	if (!success) {
+    		return;
+    	}
+
+    	long numUses = sp.getLong("num_uses", 0);
+    	sp.edit().putLong("num_uses", numUses + 1).apply();
+    }
+
+    public static void recordProfileAdd(Context ctx) {
+    	SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
+    	long count = sp.getLong("num_profiles_added", 0) + 1;
+    	sp.edit().putLong("num_profiles_added", count).apply();
     }
 }

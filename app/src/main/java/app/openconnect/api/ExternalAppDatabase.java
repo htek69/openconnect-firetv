@@ -35,46 +35,48 @@ import android.preference.PreferenceManager;
 
 public class ExternalAppDatabase {
 
-    private final String PREFERENCES_KEY = "PREFERENCES_KEY";
-    Context mContext;
+	Context mContext;
+	
+	public ExternalAppDatabase(Context c) {
+		mContext =c;
+	}
 
-    public ExternalAppDatabase(Context c) {
-        mContext = c;
-    }
+	private final String PREFERENCES_KEY = "PREFERENCES_KEY";
 
-    boolean isAllowed(String packagename) {
-        Set<String> allowedapps = getExtAppList();
+	boolean isAllowed(String packagename) {
+		Set<String> allowedapps = getExtAppList();
 
-        return allowedapps.contains(packagename);
+		return allowedapps.contains(packagename); 
 
-    }
+	}
 
-    public Set<String> getExtAppList() {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(mContext);
+	public Set<String> getExtAppList() {
+		SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(mContext);
         return prefs.getStringSet(PREFERENCES_KEY, new HashSet<String>());
-    }
+	}
+	
+	void addApp(String packagename)
+	{
+		Set<String> allowedapps = getExtAppList();
+		allowedapps.add(packagename);
+		saveExtAppList(allowedapps);
+	}
 
-    void addApp(String packagename) {
-        Set<String> allowedapps = getExtAppList();
-        allowedapps.add(packagename);
-        saveExtAppList(allowedapps);
-    }
+	private void saveExtAppList( Set<String> allowedapps) {
+		SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(mContext);        
+		Editor prefedit = prefs.edit();
+		prefedit.putStringSet(PREFERENCES_KEY, allowedapps);
+		prefedit.apply();
+	}
+	
+	public void clearAllApiApps() {
+		saveExtAppList(new HashSet<String>());
+	}
 
-    private void saveExtAppList(Set<String> allowedapps) {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(mContext);
-        Editor prefedit = prefs.edit();
-        prefedit.putStringSet(PREFERENCES_KEY, allowedapps);
-        prefedit.apply();
-    }
-
-    public void clearAllApiApps() {
-        saveExtAppList(new HashSet<String>());
-    }
-
-    public void removeApp(String packagename) {
-        Set<String> allowedapps = getExtAppList();
-        allowedapps.remove(packagename);
-        saveExtAppList(allowedapps);
-    }
+	public void removeApp(String packagename) {
+		Set<String> allowedapps = getExtAppList();
+		allowedapps.remove(packagename);
+		saveExtAppList(allowedapps);		
+	}
 
 }

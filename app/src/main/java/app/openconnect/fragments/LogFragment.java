@@ -46,7 +46,6 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.AdapterView.OnItemLongClickListener;
-
 import app.openconnect.R;
 import app.openconnect.core.OpenConnectManagementThread;
 import app.openconnect.core.OpenVpnService;
@@ -55,148 +54,148 @@ import app.openconnect.core.VPNLog;
 import app.openconnect.core.VPNLog.LogArrayAdapter;
 
 public class LogFragment extends ListFragment {
-    public static final String TAG = "OpenConnect";
+	public static final String TAG = "OpenConnect";
 
-    private VPNConnector mConn;
+	private VPNConnector mConn;
 
-    private CommonMenu mDropdown;
+	private CommonMenu mDropdown;
     private MenuItem mCancelButton;
     private boolean mDisconnected;
 
-    private LogArrayAdapter mLogAdapter;
-    private ListView mLogView;
-    private Activity mActivity;
+	private LogArrayAdapter mLogAdapter;
+	private ListView mLogView;
+	private Activity mActivity;
 
-    private TextView mSpeedView;
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        if (mConn.service == null) {
-            return true;
-        }
-        if (item.getItemId() == R.id.clearlog) {
-            mConn.service.clearLog();
-            return true;
-        } else if (item.getItemId() == R.id.cancel) {
-            if (mDisconnected) {
-                mConn.service.startReconnectActivity(mActivity);
-            } else {
-                stopVPN();
-            }
-            return true;
-        } else if (mDropdown.onOptionsItemSelected(item)) {
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
-
-    }
+	private TextView mSpeedView;
 
     @Override
-    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
-        inflater.inflate(R.menu.logmenu, menu);
-        mDropdown = new CommonMenu(getActivity(), menu, true);
-        mCancelButton = menu.findItem(R.id.cancel);
-        if (mConn != null) {
-            updateUI(mConn.service);
-        }
-    }
+	public boolean onOptionsItemSelected(MenuItem item) {
+		if (mConn.service == null) {
+			return true;
+		}
+		if(item.getItemId()==R.id.clearlog) {
+			mConn.service.clearLog();
+			return true;
+		} else if(item.getItemId()==R.id.cancel) {
+			if (mDisconnected) {
+				mConn.service.startReconnectActivity(mActivity);
+			} else {
+				stopVPN();
+			}
+            return true;
+		} else if(mDropdown.onOptionsItemSelected(item)) {
+			return true;
+		}
+		return super.onOptionsItemSelected(item);
+
+	}
+
+    @Override
+	public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+		inflater.inflate(R.menu.logmenu, menu);
+		mDropdown = new CommonMenu(getActivity(), menu, true);
+		mCancelButton = menu.findItem(R.id.cancel);
+		if (mConn != null) {
+			updateUI(mConn.service);
+		}
+	}
 
     private synchronized void updateUI(OpenVpnService service) {
-        if (service != null) {
-            int state = service.getConnectionState();
-            if (mCancelButton != null) {
-                String title;
-                if (state == OpenConnectManagementThread.STATE_DISCONNECTED) {
-                    title = getString(R.string.reconnect);
-                    mCancelButton.setIcon(R.drawable.ic_action_refresh);
-                    mCancelButton.setVisible(service.getReconnectName() != null);
-                    mDisconnected = true;
-                } else {
-                    title = getString(R.string.disconnect);
-                    mCancelButton.setIcon(android.R.drawable.ic_menu_close_clear_cancel);
-                    mCancelButton.setVisible(true);
-                    mDisconnected = false;
-                }
-                mCancelButton.setTitle(title);
-                mCancelButton.setTitleCondensed(title);
-            }
+    	if (service != null) {
+    		int state = service.getConnectionState();
+    		if (mCancelButton != null) {
+    			String title;
+    			if (state == OpenConnectManagementThread.STATE_DISCONNECTED) {
+    				title = getString(R.string.reconnect);
+    				mCancelButton.setIcon(R.drawable.ic_action_refresh);
+					mCancelButton.setVisible(service.getReconnectName() != null);
+    				mDisconnected = true;
+    			} else {
+    				title = getString(R.string.disconnect);
+    				mCancelButton.setIcon(android.R.drawable.ic_menu_close_clear_cancel);
+					mCancelButton.setVisible(true);
+    				mDisconnected = false;
+    			}
+				mCancelButton.setTitle(title);
+				mCancelButton.setTitleCondensed(title);
+    		}
 
-            String byteCountSummary = "";
-            if (state == OpenConnectManagementThread.STATE_CONNECTED) {
-                byteCountSummary = " - " + mConn.getByteCountSummary();
-            }
-            String[] states = getResources().getStringArray(R.array.connection_states);
-            mSpeedView.setText(states[state] + byteCountSummary);
+    		String byteCountSummary = "";
+    		if (state == OpenConnectManagementThread.STATE_CONNECTED) {
+				byteCountSummary = " - " + mConn.getByteCountSummary();
+    		}
+    		String states[] = getResources().getStringArray(R.array.connection_states);
+    		mSpeedView.setText(states[state] + byteCountSummary);
 
-            if (mLogAdapter == null) {
-                mLogAdapter = service.getArrayAdapter(mActivity);
-                mLogView.setAdapter(mLogAdapter);
-                mLogView.setSelection(mLogAdapter.getCount());
-            }
+    		if (mLogAdapter == null) {
+    			mLogAdapter = service.getArrayAdapter(mActivity);
+    			mLogView.setAdapter(mLogAdapter);
+    			mLogView.setSelection(mLogAdapter.getCount());
+    		}
 
-            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
-            mLogAdapter.setTimeFormat(prefs.getString("timestamp_format", VPNLog.DEFAULT_TIME_FORMAT));
-        }
+    		SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(getActivity());
+    		mLogAdapter.setTimeFormat(prefs.getString("timestamp_format", VPNLog.DEFAULT_TIME_FORMAT));
+    	}
     }
 
-    @Override
-    public void onResume() {
-        super.onResume();
+	@Override
+	public void onResume() {
+		super.onResume();
 
-        mConn = new VPNConnector(mActivity, false) {
-            @Override
-            public void onUpdate(OpenVpnService service) {
-                updateUI(service);
-            }
-        };
+		mConn = new VPNConnector(mActivity, false) {
+			@Override
+			public void onUpdate(OpenVpnService service) {
+				updateUI(service);
+			}
+		};
+	}
+
+	@Override
+	public void onPause() {
+		if (mConn.service != null) {
+    		mConn.service.putArrayAdapter(mLogAdapter);
+    		mLogAdapter = null;
+		}
+		mConn.unbind();
+		super.onPause();
     }
 
-    @Override
-    public void onPause() {
-        if (mConn.service != null) {
-            mConn.service.putArrayAdapter(mLogAdapter);
-            mLogAdapter = null;
-        }
-        mConn.unbind();
-        super.onPause();
-    }
+	@Override
+	public void onCreate(Bundle savedInstanceState) {
+		super.onCreate(savedInstanceState);
+		setHasOptionsMenu(true);
+	}
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
-    }
+	public View onCreateView(LayoutInflater inflater, ViewGroup container,
+			Bundle savedInstanceState) {
+		View v = inflater.inflate(R.layout.logwindow, container, false);
 
-    @Override
-    public View onCreateView(LayoutInflater inflater, ViewGroup container,
-                             Bundle savedInstanceState) {
-        View v = inflater.inflate(R.layout.logwindow, container, false);
+		mActivity = getActivity();
 
-        mActivity = getActivity();
+		mLogView = (ListView)v.findViewById(android.R.id.list);
+		mLogView.setOnItemLongClickListener(new OnItemLongClickListener() {
 
-        mLogView = v.findViewById(android.R.id.list);
-        mLogView.setOnItemLongClickListener(new OnItemLongClickListener() {
+			@Override
+			public boolean onItemLongClick(AdapterView<?> parent, View view,
+					int position, long id) {
+				ClipboardManager clipboard = (ClipboardManager)
+						mActivity.getSystemService(Context.CLIPBOARD_SERVICE);
+				ClipData clip = ClipData.newPlainText("Log Entry",((TextView) view).getText());
+				clipboard.setPrimaryClip(clip);
+				Toast.makeText(mActivity.getBaseContext(), R.string.copied_entry, Toast.LENGTH_SHORT).show();
+				return true;
+			}
+		});
 
-            @Override
-            public boolean onItemLongClick(AdapterView<?> parent, View view,
-                                           int position, long id) {
-                ClipboardManager clipboard = (ClipboardManager)
-                        mActivity.getSystemService(Context.CLIPBOARD_SERVICE);
-                ClipData clip = ClipData.newPlainText("Log Entry", ((TextView) view).getText());
-                clipboard.setPrimaryClip(clip);
-                Toast.makeText(mActivity.getBaseContext(), R.string.copied_entry, Toast.LENGTH_SHORT).show();
-                return true;
-            }
-        });
-
-        mSpeedView = v.findViewById(R.id.speed);
-        return v;
+		mSpeedView = (TextView)v.findViewById(R.id.speed);
+		return v;
     }
 
     private void stopVPN() {
-        if (mConn.service != null) {
-            Log.d(TAG, "connection terminated via UI");
-            mConn.service.stopVPN();
-        }
+    	if (mConn.service != null) {
+    		Log.d(TAG, "connection terminated via UI");
+    		mConn.service.stopVPN();
+    	}
     }
 }
