@@ -1,4 +1,4 @@
-Multi-protocol version, based on [openconnect v8.03](http://www.infradead.org/openconnect/changelog.html).
+Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect).
 
 ---
 **NOTE**
@@ -8,10 +8,8 @@ Get involved (see #1) to release the Android client.
 
 ---
 
-APK: [OpenConnect_1.11+multi.apk](https://drive.google.com/file/d/17IRsGNYqUav9Yf2bsInxnc0uGD6g_PZz/view)
 XDA thread: [comment](https://forum.xda-developers.com/showthread.php?p=77318683#post77318683)
 
-![screenshot-multiproto](screenshots/screenshot-multiproto.png)
 
 OpenConnect for Android
 =======================
@@ -22,13 +20,10 @@ This is a VPN client for Android, based on the Linux build of
 Much of the Java code was derived from [OpenVPN for Android](https://play.google.com/store/apps/details?id=de.blinkt.openvpn&hl=en) by Arne Schwabe.
 
 OpenConnect for Android is released under the GPLv2 license.  For more
-information see the [COPYING](COPYING) and [doc/LICENSE.txt](doc/LICENSE.txt)
+information see the [COPYING](COPYING) and [doc/LICENSE.txt](misc/doc/LICENSE.txt)
 files.
 
-Changelog: see [doc/CHANGES.txt](doc/CHANGES.txt)
-
-To help out with translations, please visit
-[this project's page on Transifex](https://www.transifex.com/projects/p/ics-openconnect/).
+Changelog: see [doc/CHANGES.txt](misc/doc/CHANGES.txt)
 
 ## Downloads and support
 
@@ -37,11 +32,8 @@ no openconnect packages in any Android store released by this project.
 
 ## Screenshots
 
-![screenshot-0](screenshots/screenshot-0.png)&nbsp;
-![screenshot-1](screenshots/screenshot-1.png)
-
-![screenshot-2](screenshots/screenshot-2.png)&nbsp;
-![screenshot-3](screenshots/screenshot-3.png)
+|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="200">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="200">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="200">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="200">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="200">|
+|---|---|---|---|---|
 
 ## Building from source
 
@@ -63,28 +55,32 @@ Building OpenConnect from source requires compiling several .jar files and
 native binaries from external packages.  These commands will build the binary
 components and copy them into the appropriate library and asset directories:
 
-    git clone https://github.com/cernekee/ics-openconnect
-    cd ics-openconnect
-    git submodule init
-    git submodule update
-    make -C external
+```sh
+git clone --recursive https://gitlab.com/openconnect/ics-openconnect
+cd ics-openconnect
+make -C external
+```
 
 This procedure only runs on a Linux PC.  If you are unable to build from
 source, you can try fetching the cached artifacts from a recent CI build:
 
-    ./misc/download-artifacts.sh
+```sh
+./misc/download-artifacts.sh
+```
 
 ### Compiling the app
 
 After the binary components are built, this compiles the Java sources into
 an APK file:
 
-    cd ics-openconnect
-    ./gradlew assembleDebug
+```sh
+cd ics-openconnect
+./gradlew assembleDebug
+```
 
 To install the APK on a device:
 
     adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Logs of successful (and not-so-successful) builds can be found on this project's
-[Travis CI page](https://travis-ci.org/cernekee/ics-openconnect).
+[CI page](https://gitlab.com/openconnect/ics-openconnect/-/pipelines).
