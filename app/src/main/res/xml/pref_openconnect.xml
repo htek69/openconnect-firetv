@@ -113,6 +113,11 @@
             android:dialogMessage="@string/split_tunnel_networks_message"
             android:inputType="textUri|textMultiLine"
             android:defaultValue="" />
+        <EditTextPreference
+            android:defaultValue=""
+            android:dialogMessage="@string/sni_hint"
+            android:key="sni"
+            android:title="@string/sni" />
         <CheckBoxPreference
             android:key="disable_xml_post"
             android:title="@string/disable_xml_post"

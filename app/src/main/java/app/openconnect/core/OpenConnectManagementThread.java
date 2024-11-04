@@ -514,6 +514,14 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 			return false;
 		}
 
+		if (getBoolPref("use_dtls"))
+				mOC.disableDTLS();
+
+		String sni = getStringPref("sni");
+		if (!sni.isEmpty()) {
+			mOC.setSNI(sni);
+		}
+
 		prefChanged();
 
 		return true;

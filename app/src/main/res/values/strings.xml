@@ -58,6 +58,8 @@
 
     <string name="add_new_button">Add new connection</string>
     <string name="delete_profile">Delete profile</string>
+    <string name="sni">Custom SNI</string>
+    <string name="sni_hint">Enter value that should always be sent as TLS client SNI:</string>
 
     <!-- ACRA crash reporting -->
     <string name="crash_dialog_text">An unexpected error occurred forcing the application to stop. You can help us fix this by sending us error data.</string>
