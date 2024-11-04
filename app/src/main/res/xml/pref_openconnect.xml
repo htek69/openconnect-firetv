@@ -136,4 +136,7 @@
             android:inputType="number"
             android:defaultValue="" />
     </PreferenceCategory>
+    <Preference
+        android:key="delete_profile"
+        android:title="@string/delete_profile" />
 </PreferenceScreen>

@@ -36,6 +36,7 @@ import android.app.ListFragment;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.text.Editable;
@@ -68,6 +69,7 @@ import app.openconnect.core.VPNConnector;
 public class VPNProfileList extends ListFragment {
 
 	private static final int MENU_ADD_PROFILE = 1;
+	private boolean mIsTv;
 
 	private ArrayAdapter<VpnProfile> mArrayadapter;
 	private CommonMenu mDropdown;
@@ -113,7 +115,9 @@ public class VPNProfileList extends ListFragment {
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		super.onCreate(savedInstanceState);
-		setHasOptionsMenu(true);
+		mIsTv = getActivity().getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+		if (!mIsTv)
+			setHasOptionsMenu(true);
 	}
 
 	@Override
@@ -168,13 +172,25 @@ public class VPNProfileList extends ListFragment {
 			}
     	});
 
+		if (mIsTv) {
+			((Button)v.findViewById(R.id.add_new_button)).setOnClickListener(new OnClickListener() {
+				@Override
+				public void onClick(View v) {
+					onAddProfileClicked("");
+				}
+			});
+		}
+
     	mConn = new VPNConnector(getActivity(), false) {
 			@Override
 			public void onUpdate(OpenVpnService service) {
 				String profileName = service.getReconnectName();
 				if (profileName != null) {
 					mReconnectButton.setText(getString(R.string.reconnect_to, profileName));
-					v.findViewById(R.id.reconnect_box).setVisibility(View.VISIBLE);
+					if (mIsTv)
+						mReconnectButton.setVisibility(View.VISIBLE);
+					else
+						v.findViewById(R.id.reconnect_box).setVisibility(View.VISIBLE);
 				}
 			}
     	};

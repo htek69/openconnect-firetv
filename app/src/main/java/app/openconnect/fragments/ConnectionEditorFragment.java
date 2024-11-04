@@ -36,6 +36,7 @@ import app.openconnect.VpnProfile;
 import app.openconnect.core.ProfileManager;
 
 import android.app.Dialog;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Environment;
 import android.preference.EditTextPreference;
@@ -225,6 +226,20 @@ public class ConnectionEditorFragment extends PreferenceFragment
 				return false;
 			}
 		});
+
+		p = findPreference("delete_profile");
+		// don't show delete preference when not on a tv
+		if(getActivity().getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
+			p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
+				@Override
+				public boolean onPreferenceClick(Preference preference) {
+					((ConnectionEditorActivity)getActivity()).askProfileRemoval();
+					return false;
+				}
+			});
+		} else {
+			getPreferenceScreen().removePreference(p);
+		}
 	}
 
 	@Override
