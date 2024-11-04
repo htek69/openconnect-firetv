@@ -190,17 +190,25 @@ public class ConnectionEditorFragment extends PreferenceFragment
 			p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
 				@Override
 				public boolean onPreferenceClick(Preference preference) {
-					// TODO: add a way to unset a file.
-					Integer idx = fileSelectMap.get(preference.getKey());
+					String key = preference.getKey();
+					Integer idx = fileSelectMap.get(key);
 					if (idx == null) {
 						return false;
 					}
 
-					Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-					intent.addCategory(Intent.CATEGORY_OPENABLE);
-					intent.setType("*/*");
+					SharedPreferences sharedPrefs = getPreferenceScreen().getSharedPreferences();
+					String value = sharedPrefs.getString(key, "");
+					if (!value.isEmpty()) {
+						ProfileManager.deleteFilePref(mProfile, key);
+						((ShowTextPreference)preference).setText(null);
+						updatePref(sharedPrefs, key);
+					} else {
+						Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+						intent.addCategory(Intent.CATEGORY_OPENABLE);
+						intent.setType("*/*");
 
-					startActivityForResult(intent, idx);
+						startActivityForResult(intent, idx);
+					}
 					return false;
 				}
 			});
