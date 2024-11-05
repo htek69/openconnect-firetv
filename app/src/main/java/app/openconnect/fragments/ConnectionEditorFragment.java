@@ -27,7 +27,6 @@ package app.openconnect.fragments;
 import java.util.HashMap;
 import java.util.Map;
 
-import app.openconnect.FileSelect;
 import app.openconnect.ConnectionEditorActivity;
 import app.openconnect.R;
 import app.openconnect.ShowTextPreference;
