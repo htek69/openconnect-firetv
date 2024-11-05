@@ -27,6 +27,7 @@
 package app.openconnect.core;
 
 import android.Manifest.permission;
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -166,11 +167,13 @@ public class OpenVpnService extends VpnService {
 		intent.setAction(Intent.ACTION_MAIN);
 		intent.addCategory(Intent.CATEGORY_LAUNCHER);
 
-		PendingIntent startLW = PendingIntent.getActivity(this, 0, intent, 0x02000000);
+		PendingIntent startLW = PendingIntent.getActivity(this, 0,
+				intent, PendingIntent.FLAG_IMMUTABLE);
 		return startLW;
 	}
 
-	private void registerDeviceStateReceiver(OpenVPNManagement management) {
+	@SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private void registerDeviceStateReceiver(OpenVPNManagement management) {
 		// Registers BroadcastReceiver to track network connection changes.
 		IntentFilter filter = new IntentFilter();
 		filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
@@ -178,10 +181,14 @@ public class OpenVpnService extends VpnService {
 		filter.addAction(Intent.ACTION_SCREEN_OFF);
 		filter.addAction(Intent.ACTION_SCREEN_ON);
 		mDeviceStateReceiver = new DeviceStateReceiver(management, mPrefs);
-		registerReceiver(mDeviceStateReceiver, filter);
+		if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			registerReceiver(mDeviceStateReceiver, filter, Context.RECEIVER_EXPORTED);
+		else
+			registerReceiver(mDeviceStateReceiver, filter);
 	}
 
-	private synchronized void registerKeepAlive() {
+	@SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private synchronized void registerKeepAlive() {
 		String DNSServer = "8.8.8.8";
 		try {
 			String dns = ipInfo.DNS.get(0);
@@ -204,7 +211,10 @@ public class OpenVpnService extends VpnService {
 
 		IntentFilter filter = new IntentFilter(KeepAlive.ACTION_KEEPALIVE_ALARM);
 		mKeepAlive = new KeepAlive(idle, DNSServer, mDeviceStateReceiver);
-		registerReceiver(mKeepAlive, filter);
+		if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			registerReceiver(mKeepAlive, filter, Context.RECEIVER_NOT_EXPORTED);
+		else
+			registerReceiver(mKeepAlive, filter);
 		mKeepAlive.start(this);
 	}
 
