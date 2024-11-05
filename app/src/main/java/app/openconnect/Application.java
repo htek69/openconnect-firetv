@@ -24,31 +24,10 @@
 
 package app.openconnect;
 
-import org.acra.ACRA;
-import org.acra.ErrorReporter;
-import org.acra.ReportField;
-import org.acra.ReportingInteractionMode;
-import org.acra.annotation.ReportsCrashes;
-import org.acra.collector.CrashReportData;
-import org.acra.sender.HttpSender;
-import org.acra.sender.ReportSenderException;
-
 import android.content.pm.PackageManager;
 import app.openconnect.core.FragCache;
 import app.openconnect.core.ProfileManager;
 import app.openconnect.core.VPNLog;
-
-//@ReportsCrashes(
-//		mode = ReportingInteractionMode.DIALOG,
-//		resDialogText = R.string.crash_dialog_text, // FIXME: don't use R.strings as attributes here
-//		resDialogCommentPrompt = R.string.crash_dialog_comment_prompt,
-//
-//		formUri = "https://kpc.cloudant.com/acra-openconnect/_design/acra-storage/_update/report",
-//		formUriBasicAuthLogin="ineintlynnoveristimedesc",
-//		formUriBasicAuthPassword="mUmkrQIOKd3HalLf5AQuyxpA",
-//
-//		formKey = ""
-//)
 
 public class Application extends android.app.Application {
 
@@ -62,45 +41,9 @@ public class Application extends android.app.Application {
 		}
 	}
 
-	private void setupACRA() {
-		String hax0rPackages[] = { "com.koushikdutta.superuser",
-				"com.noshufou.android.su",
-				"com.noshufou.android.su.elite",
-				"com.miui.uac",
-				"eu.chainfire.supersu",
-				"eu.chainfire.supersu.pro",
-				"de.robv.android.xposed.installer",
-				"biz.bokhorst.xprivacy",
-				"biz.bokhorst.xprivacy.pro" };
-
-		ACRA.init(this);
-
-		ErrorReporter er = ACRA.getErrorReporter();
-		er.setReportSender(
-				new HttpSender(org.acra.sender.HttpSender.Method.PUT,
-								org.acra.sender.HttpSender.Type.JSON,
-								null) {
-
-					@Override
-					public void send(CrashReportData report) throws ReportSenderException {
-						report.put(ReportField.APPLICATION_LOG, VPNLog.dumpLast());
-						super.send(report);
-					}
-
-				});
-
-		for (String s : hax0rPackages) {
-			// FIXME: ACRA does not properly escape key strings
-			// https://github.com/ACRA/acra/issues/90
-			er.putCustomData("pkg-" + s.replaceAll("\\.",  "-"),
-					isPackageInstalled(s) ? "true" : "false");
-		}
-	}
-
 	public void onCreate() {
 		super.onCreate();
 
-//		setupACRA();
 		System.loadLibrary("openconnect");
 		System.loadLibrary("stoken");
 		ProfileManager.init(getApplicationContext());

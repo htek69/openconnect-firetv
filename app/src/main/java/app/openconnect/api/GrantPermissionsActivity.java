@@ -26,10 +26,6 @@
 
 package app.openconnect.api;
 
-import org.acra.ACRA;
-import org.acra.ACRAConfiguration;
-import org.acra.ErrorReporter;
-
 import app.openconnect.R;
 import app.openconnect.core.OpenVpnService;
 import android.app.Activity;
@@ -43,17 +39,6 @@ public class GrantPermissionsActivity extends Activity {
 
 	private String mUUID;
 	private String mStartActivity;
-
-	private void reportBadRom(Exception e) {
-		ACRAConfiguration cfg = ACRA.getConfig();
-		cfg.setResDialogText(R.string.bad_rom_text);
-		cfg.setResDialogCommentPrompt(R.string.bad_rom_comment_prompt);
-		ACRA.setConfig(cfg);
-
-		ErrorReporter er = ACRA.getErrorReporter();
-		er.putCustomData("cause", "reportBadRom");
-		er.handleException(e);
-	}
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -71,7 +56,6 @@ public class GrantPermissionsActivity extends Activity {
 		try {
 			prepIntent = VpnService.prepare(this);
 		} catch (Exception e) {
-			reportBadRom(e);
 			finish();
 			return;
 		}
@@ -80,7 +64,6 @@ public class GrantPermissionsActivity extends Activity {
 			try {
 				startActivityForResult(prepIntent, 0);
 			} catch (Exception e) {
-				reportBadRom(e);
 				finish();
 				return;
 			}
@@ -89,7 +72,7 @@ public class GrantPermissionsActivity extends Activity {
 		}
 	}
 
-	/* Called by Android OS after user clicks "OK" on VpnService.prepare() dialog */ 
+	/* Called by Android OS after user clicks "OK" on VpnService.prepare() dialog */
 	@Override
 	protected void onActivityResult(int requestCode, int resultCode, Intent data) {
 		super.onActivityResult(requestCode, resultCode, data);
