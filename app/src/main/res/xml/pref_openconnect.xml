@@ -72,6 +72,11 @@
             android:entries="@array/batch_mode_entries"
             android:entryValues="@array/batch_mode_values"
             android:defaultValue="disabled" />
+        <CheckBoxPreference
+            android:key="use_dtls"
+            android:title="@string/use_dtls"
+            android:summary="@string/use_dtls_summary"
+            android:defaultValue="true" />
         <ListPreference
             android:key="reported_os"
             android:title="@string/reported_os"
@@ -108,6 +113,11 @@
             android:dialogMessage="@string/split_tunnel_networks_message"
             android:inputType="textUri|textMultiLine"
             android:defaultValue="" />
+        <EditTextPreference
+            android:defaultValue=""
+            android:dialogMessage="@string/sni_hint"
+            android:key="sni"
+            android:title="@string/sni" />
         <CheckBoxPreference
             android:key="disable_xml_post"
             android:title="@string/disable_xml_post"
@@ -131,4 +141,7 @@
             android:inputType="number"
             android:defaultValue="" />
     </PreferenceCategory>
+    <Preference
+        android:key="delete_profile"
+        android:title="@string/delete_profile" />
 </PreferenceScreen>

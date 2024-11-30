@@ -72,7 +72,7 @@ public class ConnectionEditorActivity extends Activity {
     	setTitle(getString(R.string.edit_profile_title, mName));
 	}
 
-	private void askProfileRemoval() {
+	public void askProfileRemoval() {
 		AlertDialog.Builder dialog = new AlertDialog.Builder(this);
 		dialog.setTitle("Confirm deletion");
 		dialog.setMessage(getString(R.string.remove_vpn_query, mName));

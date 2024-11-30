@@ -27,7 +27,6 @@ package app.openconnect.fragments;
 import java.util.HashMap;
 import java.util.Map;
 
-import app.openconnect.FileSelect;
 import app.openconnect.ConnectionEditorActivity;
 import app.openconnect.R;
 import app.openconnect.ShowTextPreference;
@@ -36,6 +35,7 @@ import app.openconnect.VpnProfile;
 import app.openconnect.core.ProfileManager;
 
 import android.app.Dialog;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Environment;
 import android.preference.EditTextPreference;
@@ -52,6 +52,7 @@ import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.view.KeyEvent;
 import android.view.inputmethod.EditorInfo;
 import android.widget.TextView;
+import android.net.Uri;
 
 public class ConnectionEditorFragment extends PreferenceFragment
 		implements OnSharedPreferenceChangeListener {
@@ -189,17 +190,25 @@ public class ConnectionEditorFragment extends PreferenceFragment
 			p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
 				@Override
 				public boolean onPreferenceClick(Preference preference) {
-					Integer idx = fileSelectMap.get(preference.getKey());
+					String key = preference.getKey();
+					Integer idx = fileSelectMap.get(key);
 					if (idx == null) {
 						return false;
 					}
 
-					Intent startFC = new Intent(getActivity(), FileSelect.class);
-					startFC.putExtra(FileSelect.START_DATA, Environment.getExternalStorageDirectory().getPath());
-					startFC.putExtra(FileSelect.SHOW_CLEAR_BUTTON, true);
-					startFC.putExtra(FileSelect.NO_INLINE_SELECTION, true);
+					SharedPreferences sharedPrefs = getPreferenceScreen().getSharedPreferences();
+					String value = sharedPrefs.getString(key, "");
+					if (!value.isEmpty()) {
+						ProfileManager.deleteFilePref(mProfile, key);
+						((ShowTextPreference)preference).setText(null);
+						updatePref(sharedPrefs, key);
+					} else {
+						Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+						intent.addCategory(Intent.CATEGORY_OPENABLE);
+						intent.setType("*/*");
 
-					startActivityForResult(startFC, idx);
+						startActivityForResult(intent, idx);
+					}
 					return false;
 				}
 			});
@@ -216,6 +225,20 @@ public class ConnectionEditorFragment extends PreferenceFragment
 				return false;
 			}
 		});
+
+		p = findPreference("delete_profile");
+		// don't show delete preference when not on a tv
+		if(getActivity().getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
+			p.setOnPreferenceClickListener(new OnPreferenceClickListener() {
+				@Override
+				public boolean onPreferenceClick(Preference preference) {
+					((ConnectionEditorActivity)getActivity()).askProfileRemoval();
+					return false;
+				}
+			});
+		} else {
+			getPreferenceScreen().removePreference(p);
+		}
 	}
 
 	@Override
@@ -231,17 +254,11 @@ public class ConnectionEditorFragment extends PreferenceFragment
 			updatePref(prefs, "token_string");
 			updatePref(prefs, "software_token");
 		} else {
-			String path = data.getStringExtra(FileSelect.RESULT_DATA);
+			Uri path = data.getData();
 			String key = ProfileManager.fileSelectKeys[idx];
 			ShowTextPreference p = (ShowTextPreference)findPreference(key);
-
-			if (path == null) {
-				ProfileManager.deleteFilePref(mProfile, key);
-			} else {
-				path = ProfileManager.storeFilePref(mProfile, key, path);
-			}
-
-			p.setText(path);
+			String new_path = ProfileManager.storeFilePref(mProfile, key, path);
+			p.setText(new_path);
 			updatePref(prefs, key);
 		}
 	}

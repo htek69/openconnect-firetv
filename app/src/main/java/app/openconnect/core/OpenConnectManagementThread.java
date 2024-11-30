@@ -49,9 +49,6 @@ import android.util.Base64;
 
 import org.infradead.libopenconnect.LibOpenConnect;
 
-import com.stericson.RootTools.execution.CommandCapture;
-import com.stericson.RootTools.execution.Shell;
-
 import app.openconnect.AuthFormHandler;
 import app.openconnect.R;
 import app.openconnect.VpnProfile;
@@ -275,17 +272,6 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 	@Override
 	public void run() {
 		logStats();
-
-		try {
-			if (mAppPrefs.getBoolean("loadTunModule", false)) {
-				Shell.runRootCommand(new CommandCapture(0, "insmod /system/lib/modules/tun.ko"));
-			}
-			if (mAppPrefs.getBoolean("useCM9Fix", false)) {
-				Shell.runRootCommand(new CommandCapture(0, "chown 1000 /dev/tun"));
-			}
-		} catch (Exception e) {
-			log("error running root commands: " + e.getLocalizedMessage());
-		}
 
 		if (!runVPN()) {
 			log("VPN terminated with errors");
@@ -512,6 +498,14 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 		if (ret < 0) {
 			log("Error " + ret + " setting token string");
 			return false;
+		}
+
+		if (getBoolPref("use_dtls"))
+				mOC.disableDTLS();
+
+		String sni = getStringPref("sni");
+		if (!sni.isEmpty()) {
+			mOC.setSNI(sni);
 		}
 
 		prefChanged();
@@ -774,7 +768,8 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 		setState(STATE_CONNECTED);
 		updateStatPref("connect");
 
-		mOC.setupDTLS(60);
+		if(getBoolPref("use_dtls"))
+			mOC.setupDTLS(60);
 
 		while (true) {
 			if (mOC.mainloop(300, LibOpenConnect.RECONNECT_INTERVAL_MIN) < 0) {

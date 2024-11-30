@@ -184,4 +184,15 @@ public class AssetExtractor {
 		}
 		return null;
 	}
+
+	public static String readStringFromStream(InputStream stream) {
+		try {
+			BufferedReader reader = new BufferedReader(new InputStreamReader(stream));
+			return readAndClose(reader);
+		} catch (IOException e) {
+			Log.e(TAG, "AssetExtractor: readString exception", e);
+		}
+		return null;
+	}
 }
+

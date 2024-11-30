@@ -27,6 +27,7 @@ package app.openconnect.core;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Locale;
@@ -209,12 +210,12 @@ public class ProfileManager {
 		}
 	}
 
-	public synchronized static String storeFilePref(VpnProfile profile, String key, String fromPath) {
+	public synchronized static String storeFilePref(VpnProfile profile, String key, Uri fromPath) {
 		String filename = getCertFilename(profile, key);
 		String toPath = getCertPath() + filename;
 
 		try {
-			FileInputStream in = new FileInputStream(fromPath);
+			InputStream in = mContext.getContentResolver().openInputStream(fromPath);
 			File outFile = new File(toPath);
 			FileOutputStream out = new FileOutputStream(outFile);
 			byte buffer[] = new byte[65536];
@@ -290,3 +291,4 @@ public class ProfileManager {
 	}
 
 }
+

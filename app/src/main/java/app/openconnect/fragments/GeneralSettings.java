@@ -64,10 +64,6 @@ public class GeneralSettings extends PreferenceFragment
 		// Load the preferences from an XML resource
 		addPreferencesFromResource(R.xml.general_settings);
 
-		Preference loadtun = findPreference("loadTunModule");
-		if(!isTunModuleAvailable())
-			loadtun.setEnabled(false);
-
 		mExtapp = new ExternalAppDatabase(getActivity());
 
 		for (String s : new String[] { "netchangereconnect", "screenoff", "trace_log" }) {
@@ -152,11 +148,6 @@ public class GeneralSettings extends PreferenceFragment
 
 		return applist;
 	}
-
-	private boolean isTunModuleAvailable() {
-		// Check if the tun module exists on the file system
-        return new File("/system/lib/modules/tun.ko").length() > 10;
-    }
 
 	@Override
 	public boolean onPreferenceClick(Preference preference) { 

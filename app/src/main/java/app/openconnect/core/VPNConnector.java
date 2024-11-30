@@ -26,12 +26,14 @@ package app.openconnect.core;
 
 import org.infradead.libopenconnect.LibOpenConnect.VPNStats;
 
+import android.annotation.SuppressLint;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.util.Log;
@@ -59,7 +61,8 @@ public abstract class VPNConnector {
 
 	public abstract void onUpdate(OpenVpnService service);
 
-	public VPNConnector(Context ctx, boolean isActivity) {
+	@SuppressLint("UnspecifiedRegisterReceiverFlag")
+    public VPNConnector(Context ctx, boolean isActivity) {
 		mContext = ctx;
 		mIsActivity = isActivity;
 
@@ -75,8 +78,12 @@ public abstract class VPNConnector {
 				}
 			}
 		};
-		mContext.registerReceiver(mReceiver, new IntentFilter(
-				OpenVpnService.ACTION_VPN_STATUS));
+		if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+			mContext.registerReceiver(mReceiver, new IntentFilter(
+					OpenVpnService.ACTION_VPN_STATUS), Context.RECEIVER_EXPORTED);
+		else
+			mContext.registerReceiver(mReceiver, new IntentFilter(
+					OpenVpnService.ACTION_VPN_STATUS));
 		mOwnerName = mContext.getClass().getSimpleName();
 
     	mStatsHandler = new Handler();

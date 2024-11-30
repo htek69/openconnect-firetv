@@ -210,7 +210,8 @@ public class KeepAlive extends BroadcastReceiver {
 
 	private void scheduleNext(Context context, int delayMs) {
 		Intent intent = new Intent("app.openconnect.KEEPALIVE_ALARM");
-		mPendingIntent = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+		mPendingIntent = PendingIntent.getBroadcast(context, 0, intent,
+				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
 		AlarmManager am = (AlarmManager)context.getSystemService(Context.ALARM_SERVICE);
 		am.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + delayMs, mPendingIntent);
@@ -227,7 +228,7 @@ public class KeepAlive extends BroadcastReceiver {
 		mMainHandler = new Handler();
 
 		PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
-		mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KeepAlive");
+		mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "OpenConnect: KeepAlive");
 
 		mConnectionActive = true;
 		scheduleNext(context, mBaseDelayMs);

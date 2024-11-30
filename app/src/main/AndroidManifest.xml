@@ -1,35 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="app.openconnect" >
+    xmlns:tools="http://schemas.android.com/tools" >
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" /> -->
+     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <uses-sdk
-        android:minSdkVersion="14"
-        android:targetSdkVersion="24" />
 
     <!-- Copy the <permission> block to your app when using the REMOTE API. Otherwise OpenConnect
         needs to be installed first -->
-    <permission
-        android:name="app.openconnect.REMOTE_API"
-        android:description="@string/permission_description"
-        android:label="Control OpenConnect"
-        android:permissionGroup="android.permission-group.NETWORK"
-        android:protectionLevel="dangerous" />
+<!--    <permission-->
+<!--        android:name="app.openconnect.REMOTE_API"-->
+<!--        android:description="@string/permission_description"-->
+<!--        android:label="Control OpenConnect"-->
+<!--        android:permissionGroup="android.permission-group.NETWORK"-->
+<!--        android:protectionLevel="dangerous" />-->
 
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app"
         android:supportsRtl="true"
-        android:name="app.openconnect.Application" >
+        android:name="app.openconnect.Application"
+        android:theme="@android:style/Theme.Material">
         <activity
             android:name=".ConnectionEditorActivity" />
         <activity
@@ -86,6 +81,7 @@
             </activity>
         <activity android:name=".FileSelect" />
         <activity
+            android:exported="true"
             android:name=".MainActivity"
             android:uiOptions="splitActionBarWhenNarrow"
             tools:ignore="ExportedActivity" >
@@ -98,14 +94,8 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name="org.acra.CrashReportDialog"
-            android:theme="@android:style/Theme.Dialog"
-            android:launchMode="singleInstance"
-            android:excludeFromRecents="true"
-            android:finishOnTaskLaunch="true" />
-
         <service
+            android:exported="true"
             android:name="app.openconnect.core.OpenVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE" >
             <intent-filter>
@@ -121,16 +111,19 @@
             </intent-filter>
         </service>
 -->
-        <service android:name=".QSTileService"
-                 android:label="@string/app"
-                 android:icon="@drawable/ic_launcher"
-                 android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+        <service
+            android:exported="true"
+            android:name=".QSTileService"
+            android:label="@string/app"
+            android:icon="@drawable/ic_launcher"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE"/>
             </intent-filter>
         </service>
 
         <activity
+            android:exported="true"
             android:permission="app.openconnect.REMOTE_API"
             android:name=".api.GrantPermissionsActivity">
             <intent-filter>
@@ -138,6 +131,7 @@
             </intent-filter>
         </activity>
         <activity
+            android:exported="true"
             android:permission="app.openconnect.REMOTE_API"
             android:name=".api.ConfirmDialog" >
             <intent-filter>
@@ -145,7 +139,9 @@
             </intent-filter>
         </activity>
 
-        <receiver android:name=".OnBootReceiver" >
+        <receiver
+            android:name=".OnBootReceiver"
+            android:exported="true" >
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
@@ -165,16 +161,6 @@
             </intent-filter>
         </receiver>
         -->
-
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="Bypass Android VPN confirmation dialog" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="30" />
 
     </application>
 
