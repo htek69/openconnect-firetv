@@ -500,7 +500,7 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 			return false;
 		}
 
-		if (getBoolPref("use_dtls"))
+		if (!getBoolPref("use_dtls"))
 				mOC.disableDTLS();
 
 		String sni = getStringPref("sni");
