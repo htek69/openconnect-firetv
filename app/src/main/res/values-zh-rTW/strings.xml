@@ -133,13 +133,13 @@
   <string name="token_string">令牌字串</string>
   <string name="enter_token_string">輸入令牌字串：</string>
   <string name="token_string_examples_0">有效格式包含：</string>
-  <string name="token_string_examples_1" translatable="false">29624-04141-91521-01027-05321-47115-52307-30331-00256-47622-00007-44173-12504-407622-00007-44173-12504-4076
-  <string name="token_string_examples_2" translatable="false">http://127.0.0.1/securid/ctf?ctfData=21379756846722724015054016530551677113257411117750043676416771132574111177500436764167711325741111775004367641763176417603176417631766p
-  <string name="token_string_examples_3" translatable="false">com.rsa.securid.iphone://ctf?ctfData=2806706667477513430277017220171264075514726323056355742241731256164646642241731256164646
+  <string name="token_string_examples_1" translatable="false">29624-04141-91521-01027-05321-47115-52307-30331-00256-47622-00007-44173-12504-407622-00007-44173-12504-4076</string>
+  <string name="token_string_examples_2" translatable="false">http://127.0.0.1/securid/ctf?ctfData=21379756846722724015054016530551677113257411117750043676416771132574111177500436764167711325741111775004367641763176417603176417631766p</string>
+  <string name="token_string_examples_3" translatable="false">com.rsa.securid.iphone://ctf?ctfData=2806706667477513430277017220171264075514726323056355742241731256164646642241731256164646</string>
   <string name="token_bad_string_title">令牌字串無效</string>
   <string name="token_bad_string_summary">無法解析所提供的字串。請檢查錯誤並重新提交。 </string>
   <string name="token_need_devid">此令牌與特定裝置 ID 綁定，通常在 RSA SecurID 軟體令牌應用程式的「關於」畫面上找到。在此輸入裝置 ID：</string>
-  <string name="token_need_pa​​ssword">輸入密碼解鎖令牌：</string>
+  <string name="token_need_password">輸入密碼解鎖令牌：</string>
   <string name="token_bad_devid_title">設備 ID 無效</string>
   <string name="token_bad_devid_summary">提供的裝置 ID 不適用於此令牌。請檢查錯誤並重新提交。 </string>
   <string name="token_bad_password_title">密碼無效</string>
@@ -148,8 +148,8 @@
   <string name="clear_token">清除令牌</string>
   <string name="choose_existing_vpn">選擇將與此令牌一起使用的 VPN 設定文件，或新增新設定檔：</string>
   <string name="new_vpn_option">新增 VPN 設定檔&#8230;</string>
-  <string name="clear_saved_pa​​sswords">清除已儲存的密碼</string>
-  <string name="clear_saved_pa​​sswords_confirm">您確定要刪除所有儲存的憑證嗎？ </string>
+  <string name="clear_saved_passwords">清除已儲存的密碼</string>
+  <string name="clear_saved_passwords_confirm">您確定要刪除所有儲存的憑證嗎？ </string>
   <string name="yes">是</string>
   <string name="no">否</string>
   <string name="not_required">不需要</string>

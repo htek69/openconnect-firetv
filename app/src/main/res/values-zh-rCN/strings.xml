@@ -139,7 +139,7 @@
   <string name="token_bad_string_title">令牌字符串无效</string>
   <string name="token_bad_string_summary">无法解析提供的字符串。请检查错误并重新提交。</string>
   <string name="token_need_devid">此令牌与特定设备 ID 绑定，通常在 RSA SecurID 软件令牌应用程序的“关于”屏幕上找到。在此处输入设备 ID：</string>
-  <string name="token_need_pa​​ssword">输入密码以解锁令牌：</string>
+  <string name="token_need_password">输入密码以解锁令牌：</string>
   <string name="token_bad_devid_title">设备 ID 无效</string>
   <string name="token_bad_devid_summary">提供的设备 ID 不适用于此令牌。请检查错误并重新提交。</string>
   <string name="token_bad_password_title">密码无效</string>
@@ -148,8 +148,8 @@
   <string name="clear_token">清除令牌</string>
   <string name="choose_existing_vpn">选择将与此令牌一起使用的 VPN 配置文件，或添加新配置文件：</string>
   <string name="new_vpn_option">添加新 VPN 配置文件&#8230;</string>
-  <string name="clear_saved_pa​​sswords">清除已保存的密码</string>
-  <string name="clear_saved_pa​​sswords_confirm">您确定要删除所有存储的凭据吗？</string>
+  <string name="clear_saved_passwords">清除已保存的密码</string>
+  <string name="clear_saved_passwords_confirm">您确定要删除所有存储的凭据吗？</string>
   <string name="yes">是</string>
   <string name="no">否</string>
   <string name="not_required">不需要</string>
