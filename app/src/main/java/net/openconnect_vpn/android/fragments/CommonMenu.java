@@ -35,7 +35,6 @@ public class CommonMenu {
 
 	private static final int MENU_SETTINGS = 15;
 	private static final int MENU_SECURID = 20;
-	private static final int MENU_REPORT_PROBLEM = 25;
 	private static final int MENU_ABOUT = 30;
 
 	private Context mContext;
@@ -45,8 +44,6 @@ public class CommonMenu {
 		menu.add(Menu.NONE, MENU_SETTINGS, Menu.NONE, R.string.generalsettings)
 			.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
 		menu.add(Menu.NONE, MENU_SECURID, Menu.NONE, R.string.securid_info)
-			.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
-		menu.add(Menu.NONE, MENU_REPORT_PROBLEM, Menu.NONE, R.string.report_problem)
 			.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
 		menu.add(Menu.NONE, MENU_ABOUT, Menu.NONE, R.string.about_openconnect)
 			.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
