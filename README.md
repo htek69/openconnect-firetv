@@ -32,7 +32,7 @@ no openconnect packages in any Android store released by this project.
 
 ## Screenshots
 
-|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="200">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="200">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="200">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="200">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="200">|
+|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="400" width="180">|
 |---|---|---|---|---|
 
 ## Building from source
