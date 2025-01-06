@@ -257,7 +257,10 @@ public class OpenVpnService extends VpnService {
 		}
 
 		// Extract information from the intent.
-		mUUID = intent.getStringExtra(EXTRA_UUID);
+		String intentUUID = intent.getStringExtra(EXTRA_UUID);
+		if (intentUUID != null)
+			mUUID = intentUUID;
+
 		if (mUUID == null) {
 			return START_NOT_STICKY;
 		}
