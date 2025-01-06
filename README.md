@@ -43,11 +43,13 @@ On the host side you'll need to install:
 
 * Android SDK in your $PATH (both platform-tools/ and tools/ directories)
 * $ANDROID\_HOME pointed at the Android SDK directory
-* javac 1.8 and a recent version of Apache ant in your $PATH
-* Use the Android SDK Manager to install API 19
-* NDK r16b, nominally unzipped under /opt/android-sdk-linux\_x86/
+* JDK 17 and a recent version of Apache ant in your $PATH
+* Use the Android SDK Manager to install `"platform-tools" "build-tools;34.0.0" "platforms;android-35"`
+* NDK r27c, nominally unzipped under /opt/android-sdk-linux\_x86/
 * Host-side gcc, make, etc. (Red Hat "Development Tools" group or Debian build-essential)
 * git, autoconf, automake, and libtool
+
+If you encounter any issues, take a look at [`misc/Dockerfile`](https://gitlab.com/openconnect/ics-openconnect/-/blob/master/misc/Dockerfile).
 
 ### Compiling the external dependencies
 
@@ -62,11 +64,8 @@ make -C external
 ```
 
 This procedure only runs on a Linux PC.  If you are unable to build from
-source, you can try fetching the cached artifacts from a recent CI build:
+source, you can try fetching the cached artifacts from a recent [CI build](https://gitlab.com/openconnect/ics-openconnect/-/pipelines).
 
-```sh
-./misc/download-artifacts.sh
-```
 
 ### Compiling the app
 
