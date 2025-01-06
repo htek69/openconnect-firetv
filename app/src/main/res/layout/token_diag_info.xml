@@ -65,7 +65,7 @@
             android:id="@+id/next_tokencode"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="left" />
+            android:gravity="start" />
 
         <Space
             android:layout_width="0dip"
@@ -76,7 +76,7 @@
             android:id="@+id/using_pin"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="right" />
+            android:gravity="end" />
 
 	</LinearLayout>
 
@@ -95,7 +95,7 @@
             android:id="@+id/token_sn"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="left" />
+            android:gravity="start" />
 
         <Space
             android:layout_width="0dip"
@@ -106,7 +106,7 @@
             android:id="@+id/exp_date"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="right" />
+            android:gravity="end" />
 
 	</LinearLayout>
 
@@ -125,7 +125,7 @@
             android:id="@+id/gmt"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="left" />
+            android:gravity="start" />
 
         <Space
             android:layout_width="0dip"
@@ -136,7 +136,7 @@
             android:id="@+id/dev_id"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="right" />
+            android:gravity="end" />
 
 	</LinearLayout>
 

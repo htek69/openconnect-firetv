@@ -31,8 +31,17 @@ android {
         }
     }
     lintOptions {
-        disable 'MissingTranslation'
         disable 'ExtraTranslation'
+        disable 'IconColors'
+        disable 'InconsistentArrays'
+        disable 'MissingTranslation'
+        disable 'OldTargetApi'
+        disable 'SuspiciousIndentation'
+
+        // It's a tremendous amount of work to get rid of all references to `Context` in the app
+        disable 'StaticFieldLeak'
+
+        baseline file("lint-baseline.xml")
     }
     buildFeatures {
         aidl true

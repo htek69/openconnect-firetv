@@ -79,7 +79,6 @@
             </intent-filter>
 
             </activity>
-        <activity android:name=".FileSelect" />
         <activity
             android:exported="true"
             android:name=".MainActivity"

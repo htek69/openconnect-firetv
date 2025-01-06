@@ -171,7 +171,7 @@ public class KeepAlive extends BroadcastReceiver {
 			return;
 		}
 
-		mWakeLock.acquire();
+		mWakeLock.acquire(mBaseDelayMs); // wakelock should not be acquired for longer than base delay
 		mDeviceStateReceiver.setKeepalive(true);
 		mWorkerHandler.post(new Runnable() {
 			@Override

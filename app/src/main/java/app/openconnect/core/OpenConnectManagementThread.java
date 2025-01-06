@@ -102,7 +102,7 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
     }
 
     private void putStringPref(final String key, String value) {
-    	mPrefs.edit().putString(key, value).commit();
+    	mPrefs.edit().putString(key, value).apply();
     }
 
     private String formatTime(long in) {
@@ -608,14 +608,6 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 			}
 		}
 
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-			/*
-			 * KK 4.4.3 and 4.4.4 won't connect if MTU < 1280.  See:
-			 * https://code.google.com/p/android/issues/detail?id=70916
-			 */
-			minMtu = 1280;
-		}
-
 		if (ip.MTU < minMtu) {
 			b.setMtu(minMtu);
 			log("MTU: " + minMtu + " (forced)");
@@ -682,13 +674,8 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 		// >  ICS: never use run_pie
 		try {
 			String curl_bin = mFilesDir + "/curl-bin";
-			String run_pie = mFilesDir + "/run_pie ";
-
-			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-				run_pie = "";
-			}
 			writeCertOrScript(mFilesDir + "/curl",
-				"#!/system/bin/sh\nexec " + run_pie + curl_bin + " \"$@\"\n", true);
+				"#!/system/bin/sh\nexec " + curl_bin + " \"$@\"\n", true);
 		} catch (IOException e) {
 			// mkdir won't throw an exception
 			log("Error writing curl wrapper scripts");

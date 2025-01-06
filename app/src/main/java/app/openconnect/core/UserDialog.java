@@ -84,7 +84,7 @@ public abstract class UserDialog {
 		}
 
 		public void commit() {
-			mPrefs.edit().putString(mKey, value).commit();
+			mPrefs.edit().putString(mKey, value).apply();
 		}
 	}
 
@@ -97,7 +97,7 @@ public abstract class UserDialog {
 		}
 
 		public void commit() {
-			mPrefs.edit().putBoolean(mKey, value).commit();
+			mPrefs.edit().putBoolean(mKey, value).apply();
 		}
 	}
 
@@ -140,7 +140,7 @@ public abstract class UserDialog {
 		return mPrefs.getBoolean(key, false);
 	}
 
-	// Render the dialog; called from the UI thread.  May not block. 
+	// Render the dialog; called from the UI thread.  May not block.
 	public void onStart(Context context) {
 		mDialogUp = true;
 		Log.d(TAG, "rendering user dialog");

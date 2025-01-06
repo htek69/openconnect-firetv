@@ -346,7 +346,7 @@ public class TokenImportActivity extends Activity {
 				if (mUUID == null) {
 					mProfile = ProfileManager.create(mNewVpnHostname);
 				}
-				mProfile.mPrefs.edit().putString("software_token", "securid").commit();
+				mProfile.mPrefs.edit().putString("software_token", "securid").apply();
 				writeAndExit();
 			}
 		});
@@ -422,9 +422,9 @@ public class TokenImportActivity extends Activity {
     private void writeAndExit() {
     	boolean wasEmpty = mProfile.mPrefs.getString("token_string", "").equals("");
 
-    	mProfile.mPrefs.edit().putString("token_string", mTokenString).commit();
+    	mProfile.mPrefs.edit().putString("token_string", mTokenString).apply();
     	if (mTokenString.equals("") && !wasEmpty) {
-    		mProfile.mPrefs.edit().putString("software_token", "disabled").commit();
+    		mProfile.mPrefs.edit().putString("software_token", "disabled").apply();
     	}
     	setResult(RESULT_OK);
     	finish();

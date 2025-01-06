@@ -79,7 +79,6 @@ $(INSTALL_ARCH_TARGETS) : install-arch-% : arch-%
 	cp $*/libstoken.so $(JNI_DIR)/$(NDK_ARCH_$*)/
 	mkdir -p $(BIN_DIR)/$(NDK_ARCH_$*)
 	cp $*/curl $(BIN_DIR)/$(NDK_ARCH_$*)/curl-bin
-	cp $*/run_pie $(BIN_DIR)/$(NDK_ARCH_$*)/
 
 .PHONY: $(ARCH_TARGETS)
 $(ARCH_TARGETS) : arch-% : %/curl %/libstoken.so %/libopenconnect.so
@@ -127,7 +126,6 @@ $(ARCH_OC_TARGETS) : %/libopenconnect.so : .openconnect-sources
 	cp -a openconnect $*/
 	$(MAKE) -C $*/openconnect/android ARCH=$* NDK=$(NDK)
 	cp -Lf $*/openconnect/android/$(TRIPLET_$*)/out/lib/libopenconnect.so $@
-	cp -f $*/openconnect/android/$(TRIPLET_$*)/out/sbin/run_pie $*/
 
 .openconnect-sources:
 	$(MAKE) -C openconnect/android sources
