@@ -1,2 +1,36 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<resources/>
+<resources>
+    <string-array name="vpn_protocol_entries">
+    <item>Cisco AnyConnect or ocserv</item>
+    <item>Juniper Network Connect or Pulse Secure</item>
+    <item>Palo Alto Networks GlobalProtect</item>
+    </string-array>
+
+    <string-array name="software_token_entries">
+        <item>Отключен</item>
+        <item>RSA SecurID</item>
+        <item>TOTP</item>
+    </string-array>
+
+    <string-array name="batch_mode_entries">
+        <item>Отключен</item>
+        <item>Спрашивать только про пустые поля</item>
+        <item>Никогда не спрашивать данные авторизации</item>
+    </string-array>
+
+    <string-array name="split_tunnel_mode_entries">
+        <item>Автоматически</item>
+        <item>Включено - DNS использует VPN</item>
+        <item>Включено - DNS использует uplink</item>
+    </string-array>
+
+    <string-array name="connection_states">
+        <item>Неизвестно</item>
+        <item>Авторизация</item>
+        <item>Ожидание ввода пользователя</item>
+        <item>Авторизовано</item>
+        <item>Подключение</item>
+        <item>Подключено</item>
+        <item>Отключено</item>
+    </string-array>
+</resources>
