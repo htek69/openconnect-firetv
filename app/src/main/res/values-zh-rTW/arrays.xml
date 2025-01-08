@@ -1,2 +1,50 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<resources/>
+<resources>
+  <string-array name="vpn_protocol_entries">
+      <item>Cisco AnyConnect 或 ocserv</item>
+      <item>Juniper Network Connect 或 Pulse Secure</item>
+      <item>Palo Alto Networks GlobalProtect</item>
+  </string-array>
+  <string-array name="vpn_protocol_values">
+      <item>anyconnect</item>
+      <item>nc</item>
+      <item>gp</item>
+  </string-array>
+
+  <string-array name="software_token_entries">
+      <item>關閉</item>
+      <item>RSA SecurID</item>
+      <item>TOTP</item>
+  </string-array>
+
+  <string-array name="batch_mode_entries">
+      <item>關閉</item>
+      <item>僅提示輸入空白字串</item>
+      <item>永不提示輸入憑據</item>
+  </string-array>
+
+  <string-array name="reported_os_entries">
+      <item>Android</item>
+      <item>Linux (32位元)</item>
+      <item>Linux (64位元)</item>
+      <item>Windows</item>
+      <item>Mac</item>
+      <item>iOS</item>
+  </string-array>
+
+  <string-array name="split_tunnel_mode_entries">
+      <item>自動</item>
+      <item>開啟 - 讓DNS流量透過VPN傳輸</item>
+      <item>開啟 - 讓DNS流量本地直接傳輸</item>
+  </string-array>
+
+  <string-array name="connection_states">
+      <item>未知</item>
+      <item>驗證中</item>
+      <item>提示使用者輸入</item>
+      <item>驗證成功</item>
+      <item>建立連線中</item>
+      <item>已連線</item>
+      <item>已斷開連線</item>
+  </string-array>
+</resources>
