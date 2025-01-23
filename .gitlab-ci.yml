@@ -24,7 +24,7 @@ workflow:
         paths:
           - external/**/*
           - misc/Dockerfile
-        compare_to: fe52ca3b14da941a1ab7af25ad21e7818e3cae6d
+        compare_to: b476bab7643b619dfea30d6d4ee43053d3df3569
       variables:
         EXTERNAL_CHANGED: true
     - when: always
