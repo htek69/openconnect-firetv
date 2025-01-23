@@ -1,23 +1,17 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <resources>
   <string name="app">OpenConnect</string>
-  <string name="permission_description">允许其他应用控制 OpenConnect</string>
-  <string name="location">位置</string>
-  <string name="cant_read_folder">无法读取目录</string>
   <string name="ok">确定</string>
   <string name="cancel">取消</string>
   <string name="next">下一步</string>
   <string name="finish">完成</string>
-  <string name="no_data">无数据</string>
-  <string name="client_certificate_title">客户端证书</string>
   <string name="securid_info">SecurID 信息</string>
   <string name="report_problem">报告问题</string>
   <string name="feedback_plea">花几秒钟对应用进行评分对开发者来说非常重要。它使我们能够不断改进体验，并帮助其他用户决定应用是否适合他们。告诉我们您的想法如何？</string>
   <string name="i_love_it">我喜欢它</string>
   <string name="needs_work">需要改进</string>
   <string name="maybe_later">以后再说</string>
-  <string name="help_with_translations">翻译帮助</string>
-  <string name="about_openconnect">关于 OpenConnect</string>
+    <string name="about_openconnect">关于 OpenConnect</string>
   <string name="securid_none_defined">您的 VPN 配置文件均未设置 SecurID 令牌字符串。\n\n若要添加，请导入 \"sdtid\" 文件或单击电子邮件中的 \"http://127.0.0.1/securid\" URL。有关更多信息，请参阅常见问题解答。</string>
   <string name="securid_parse_error">无法解析此配置文件中的 SecurID 令牌字符串。</string>
   <string name="securid_internal_error">无法访问 VPN 配置文件。请向作者提交错误报告。</string>
@@ -35,8 +29,6 @@
   <string name="vpn_list_title">配置文件</string>
   <string name="status">状态</string>
   <string name="log">日志</string>
-  <string name="file_select">选择…</string>
-  <string name="file_nothing_selected">您必须选择一个文件</string>
   <string name="configure_the_vpn">配置 VPN</string>
   <string name="menu_add_profile">添加配置文件</string>
   <string name="add_profile_hostname_prompt">输入主机名、IP 地址或 URL：</string>
@@ -50,8 +42,6 @@
   <string name="clear">清除</string>
   <string name="use_dtls">使用 DTLS</string>
   <string name="use_dtls_summary">启用通过 UDP 的连接</string>
-  <string name="send">发送</string>
-  <string name="enter_problem">在此处输入问题描述：</string>
   <string name="add_new_button">添加新连接</string>
   <string name="delete_profile">删除配置文件</string>
   <string name="sni">自定义 SNI</string>
@@ -60,17 +50,8 @@
   <string name="faq">常见问题解答</string>
   <string name="question_abbrev">问：</string>
   <string name="answer_abbrev">答：</string>
-  <string name="file_explorer_tab">文件资源管理器</string>
-  <string name="inline_file_tab">内联文件</string>
-  <string name="file_too_large">文件太大</string>
-  <string name="error_importing_file">导入文件时出错</string>
-  <string name="import_error_message">无法从文件系统导入文件</string>
-  <string name="inline_file_data">[[内联文件数据]]</string>
   <string name="speed_waiting">等待状态消息…</string>
-  <string name="file_icon">文件图标</string>
   <string name="generalsettings">设置</string>
-  <string name="owner_fix_summary">尝试将 /dev/tun 的所有者设置为 \'system\' UID (1000)。某些 CM9 图像需要此设置才能使 VPNService API 正常工作。需要 root 权限。</string>
-  <string name="owner_fix">修复 /dev/tun 的所有权</string>
   <string name="edit_profile_title">编辑 \"%s\"</string>
   <string name="netchange_summary">如果网络状态发生变化（例如 WiFi 到/从移动设备），则启用此选项将强制重新连接</string>
   <string name="netchange">网络更改时重新连接</string>
@@ -83,10 +64,7 @@
   <string name="disabled">已禁用</string>
   <string name="subnet_mask">子网掩码：</string>
   <string name="server_name">服务器名称：</string>
-  <string name="select_file">选择</string>
   <string name="advanced">高级</string>
-  <string name="setting_loadtun_summary">尝试在连接之前加载 tun.ko 内核模块。需要 root 设备。</string>
-  <string name="setting_loadtun">加载 tun 模块</string>
   <string name="trace_log_summary">增加日志详细程度以进行调试。这会影响性能。</string>
   <string name="trace_log">启用 TRACE 日志记录</string>
   <string name="getproxy_error">获取代理设置时出错：%s</string>
@@ -104,7 +82,6 @@
   <string name="oneway_bytecount">%1$s/s %2$s</string>
   <string name="statusline_bytecount">↓%2$s/s %1$s - ↑%4$s/s %3$s</string>
   <string name="login_title">%s 登录</string>
-  <string name="make_selection_inline">复制到个人资料</string>
   <string name="add">添加</string>
   <string name="prompt">%1$s 尝试控制 %2$s</string>
   <string name="remote_warning">继续操作即表示您授予应用程序完全控制 OpenConnect for Android 和拦截所有网络流量的权限。<b> 除非您信任该应用程序，否则请勿接受。 </b> 否则，您的数据将面临被恶意软件入侵的风险。”</string>
@@ -115,7 +92,6 @@
   <string name="screenoff_summary">屏幕关闭时暂停连接，以节省电池寿命。</string>
   <string name="screenoff_title">睡眠时暂停</string>
   <string name="save_password">保存密码</string>
-  <string name="device_specific">设备专用黑客</string>
   <string name="cannotparsecert">无法显示证书信息</string>
   <string name="vpnbehaviour">VPN 行为</string>
   <string name="allow_vpn_changes">允许更改 VPN 配置文件</string>
@@ -133,9 +109,6 @@
   <string name="token_string">令牌字符串</string>
   <string name="enter_token_string">输入令牌字符串：</string>
   <string name="token_string_examples_0">有效格式包括：</string>
-  <string name="token_string_examples_1" translatable="false">29624-04141-91521-01027-05321-47115-52307-30331-00256-47622-00007-44173-12504-44077-52716-73535-5</string>
-  <string name="token_string_examples_2" translatable="false">http://127.0.0.1/securid/ctf?ctfData=213797568467227240150540165305516771132574111177500436764173125710437026671675121</string>
-  <string name="token_string_examples_3" translatable="false">com.rsa.securid.iphone://ctf?ctfData=280670666747751343027701722017126407551472632305635574224173125614664606671656613</string>
   <string name="token_bad_string_title">令牌字符串无效</string>
   <string name="token_bad_string_summary">无法解析提供的字符串。请检查错误并重新提交。</string>
   <string name="token_need_devid">此令牌与特定设备 ID 绑定，通常在 RSA SecurID 软件令牌应用程序的“关于”屏幕上找到。在此处输入设备 ID：</string>

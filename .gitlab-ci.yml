@@ -5,10 +5,11 @@ stages:
   - release
 
 variables:
-  BUILD_ENV_IMAGE: $CI_REGISTRY/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME:build-environment
+  BUILD_ENV_IMAGE: $CI_REGISTRY/openconnect/ics-openconnect:build-environment
+  NDK_IMAGE: $CI_REGISTRY/openconnect/build-images:openconnect-cli-android-$NDK_VERSION
   NDK_DIR: /opt/android-sdk-linux_x86/android-ndk-$NDK_VERSION
-  NDK_IMAGE: $CI_REGISTRY/$CI_PROJECT_NAMESPACE/build-images:openconnect-cli-android-$NDK_VERSION
   NDK_VERSION: r27c
+  APP_NAME: OpenConnect
 
 workflow:
   auto_cancel:
@@ -16,15 +17,19 @@ workflow:
   rules:
     - if: $CI_PIPELINE_SOURCE != "push"
       when: never
-      # 0000 is default CI_COMMIT_BEFORE_SHA for a new branch
-    - if: $CI_COMMIT_TAG == null || $CI_COMMIT_BEFORE_SHA != "0000000000000000000000000000000000000000"
-      changes:
-      - external/**/*
+    - if: $CI_COMMIT_TAG != null
+      variables:
+        RELEASE: true
+    - changes:
+        paths:
+          - external/**/*
+          - misc/Dockerfile
+        compare_to: fe52ca3b14da941a1ab7af25ad21e7818e3cae6d
       variables:
         EXTERNAL_CHANGED: true
     - when: always
 
-
+# --- Inheritance ---
 .base:
   tags: [saas-linux-small-amd64]
 
@@ -51,7 +56,9 @@ workflow:
       needs:
         - job: build-env/environment-container
           artifacts: false
-    - when: always
+    - if: $RELEASE
+      when: never
+    - when: on_success
   cache:
     key: build-cache
     paths: [app/build, .gradle_home]
@@ -60,19 +67,26 @@ workflow:
   extends: .base_runner
   artifacts:
     when: on_failure
-    paths:
-      - app/build/reports
+    paths: [app/build/reports]
+
+.release_rules: &release_rules
+  - if: $RELEASE
+    when: on_success
+  - when: never
 
 
-Signoff:
+# --- Signoff ---
+signoff:
   stage: signoff
   script:
   # Quoted to work around https://gitlab.com/gitlab-org/gitlab-foss/-/issues/20177
   - 'echo "Checking for new commits without Signed-off-by: tags as described in https://gitlab.com/openconnect/ics-openconnect/-/blob/master/CONTRIBUTING.md"'
   # Last bad commit
-  - 'git log 4d935fd3231543b48ea10acaaf16ded58634bb3f.. --grep "(^Signed-off-by)|(^Merge branch)|(^This reverts commit)" --extended-regexp --invert-grep --exit-code'
+  - 'git log 25c66abcdb25cecbd019f8b5bd2535207f979725.. --grep "(^Signed-off-by)|(^Merge branch)|(^This reverts commit)" --extended-regexp --invert-grep --exit-code'
   - echo "None (good)"
 
+
+# --- Build environment ---
 build-env/external-libraries:
   extends: .base_build_env
   variables:
@@ -99,12 +113,15 @@ build-env/external-libraries:
 
 build-env/environment-container:
   extends: .base_build_env
+  image: fedora:40
   needs: [build-env/external-libraries]
   script:
     - |
       dnf install -y podman && dnf clean all
       ./misc/build-environment.sh $BUILD_ENV_IMAGE
 
+
+# --- Tests ---
 test/build-debug:
   extends: .base_runner
   script:
@@ -112,38 +129,55 @@ test/build-debug:
       ./gradlew assembleDebug --no-daemon --build-cache -s
       mv ./app/build/outputs/apk/debug/app-debug.apk OpenConnect.debug.apk
   artifacts:
-    paths:
-      - ./OpenConnect.debug.apk
+    paths: [OpenConnect.debug.apk]
 
 test/lint:
   extends: .base_report_runner
   allow_failure: true
-  script:
-    - ./gradlew lint --no-daemon --build-cache -s
+  script: [./gradlew lint --no-daemon --build-cache -s]
 
-test/test:
-  extends: .base_report_runner
+
+# --- Release ---
+release/build-release:
+  extends: .base_runner
+  rules: *release_rules
+  stage: release
   script:
-    - ./gradlew test --no-daemon --build-cache -s
+    - |
+      apk_name="app-release-unsigned.apk"
+      [ -n "$KEYSTORE" ] && {
+        base64 -d <<<"$KEYSTORE" > ./app/oc.jks
+        echo "password=$KEYSTORE_PASSWORD" > ./app/release.properties
+        echo "path=oc.jks" >> ./app/release.properties
+        echo "alias=ics-openconnect" >> ./app/release.properties
+        apk_name="app-release.apk"
+      }
+      ./gradlew assemble bundle --no-daemon --build-cache -s
+      mv ./app/build/outputs/apk/release/$apk_name $APP_NAME.apk
+      mv ./app/build/outputs/bundle/release/app-release.aab $APP_NAME.aab
+  artifacts:
+    paths: ['$APP_NAME.{apk,aab}']
 
 release/create-release:
   extends: .base
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs: [test/build-debug]
   stage: release
-  rules:
-    - if: $CI_COMMIT_TAG
-      when: on_success
-    - when: never
-  artifacts:
-    paths: [OpenConnect.debug.apk]
-    expire_in: never
+  rules: *release_rules
+  needs: [release/build-release]
   script: [':']
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  artifacts:
+    paths: ['$APP_NAME.{apk,aab}']
+    expire_in: never
   release:
-    tag_name: $CI_COMMIT_TAG
+    name: $CI_COMMIT_TAG
     description: Release $CI_COMMIT_TAG
+    tag_name: $CI_COMMIT_TAG
     assets:
       links:
-        - name: OpenConnect.debug.apk
-          url: $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/OpenConnect.debug.apk
+        - name: $APP_NAME.apk
+          url: $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/$APP_NAME.apk
           link_type: package
+        - name: $APP_NAME.aab
+          url: $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/$APP_NAME.aab
+          link_type: package
+

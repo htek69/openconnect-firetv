@@ -15,7 +15,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textAppearance="?android:attr/textAppearanceMedium"
-            android:gravity="left" />
+            android:gravity="start" />
 
         <Space
             android:layout_width="0dip"
@@ -28,7 +28,7 @@
             android:layout_height="wrap_content"
             android:visibility="invisible"
             android:textAppearance="?android:attr/textAppearanceMedium"
-            android:gravity="right" />
+            android:gravity="end" />
 
     </LinearLayout>
 
@@ -54,7 +54,7 @@
 	            android:id="@+id/tx"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="left" />
+	            android:gravity="start" />
 
 	        <Space
 	            android:layout_width="0dip"
@@ -65,7 +65,7 @@
 	            android:id="@+id/rx"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="right" />
+	            android:gravity="end" />
 
 	    </LinearLayout>
 
@@ -84,7 +84,7 @@
 	            android:id="@+id/server_name"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="left" />
+	            android:gravity="start" />
 
 		</LinearLayout>
 
@@ -103,7 +103,7 @@
 	            android:id="@+id/local_ip4"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="left" />
+	            android:gravity="start" />
 
 	        <Space
 	            android:layout_width="0dip"
@@ -114,7 +114,7 @@
 	            android:id="@+id/local_ip4_netmask"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="right" />
+	            android:gravity="end" />
 
 		</LinearLayout>
 
@@ -133,7 +133,7 @@
 	            android:id="@+id/local_ip6"
 	            android:layout_width="wrap_content"
 	            android:layout_height="wrap_content"
-	            android:gravity="left" />
+	            android:gravity="start" />
 
 		</LinearLayout>
 

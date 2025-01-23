@@ -3,22 +3,16 @@
 <resources>
 
     <string name="app">OpenConnect</string>
-    <string name="permission_description">Allows another app to control OpenConnect</string>
-    <string name="location">Location</string>
-    <string name="cant_read_folder">Unable to read directory</string>
     <string name="ok">OK</string>
     <string name="cancel">Cancel</string>
     <string name="next">Next</string>
     <string name="finish">Finish</string>
-    <string name="no_data">No Data</string>
-    <string name="client_certificate_title">Client Certificate</string>
     <string name="securid_info">SecurID info</string>
     <string name="report_problem">Report a problem</string>
     <string name="feedback_plea">Taking a few seconds to rate an app is very important for the developer.  It allows us to continually improve the experience, and helps other users decide whether an app is right for them. How about telling us what you think?</string>
     <string name="i_love_it">I love it</string>
     <string name="needs_work">Needs work</string>
     <string name="maybe_later">Maybe later</string>
-    <string name="help_with_translations">Help with translations</string>
     <string name="about_openconnect">About OpenConnect</string>
     <string name="securid_none_defined">None of your VPN profiles have a SecurID token string set.\n\nTo add one, import an \"sdtid\" file or click on a \"http://127.0.0.1/securid\" URL from your email.  See the FAQ for more information.</string>
     <string name="securid_parse_error">Unable to parse the SecurID token string in this profile.</string>
@@ -37,8 +31,6 @@
     <string name="vpn_list_title">Profiles</string>
     <string name="status">Status</string>
     <string name="log">Log</string>
-    <string name="file_select">Select…</string>
-    <string name="file_nothing_selected">You must select a file</string>
     <string name="configure_the_vpn">Configure the VPN</string>
     <string name="menu_add_profile">Add Profile</string>
     <string name="add_profile_hostname_prompt">Enter the hostname, IP address, or URL:</string>
@@ -53,9 +45,6 @@
     <string name="use_dtls">Use DTLS</string>
     <string name="use_dtls_summary">Connect over UDP</string>
 
-    <string name="send">Send</string>
-    <string name="enter_problem">ENTER PROBLEM DESCRIPTION HERE:</string>
-
     <string name="add_new_button">Add new connection</string>
     <string name="delete_profile">Delete profile</string>
     <string name="sni">Custom SNI</string>
@@ -65,17 +54,8 @@
     <string name="faq">FAQ</string>
     <string name="question_abbrev">Q:</string>
     <string name="answer_abbrev">A:</string>
-    <string name="file_explorer_tab">File Explorer</string>
-    <string name="inline_file_tab">Inline File</string>
-    <string name="file_too_large">File is too large</string>
-    <string name="error_importing_file">Error importing File</string>
-    <string name="import_error_message">Could not import File from filesystem</string>
-    <string name="inline_file_data">[[Inline file data]]</string>
     <string name="speed_waiting">Waiting for state message…</string>
-    <string name="file_icon">file icon</string>
     <string name="generalsettings">Settings</string>
-    <string name="owner_fix_summary">Tries to set the owner of /dev/tun to the \'system\' UID (1000). Some CM9 images need this to make the VPNService API work. Requires root.</string>
-    <string name="owner_fix">Fix ownership of /dev/tun</string>
     <string name="edit_profile_title">Editing \"%s\"</string>
     <string name="netchange_summary">Turning this option on will force a reconnect if the network state is changed (e.g. WiFi to/from mobile)</string>
     <string name="netchange">Reconnect on network change</string>
@@ -88,10 +68,7 @@
     <string name="disabled">disabled</string>
     <string name="subnet_mask">Subnet mask:</string>
     <string name="server_name">Server name:</string>
-    <string name="select_file">Select</string>
     <string name="advanced">Advanced</string>
-    <string name="setting_loadtun_summary">Try to load the tun.ko kernel module before trying to connect. Needs rooted devices.</string>
-    <string name="setting_loadtun">Load tun module</string>
     <string name="trace_log_summary">Increase logging verbosity for debugging purposes. This will affect performance.</string>
     <string name="trace_log">Enable TRACE logging</string>
     <string name="getproxy_error">Error getting proxy settings: %s</string>
@@ -109,7 +86,6 @@
     <string name="oneway_bytecount">%1$s/s %2$s</string>
     <string name="statusline_bytecount">↓%2$s/s %1$s - ↑%4$s/s %3$s</string>
     <string name="login_title">%s login</string>
-    <string name="make_selection_inline">Copy into profile</string>
     <string name="add">Add</string>
     <string name="prompt">%1$s attempts to control %2$s</string>
     <string name="remote_warning">By proceeding, you are giving the application permission to completely control OpenConnect for Android and to intercept all network traffic. <b> Do NOT accept unless you trust the application. </b> Otherwise, you run the risk of having your data compromised by malicious software."</string>
@@ -120,7 +96,6 @@
     <string name="screenoff_summary">Pause the connection when the screen is off, to save battery life.</string>
     <string name="screenoff_title">Pause when asleep</string>
     <string name="save_password">Save Password</string>
-    <string name="device_specific">Device-specific Hacks</string>
     <string name="cannotparsecert">Cannot display certificate information</string>
     <string name="vpnbehaviour">VPN behavior</string>
     <string name="allow_vpn_changes">Allow changes to VPN Profiles</string>

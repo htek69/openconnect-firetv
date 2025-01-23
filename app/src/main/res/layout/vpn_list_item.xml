@@ -62,8 +62,8 @@
         android:layout_gravity="center"
         android:background="?android:attr/selectableItemBackground"
         android:contentDescription="@string/configure_the_vpn"
-        android:paddingLeft="15dip"
-        android:paddingRight="?android:attr/scrollbarSize"
+        android:paddingStart="15dip"
+        android:paddingEnd="?android:attr/scrollbarSize"
         android:src="@drawable/ic_sysbar_quicksettings" />
 
 </LinearLayout>

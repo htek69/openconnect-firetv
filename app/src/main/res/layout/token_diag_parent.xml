@@ -13,7 +13,8 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:textSize="24sp"
-            android:paddingRight="10sp"
+            android:paddingEnd="10sp"
+            android:paddingStart="0sp"
             android:text="@string/profile_label" />
 
         <Spinner

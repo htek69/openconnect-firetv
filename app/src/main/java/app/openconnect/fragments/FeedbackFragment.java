@@ -124,7 +124,7 @@ public class FeedbackFragment extends Fragment {
 
     private static void recordNag(Context ctx) {
     	SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(ctx);
-    	sp.edit().putBoolean("feedback_nagged", true).commit();
+    	sp.edit().putBoolean("feedback_nagged", true).apply();
     }
 
     private static boolean isNagOK(Context ctx) {

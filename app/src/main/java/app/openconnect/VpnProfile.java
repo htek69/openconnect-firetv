@@ -53,7 +53,7 @@ public class VpnProfile implements Comparable<VpnProfile> {
     	prefs.edit()
     		.putString("profile_uuid", uuid)
     		.putString("profile_name", name)
-    		.commit();
+    		.apply();
     	loadPrefs(prefs);
     }
 

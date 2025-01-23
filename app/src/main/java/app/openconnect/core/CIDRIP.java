@@ -72,7 +72,7 @@ class CIDRIP{
 			// Assume no CIDR, set /32
 			return 32;
 		} else {
-			return 32 - lenZeros; 
+			return 32 - lenZeros;
 		}
 	}
 
@@ -86,7 +86,7 @@ class CIDRIP{
 
 		long newip = ip & (0xffffffffl << (32 -len));
 		if (newip != ip){
-			mIp = String.format("%d.%d.%d.%d", (newip & 0xff000000) >> 24,(newip & 0xff0000) >> 16, (newip & 0xff00) >> 8 ,newip & 0xff);
+			mIp = String.format(Locale.getDefault(), "%d.%d.%d.%d", (newip & 0xff000000) >> 24,(newip & 0xff0000) >> 16, (newip & 0xff00) >> 8 ,newip & 0xff);
 			return true;
 		} else {
 			return false;
@@ -106,5 +106,5 @@ class CIDRIP{
 	public long getInt() {
 		return getInt(mIp);
 	}
-	
+
 }

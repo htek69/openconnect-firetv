@@ -314,16 +314,16 @@ public class OpenVpnService extends VpnService {
 		startTime = (new Date().getTime() - startTime) / 1000;
 		if (startTime >= 60 * 60 * 24) {
 			// days
-			sb.append(String.format("%1$d:", startTime / (60 * 60 * 24)));
+			sb.append(String.format(Locale.getDefault(),"%1$d:", startTime / (60 * 60 * 24)));
 		}
 		if (startTime >= 60 * 60) {
 			// hours
 			startTime %= 60 * 60 * 24;
-			sb.append(String.format("%1$02d:", startTime / (60 * 60)));
+			sb.append(String.format(Locale.getDefault(), "%1$02d:", startTime / (60 * 60)));
 			startTime %= 60 * 60;
 		}
 		// minutes:seconds
-		sb.append(String.format("%1$02d:%2$02d", startTime / 60, startTime % 60));
+		sb.append(String.format(Locale.getDefault(), "%1$02d:%2$02d", startTime / 60, startTime % 60));
 		return sb.toString();
 	}
 

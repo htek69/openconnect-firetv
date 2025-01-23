@@ -236,7 +236,7 @@ public class VPNProfileList extends ListFragment {
 			.setIcon(android.R.drawable.ic_menu_add)
 			.setAlphabeticShortcut('a')
 			.setTitleCondensed(getActivity().getString(R.string.add))
-			.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
+			.setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM | MenuItem.SHOW_AS_ACTION_WITH_TEXT);
 		mDropdown = new CommonMenu(getActivity(), menu, false);
 	}
 
@@ -288,8 +288,7 @@ public class VPNProfileList extends ListFragment {
 			});
 			builder.setNegativeButton(android.R.string.cancel, null);
 
-			EditText et = (EditText)v.findViewById(R.id.entry);
-			et.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+			mDialogEntry.setOnEditorActionListener(new TextView.OnEditorActionListener() {
 				@Override
 				public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
 					if (actionId == EditorInfo.IME_ACTION_DONE ||

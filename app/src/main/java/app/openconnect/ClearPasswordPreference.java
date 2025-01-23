@@ -45,7 +45,7 @@ public class ClearPasswordPreference extends DialogPreference {
             for (Map.Entry<String,?> entry : sp.getAll().entrySet()) {
             	String key = entry.getKey();
             	if (key.startsWith("FORMDATA-") || key.startsWith("ACCEPTED-CERT-")) {
-            		sp.edit().putString(key, "").commit();
+            		sp.edit().putString(key, "").apply();
             	}
             }
         }
