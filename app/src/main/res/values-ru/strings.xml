@@ -83,7 +83,6 @@
   <string name="remote_warning">Продолжая, вы даете приложению права на управление \"OpenConnect для Android\" и перехват всего сетевого трафика. <b> Не продолжайте, если не доверяете полностью этому приложению. </b> В противном случае вы рискуете утечкой  и использованием ваших данных злоумышленниками.</string>
   <string name="remove_vpn">Удалить VPN</string>
   <string name="remove_vpn_query">Удалить профиль VPN %s?</string>
-  <string name="report_problem">Сообщить о проблеме</string>
   <string name="reported_os">Сообщаемая OS</string>
   <string name="reported_user_agent">User-Agent</string>
   <string name="reported_user_agent_override">Переназначить сообщаемый User-Agent</string>

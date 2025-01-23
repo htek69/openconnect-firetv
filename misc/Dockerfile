@@ -11,7 +11,7 @@ RUN dnf install -y git unzip wget java-17-openjdk-devel && dnf clean all && \
     unzip $CMDLINE_ZIP -d /opt/android-sdk/cmdline-tools && \
     rm $CMDLINE_ZIP && mv /opt/android-sdk/cmdline-tools/{cmdline-tools,latest} && \
     yes | sdkmanager --licenses && \
-    sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+    sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-35"
 
 COPY artifacts/app /prebuilt/app
 
