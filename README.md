@@ -1,18 +1,11 @@
-Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect).
-
----
-**NOTE**
-
-There are no openconnect packages in Android store released by this project.
-Get involved (see #1) to release the Android client.
-
----
-
-XDA thread: [comment](https://forum.xda-developers.com/showthread.php?p=77318683#post77318683)
-
-
 OpenConnect for Android
 =======================
+
+<a href="https://play.google.com/store/apps/details?id=net.openconnect_vpn.android"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Google_Play_Store_badge_EN.svg/2880px-Google_Play_Store_badge_EN.svg.png" width="200px" height="59px"></img></a>
+
+Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect).
+
+XDA thread: [comment](https://forum.xda-developers.com/showthread.php?p=77318683#post77318683)
 
 This is a VPN client for Android, based on the Linux build of
 [OpenConnect](http://www.infradead.org/openconnect/).
@@ -27,8 +20,7 @@ Changelog: see [doc/CHANGES.txt](misc/doc/CHANGES.txt)
 
 ## Downloads and support
 
-You can build the package and install it to your phone. There are
-no openconnect packages in any Android store released by this project.
+You can get the app on [Google Play](https://play.google.com/store/apps/details?id=net.openconnect_vpn.android), or download the latest release from the GitLab [releases](https://gitlab.com/openconnect/ics-openconnect/-/releases) page directly. F-Droid listing is comming soon.
 
 ## Screenshots
 
