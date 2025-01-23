@@ -1,4 +1,5 @@
 stages:
+  - signoff
   - build-env
   - test
   - release
@@ -62,6 +63,15 @@ workflow:
     paths:
       - app/build/reports
 
+
+Signoff:
+  stage: signoff
+  script:
+  # Quoted to work around https://gitlab.com/gitlab-org/gitlab-foss/-/issues/20177
+  - 'echo "Checking for new commits without Signed-off-by: tags as described in https://gitlab.com/openconnect/ics-openconnect/-/blob/master/CONTRIBUTING.md"'
+  # Last bad commit
+  - 'git log 4d935fd3231543b48ea10acaaf16ded58634bb3f.. --grep "(^Signed-off-by)|(^Merge branch)|(^This reverts commit)" --extended-regexp --invert-grep --exit-code'
+  - echo "None (good)"
 
 build-env/external-libraries:
   extends: .base_build_env
