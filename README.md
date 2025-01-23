@@ -32,7 +32,7 @@ no openconnect packages in any Android store released by this project.
 
 ## Screenshots
 
-|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="200">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="200">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="200">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="200">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="200">|
+|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="400" width="180">|
 |---|---|---|---|---|
 
 ## Building from source
@@ -43,11 +43,13 @@ On the host side you'll need to install:
 
 * Android SDK in your $PATH (both platform-tools/ and tools/ directories)
 * $ANDROID\_HOME pointed at the Android SDK directory
-* javac 1.8 and a recent version of Apache ant in your $PATH
-* Use the Android SDK Manager to install API 19
-* NDK r16b, nominally unzipped under /opt/android-sdk-linux\_x86/
+* JDK 17 and a recent version of Apache ant in your $PATH
+* Use the Android SDK Manager to install `"platform-tools" "build-tools;34.0.0" "platforms;android-35"`
+* NDK r27c, nominally unzipped under /opt/android-sdk-linux\_x86/
 * Host-side gcc, make, etc. (Red Hat "Development Tools" group or Debian build-essential)
 * git, autoconf, automake, and libtool
+
+If you encounter any issues, take a look at [`misc/Dockerfile`](https://gitlab.com/openconnect/ics-openconnect/-/blob/master/misc/Dockerfile).
 
 ### Compiling the external dependencies
 
@@ -62,11 +64,8 @@ make -C external
 ```
 
 This procedure only runs on a Linux PC.  If you are unable to build from
-source, you can try fetching the cached artifacts from a recent CI build:
+source, you can try fetching the cached artifacts from a recent [CI build](https://gitlab.com/openconnect/ics-openconnect/-/pipelines).
 
-```sh
-./misc/download-artifacts.sh
-```
 
 ### Compiling the app
 

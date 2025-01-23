@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace "app.openconnect"
+    namespace "net.openconnect_vpn.android"
     defaultConfig {
         minSdk 23
         targetSdk 34
