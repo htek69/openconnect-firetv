@@ -98,7 +98,7 @@ build-env/external-libraries:
       cp -rf --parents
       app/src/main/assets/raw/{armeabi,arm64-v8a,x86,x86_64}
       app/src/main/jniLibs/{armeabi,arm64-v8a,x86,x86_64}
-      app/libs/{openconnect,stoken}-wrapper.jar artifacts || :
+      app/libs/{openconnect,stoken}-wrapper.jar artifacts
   artifacts:
     expire_in: 1 hour
     paths: [artifacts]
