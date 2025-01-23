@@ -13,13 +13,18 @@ android {
         versionName "1.12"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
-    signingConfigs {
-        release {
-            if (project.hasProperty('KEYSTORE_FILE')) {
-                storeFile file(KEYSTORE_FILE)
-                storePassword KEYSTORE_PASSWORD
-                keyAlias KEYSTORE_ALIAS
-                keyPassword KEYSTORE_KEY_PASSWORD
+    if (file("release.properties").exists()) {
+        signingConfigs {
+            release {
+                file("release.properties").with {
+                    def properties = new Properties()
+                    properties.load(new FileInputStream(it))
+
+                    storeFile file(properties['path'])
+                    keyAlias properties['alias']
+                    storePassword properties['password']
+                    keyPassword properties['password']
+                }
             }
         }
     }
@@ -27,7 +32,8 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (file("release.properties").exists())
+                signingConfig signingConfigs.release
         }
     }
     lintOptions {

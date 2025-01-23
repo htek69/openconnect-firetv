@@ -26,6 +26,17 @@
     </issue>
 
     <issue
+        id="LeanbackUsesWifi"
+        message="Requiring Wifi permissions limits app availability on TVs that support only Ethernet"
+        errorLine1="    &lt;uses-permission android:name=&quot;android.permission.ACCESS_WIFI_STATE&quot; />"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="11"
+            column="5"/>
+    </issue>
+
+    <issue
         id="UseCompoundDrawables"
         message="This tag and its children can be replaced by one `&lt;TextView/>` and a compound drawable"
         errorLine1="        &lt;LinearLayout android:layout_width=&quot;match_parent&quot;"
@@ -49,14 +60,14 @@
 
     <issue
         id="IconDensities"
-        message="Missing the following drawables in `drawable-hdpi`: ic_action_refresh.png, ic_stat_vpn.png">
+        message="Missing the following drawables in `drawable-hdpi`: banner.png, ic_action_refresh.png, ic_stat_vpn.png">
         <location
             file="src/main/res/drawable-hdpi"/>
     </issue>
 
     <issue
         id="IconDensities"
-        message="Missing the following drawables in `drawable-mdpi`: ic_action_refresh.png, ic_stat_vpn.png">
+        message="Missing the following drawables in `drawable-mdpi`: banner.png, ic_action_refresh.png, ic_stat_vpn.png">
         <location
             file="src/main/res/drawable-mdpi"/>
     </issue>
@@ -70,7 +81,7 @@
 
     <issue
         id="IconDensities"
-        message="Missing the following drawables in `drawable-xxhdpi`: ic_menu_archive.png, ic_menu_trash_holo_light.png, ic_stat_vpn.png, ic_sysbar_quicksettings.png">
+        message="Missing the following drawables in `drawable-xxhdpi`: banner.png, ic_menu_archive.png, ic_menu_trash_holo_light.png, ic_stat_vpn.png, ic_sysbar_quicksettings.png">
         <location
             file="src/main/res/drawable-xxhdpi"/>
     </issue>
@@ -213,7 +224,7 @@
         errorLine1="   ver.setText(&quot;OpenConnect for Android v&quot; + packageinfo.versionName);"
         errorLine2="               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
-            file="src/main/java/app/openconnect/fragments/AboutFragment.java"
+            file="src/main/java/net/openconnect_vpn/android/fragments/AboutFragment.java"
             line="55"
             column="16"/>
     </issue>
@@ -224,7 +235,7 @@
         errorLine1="   ver.setText(&quot;OpenConnect for Android v&quot; + packageinfo.versionName);"
         errorLine2="               ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
-            file="src/main/java/app/openconnect/fragments/AboutFragment.java"
+            file="src/main/java/net/openconnect_vpn/android/fragments/AboutFragment.java"
             line="55"
             column="16"/>
     </issue>
@@ -235,7 +246,7 @@
         errorLine1="      mSpeedView.setText(states[state] + byteCountSummary);"
         errorLine2="                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
-            file="src/main/java/app/openconnect/fragments/LogFragment.java"
+            file="src/main/java/net/openconnect_vpn/android/fragments/LogFragment.java"
             line="128"
             column="26"/>
     </issue>
