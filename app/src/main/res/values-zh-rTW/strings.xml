@@ -56,8 +56,8 @@
   <string name="netchange">網路更改時重新連線</string>
   <string name="netstatus">網路狀態：</string>
   <string name="uptime">正常運作時間：</string>
-  <string name="tx">TX：</string>
-  <string name="rx">RX：</string>
+  <string name="tx">發送量：</string>
+  <string name="rx">接收量：</string>
   <string name="local_ip4">本地 IPv4：</string>
   <string name="local_ip6">本地 IPv6：</string>
   <string name="disabled">已停用</string>
