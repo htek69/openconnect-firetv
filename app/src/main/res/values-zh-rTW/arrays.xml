@@ -47,4 +47,37 @@
       <item>已連線</item>
       <item>已斷開連線</item>
   </string-array>
+
+  <string-array name="faq_text">
+     <item>此應用程式有何用途？</item>
+     <item>[OpenConnect](https://en.wikipedia.org/wiki/OpenConnect) 最初是為了存取使用Cisco AnyConnect SSL VPN 協定的[虛擬專用網路(VPN)](https://en.wikipedia.org/wiki/ Virtual_private_network) 而建立的。此後，它已擴展為支援[Juniper](https://en.wikipedia.org/wiki/Juniper_Networks) SSL VPN 協定（現稱為Pulse Connect Secure）和[Palo Alto Networks](https://en.wikipedia .org/wiki/Palo_Alto_Networks) GlobalProtect SSL VPN 協定。典型的用例可能涉及遠端登入您的工作場所以在下班後查看電子郵件。 \n\n如有疑問，請諮詢您的 IT 管理員，看看是否有合適的服務可用。</item>
+
+     <item>我該如何開始使用它？</item>
+     <item>在大多數情況下，您只需要建立一個設定檔並輸入 VPN 閘道的主機名稱。設定檔中的其他欄位都是可選的，除非有特殊需求更改，否則應保留。 \n\n設定設定檔後，選擇 VPN 條目，OpenConnect 將嘗試建立新會話。如果失敗，「日誌」標籤可能會提供有用的診斷資訊。</item>
+
+     <item>如何使用 SSL 用戶端憑證進行身份驗證？</item>
+     <item>將您的憑證檔案複製到Android 的外部儲存目錄（名義上是“/sdcard”或下載資料夾），然後編輯VPN 設定檔並進行以下變更：\n\nP12 或PFX 檔案：選擇“使用者憑證”，從清單中選擇文件，然後觸摸“選擇”。將“私鑰”留空。 \n\n單一 PEM/CRT/CER 檔案：與上文相同。 \n\n單獨的 PEM/CRT/CER 和 KEY 檔案：使用憑證檔案填入“使用者憑證”，使用金鑰檔案填入“私鑰”。 \n\n完成後，從外部儲存中刪除憑證文件，以免被其他應用程式竊取。 \n\n如果您要產生自己的金鑰（例如，用於ocserv 閘道），請參考[此處](https://forum.xda-developers.com/showpost.php?p=52119253&amp;postcount= 25)中發布的一些基本CA 設定說明。</item>
+
+     <item>OpenConnect 可以與非 AnyConnect VPN 一起使用嗎？</item>
+     <item>從 OpenConnect v9.12 開始，Juniper（現為 Pulse Secure）和 PAN GlobalProtect 協定也支援。連接到 Juniper 或 GlobalProtect VPN 時，必須在 VPN 設定檔中明確指定協定。</item>
+
+     <item>OpenConnect 可以與在 ASA 上執行的 Cisco IPsec VPN 相容嗎？</item>
+     <item>OpenConnect 僅支援 SSL VPN (CSTP + [DTLS](https://en.wikipedia.org/wiki/Datagram_Transport_Layer_Security))。它不支援較舊的[Cisco Systems VPN Client](https://en.wikipedia.org/wiki/Cisco_Systems_VPN_Client) 支援的基於IPsec/[IKE](https://en.wikipedia.org/wiki/Internet_Key_Exchange)的VPN。</item>
+
+     <item>如何匯入 [SecurID](https://en.wikipedia.org/wiki/RSA_SecurID) 軟體Token？</item>
+     <item>如果您的電子郵件中有以「com.rsa.securid.iphone://」或「http://127.0.0.1/securid/」開頭的URL，請按一下它並告訴OpenConnect 將其新增至所需的VPN 設定檔。如果您只有原始令牌字串，則將其寫入文字文件，將其複製到“/sdcard”下，按一下 VPN 設定檔編輯器中的“令牌字串”，然後選擇檔案名稱。 \n\n如果您有“sdtid”XML 文件，請將其複製到“/sdcard”，然後匯入它。</item>
+
+     <item>連線時可以跳過所有登入提示嗎？</item>
+     <item>如果您已儲存使用者名稱、密碼或其他憑證，或者您正在使用 SecurID 或憑證驗證，則可以嘗試在 VPN 設定檔中啟用「批量處理模式」以跳過登入對話方塊。如果您稍後需要變更已儲存的密碼或連線時遇到問題，只需停用批量處理模式即可。</item>
+
+     <item>在 VPN 開啟的情況下如何讓電量用的更久？</item>
+     <item>一個選項是在“設定”下選擇“睡眠時暫停”。缺點是螢幕關閉時 VPN 存取將暫時停止。此外，ASA 閘道有時會因不斷重新連線而煩惱，並可能在幾天後過早終止您的會話。 \n\n另一個選項是聯絡您的伺服器管理員並請求他們停用死對等偵測 (DPD)、將空閒逾時增加到 大於1 小時，並將保持活動間隔增加到約 5 分鐘左右。</item>
+
+     <item>如何將 OpenConnect 與 AFWall+ 一起使用？</item>
+     <item>始終允許所有介面上的 VPN 應用程式流量。特別是，您應該將 OpenConnect 的 VPN 流量列入白名單，因為 OpenConnect 每隔幾分鐘就會透過 VPN 介面發送 DNS 請求，以協助防止連線逾時。</item>
+
+     <item>是否有任何應用程式與 VPN 不相容？</item>
+     <item>自行執行 DNS 解析的應用程式（例如 Firefox）在連接到 VPN 時可能無法取得最新的系統 DNS 設定。如果您的系統 DNS 伺服器無法透過 VPN 的路由訪問，或者您嘗試尋找沒有公共（網際網路）DNS 條目的主機名，則可能會出現問題。</item>
+  </string-array>
+
 </resources>
