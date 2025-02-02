@@ -1,6 +1,13 @@
 OpenConnect for Android
 =======================
 
+### NOTE
+
+**There are no official openconnect packages in the Google Play Store.**  
+Get involved (see #1) to release the Android client.
+
+---
+
 Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect).
 
 XDA thread: [comment](https://forum.xda-developers.com/showthread.php?p=77318683#post77318683)
@@ -22,7 +29,7 @@ You can download the latest release from the GitLab [releases](https://gitlab.co
 
 ## Screenshots
 
-|<img src="metadata/en-US/images/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="metadata/en-US/images/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="metadata/en-US/images/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="metadata/en-US/images/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="metadata/en-US/images/screenshot-4.png" alt="screenshot-multiproto" height="400" width="180">|
+|<img src="metadata/en-US/images/phoneScreenshots/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-4.png" alt="screenshot-4" height="400" width="180">|
 |---|---|---|---|---|
 
 ## Building from source
