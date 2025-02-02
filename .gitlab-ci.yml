@@ -181,19 +181,36 @@ release/create-release:
   needs: [release/build-release]
   script: [':']
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  artifacts:
-    paths: ['$APP_NAME.{apk,aab}']
-    expire_in: never
   release:
     name: $CI_COMMIT_TAG
     description: Release $CI_COMMIT_TAG
     tag_name: $CI_COMMIT_TAG
-    assets:
-      links:
-        - name: $APP_NAME.apk
-          url: $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/$APP_NAME.apk
-          link_type: package
-        - name: $APP_NAME.aab
-          url: $CI_PROJECT_URL/-/jobs/$CI_JOB_ID/artifacts/raw/$APP_NAME.aab
-          link_type: package
 
+release/add-predictable-urls:
+  extends: .base
+  stage: release
+  rules: *release_rules
+  needs: [release/create-release, release/build-release]
+  image: debian:12
+  before_script: apt-get update && apt-get install -y curl jq
+  script:
+    - |
+      APK_UPLOAD_URL=$(curl --request POST --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+      --form "file=@$APP_NAME.apk" \
+      "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/uploads" | jq -r '.url')
+    - |
+      AAB_UPLOAD_URL=$(curl --request POST --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+      --form "file=@$APP_NAME.aab" \
+      "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/uploads" | jq -r '.url')
+    - |
+      curl --request POST --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+      --data name="$APP_NAME.apk" \
+      --data url="https://gitlab.com/-/project/$CI_PROJECT_ID$APK_UPLOAD_URL" \
+      --data filepath="/OpenConnect.apk" \
+      "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/releases/$CI_COMMIT_TAG/assets/links"
+    - |
+      curl --request POST --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+      --data name="$APP_NAME.aab" \
+      --data url="https://gitlab.com/-/project/$CI_PROJECT_ID$AAB_UPLOAD_URL" \
+      --data filepath="/OpenConnect.aab" \
+      "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/releases/$CI_COMMIT_TAG/assets/links"
