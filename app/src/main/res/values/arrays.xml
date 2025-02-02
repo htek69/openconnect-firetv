@@ -1,15 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <string-array name="vpn_protocol_entries">
-        <item>Cisco AnyConnect or ocserv</item>
-        <item>Juniper Network Connect or Pulse Secure</item>
+    <string-array name="vpn_protocol_entries" translatable="false">
+        <item>Cisco AnyConnect or OpenConnect</item>
+        <item>Juniper Network Connect</item>
         <item>Palo Alto Networks GlobalProtect</item>
+        <item>Pulse Connect Secure</item>
+        <item>F5 BIG-IP SSL VPN</item>
+        <item>Fortinet SSL VPN</item>
+        <item>Array SSL VPN</item>
     </string-array>
-    <string-array name="vpn_protocol_values">
+
+    <string-array name="vpn_protocol_values" translatable="false">
         <item>anyconnect</item>
         <item>nc</item>
         <item>gp</item>
+        <item>pulse</item>
+        <item>f5</item>
+        <item>fortinet</item>
+        <item>array</item>
     </string-array>
 
     <string-array name="software_token_entries">
