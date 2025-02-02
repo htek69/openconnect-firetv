@@ -22,7 +22,7 @@ You can download the latest release from the GitLab [releases](https://gitlab.co
 
 ## Screenshots
 
-|<img src="misc/screenshots/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="misc/screenshots/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="misc/screenshots/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="misc/screenshots/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="misc/screenshots/screenshot-multiproto.png" alt="screenshot-multiproto" height="400" width="180">|
+|<img src="metadata/en-US/images/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="metadata/en-US/images/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="metadata/en-US/images/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="metadata/en-US/images/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="metadata/en-US/images/screenshot-4.png" alt="screenshot-multiproto" height="400" width="180">|
 |---|---|---|---|---|
 
 ## Building from source
