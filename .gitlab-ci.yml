@@ -87,6 +87,11 @@ workflow:
 # --- Signoff ---
 signoff:
   stage: signoff
+  rules:
+    - if: $RELEASE
+      when: never
+    - when: always
+
   script:
   # Quoted to work around https://gitlab.com/gitlab-org/gitlab-foss/-/issues/20177
   - 'echo "Checking for new commits without Signed-off-by: tags as described in https://gitlab.com/openconnect/ics-openconnect/-/blob/master/CONTRIBUTING.md"'
@@ -98,16 +103,18 @@ signoff:
 # --- Build environment ---
 build-env/external-libraries:
   extends: .base_build_env
+  tags: [saas-linux-medium-amd64]
+  needs: []
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
   script:
-    - >-
-      make -C external install-$TARGET NDK=$NDK_DIR &&
-      mkdir -p artifacts &&
-      cp -rf --parents
-      app/src/main/assets/raw/{armeabi,arm64-v8a,x86,x86_64}
-      app/src/main/jniLibs/{armeabi,arm64-v8a,x86,x86_64}
-      app/libs/{openconnect,stoken}-wrapper.jar artifacts
+    - |
+      make -j$(nproc) -C external install-$TARGET NDK=$NDK_DIR -d || exit 1
+      mkdir -p artifacts
+      cp -rf --parents \
+      app/src/main/assets/raw/{armeabi,arm64-v8a,x86,x86_64} \
+      app/src/main/jniLibs/{armeabi,arm64-v8a,x86,x86_64} \
+      app/libs/{openconnect,stoken}-wrapper.jar artifacts || :
   artifacts:
     expire_in: 1 hour
     paths: [artifacts]

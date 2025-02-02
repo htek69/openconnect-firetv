@@ -121,7 +121,7 @@ $(ARCH_STOKEN_TARGETS) : %/libstoken.so : %/sysroot stoken/configure
 	cp -L $*/out/lib/libstoken.so $*/
 
 $(ARCH_OC_TARGETS) : %/libopenconnect.so : .openconnect-sources
-	# rm -rf $*/openconnect
+	rm -rf $*/openconnect
 	mkdir -p $*/openconnect
 	cp -a openconnect $*/
 	$(MAKE) -C $*/openconnect/android ARCH=$* NDK=$(NDK)
