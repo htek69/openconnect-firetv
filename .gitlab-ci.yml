@@ -6,7 +6,7 @@ stages:
 
 variables:
   BUILD_ENV_IMAGE: $CI_REGISTRY/openconnect/ics-openconnect:build-environment
-  NDK_IMAGE: $CI_REGISTRY/openconnect/build-images:openconnect-cli-android-$NDK_VERSION
+  NDK_IMAGE: $CI_REGISTRY/openconnect/build-images:openconnect-android-ndk-$NDK_VERSION
   NDK_DIR: /opt/android-sdk-linux_x86/android-ndk-$NDK_VERSION
   NDK_VERSION: r27c
   APP_NAME: OpenConnect
@@ -109,12 +109,13 @@ build-env/external-libraries:
     GIT_SUBMODULE_STRATEGY: recursive
   script:
     - |
-      make -j$(nproc) -C external install-$TARGET NDK=$NDK_DIR -d || exit 1
+      make -C external install-$TARGET NDK=$NDK_DIR \
+        CFLAGS="-ffile-prefix-map=/builds/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME/external=/build" || exit $?
       mkdir -p artifacts
       cp -rf --parents \
-      app/src/main/assets/raw/{armeabi,arm64-v8a,x86,x86_64} \
-      app/src/main/jniLibs/{armeabi,arm64-v8a,x86,x86_64} \
-      app/libs/{openconnect,stoken}-wrapper.jar artifacts || :
+        app/src/main/assets/raw/{armeabi,arm64-v8a,x86,x86_64} \
+        app/src/main/jniLibs/{armeabi,arm64-v8a,x86,x86_64} \
+        app/libs/{openconnect,stoken}-wrapper.jar artifacts || :
   artifacts:
     expire_in: 1 hour
     paths: [artifacts]
