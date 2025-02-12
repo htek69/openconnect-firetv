@@ -41,7 +41,7 @@ ARCH_SYSROOT_TARGETS := $(addsuffix /sysroot,$(ARCH_LIST))
 INSTALL_ARCH_TARGETS := $(addprefix install-arch-,$(ARCH_LIST))
 INSTALL_JAR_TARGETS := $(addprefix install-jar-,$(JAR_LIST))
 
-CURL_VER := 8.11.1
+CURL_VER := 8.12.0
 
 TOPDIR := $(shell pwd)
 
