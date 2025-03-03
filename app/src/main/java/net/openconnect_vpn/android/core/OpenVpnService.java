@@ -296,7 +296,7 @@ public class OpenVpnService extends VpnService {
 		return b;
 	}
 
-	// From: http://stackoverflow.com/questions/3758606/how-to-convert-byte-size-into-human-readable-format-in-java
+	// From: https://stackoverflow.com/questions/3758606/how-can-i-convert-byte-size-into-a-human-readable-format-in-java
 	public static String humanReadableByteCount(long bytes, boolean mbit) {
 		if(mbit)
 			bytes = bytes *8;

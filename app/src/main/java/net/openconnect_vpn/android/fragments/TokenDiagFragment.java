@@ -131,7 +131,7 @@ public class TokenDiagFragment extends Fragment {
     	if (warn) {
     		/*
     		 * No CSS.  See:
-    		 * http://commonsware.com/blog/Android/2010/05/26/html-tags-supported-by-textview.html
+    		 * https://commonsware.com/blog/Android/2010/05/26/html-tags-supported-by-textview.html
     		 */
     		html += "<font color=\"red\"><b>" + value + "</b></font>";
     	} else {
