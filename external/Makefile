@@ -41,7 +41,7 @@ ARCH_SYSROOT_TARGETS := $(addsuffix /sysroot,$(ARCH_LIST))
 INSTALL_ARCH_TARGETS := $(addprefix install-arch-,$(ARCH_LIST))
 INSTALL_JAR_TARGETS := $(addprefix install-jar-,$(JAR_LIST))
 
-CURL_VER := 8.11.1
+CURL_VER := 8.12.0
 
 TOPDIR := $(shell pwd)
 
@@ -81,7 +81,7 @@ $(INSTALL_ARCH_TARGETS) : install-arch-% : arch-%
 	cp $*/curl $(BIN_DIR)/$(NDK_ARCH_$*)/curl-bin
 
 .PHONY: $(ARCH_TARGETS)
-$(ARCH_TARGETS) : arch-% : %/curl %/libstoken.so %/libopenconnect.so
+$(ARCH_TARGETS) : arch-% : %/libopenconnect.so %/curl %/libstoken.so
 
 curl/configure:
 	mkdir -p curl
@@ -120,16 +120,14 @@ $(ARCH_STOKEN_TARGETS) : %/libstoken.so : %/sysroot stoken/configure
 		DESTDIR=$(TOPDIR)/$*/out
 	cp -L $*/out/lib/libstoken.so $*/
 
-$(ARCH_OC_TARGETS) : %/libopenconnect.so : .openconnect-sources
+$(ARCH_OC_TARGETS) : %/libopenconnect.so :
 	rm -rf $*/openconnect
 	mkdir -p $*/openconnect
 	cp -a openconnect $*/
+	ls -la $*/openconnect
+	$(MAKE) -C $*/openconnect/android sources
 	$(MAKE) -C $*/openconnect/android ARCH=$* NDK=$(NDK)
 	cp -Lf $*/openconnect/android/$(TRIPLET_$*)/out/lib/libopenconnect.so $@
-
-.openconnect-sources:
-	$(MAKE) -C openconnect/android sources
-	touch $@
 
 # use openconnect to run make-standalone-toolchain.sh and install
 # GnuTLS/nettle into the sysroot for us

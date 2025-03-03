@@ -37,6 +37,10 @@ android {
             }
         }
     }
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
     lintOptions {
         disable 'ExtraTranslation'
         disable 'IconColors'
