@@ -1,16 +1,18 @@
 OpenConnect for Android
 =======================
 
+[<img src="https://f-droid.org/badge/get-it-on.png"
+    alt="Get it on F-Droid"
+    height="80">](https://f-droid.org/packages/net.openconnect_vpn.android)
+
 ### NOTE
 
-**There are no official openconnect packages in the Google Play Store.**  
+**There are no official openconnect packages in the Google Play Store.**
 Get involved (see #1) to release the Android client.
 
 ---
 
-Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect).
-
-XDA thread: [comment](https://forum.xda-developers.com/showthread.php?p=77318683#post77318683)
+Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect). [XDA thread](https://xdaforums.com/t/app-6-0-v1-12-openconnect-ssl-vpn-client-for-cisco-anyconnect.2616121/)
 
 This is a VPN client for Android, based on the Linux build of
 [OpenConnect](http://www.infradead.org/openconnect/).
@@ -25,7 +27,7 @@ Changelog: see [doc/CHANGES.txt](misc/doc/CHANGES.txt)
 
 ## Downloads and support
 
-You can download the latest release from the GitLab [releases](https://gitlab.com/openconnect/ics-openconnect/-/releases) page directly. F-Droid listing is comming soon.
+You can download the latest release from the GitLab [releases](https://gitlab.com/openconnect/ics-openconnect/-/releases) page directly, or from [F-Droid](https://f-droid.org/packages/net.openconnect_vpn.android)
 
 ## Screenshots
 
