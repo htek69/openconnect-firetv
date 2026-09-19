@@ -1,7 +1,10 @@
+# SDD workspace (scratch)
+.superpowers/
+
 # Build outputs
-app-debug.apk
 *.apk
 .gradle/
 build/
 local.properties
 .idea/
+.cxx/
