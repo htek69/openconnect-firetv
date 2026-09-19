@@ -1,0 +1,7 @@
+# Build outputs
+app-debug.apk
+*.apk
+.gradle/
+build/
+local.properties
+.idea/

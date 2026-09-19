@@ -1,0 +1,429 @@
+# Fire TV 向け OpenConnect VPN クライアント 設計仕様書
+
+作成日: 2026-09-19
+
+## 1. 目的
+
+Fire TV（Android ベースの Fire OS 機）上で動作する OpenConnect VPN クライアントを作る。
+複数の接続先をリモコンだけで管理・切り替えでき、接続先が応答しなくなった場合は
+優先順位に従って自動的に次の候補へ切り替わる。
+
+## 2. 要件
+
+### 2.1 確定要件
+
+| # | 要件 | 決定内容 |
+|---|---|---|
+| R1 | 複数の接続先を登録できる | 接続先プロファイルを任意数登録。UUID で識別 |
+| R2 | 接続先の追加・削除が簡単 | リモコン操作で完結する専用フォーム。削除は確認ダイアログ1枚 |
+| R3 | 複数選択 | 複数の接続先を「優先順位付きフェイルオーバーグループ」としてまとめる |
+| R4 | すべてリモコンで操作 | D-pad のみで全機能に到達。テキスト入力は Fire TV 標準ソフトキーボード |
+| R5 | 自動フェイルオーバー | トンネル切断イベントと VPN 越しの疎通確認の両方で判定 |
+| R6 | 自動切替の ON/OFF | グループ単位で切り替え可能 |
+| R7 | 認証方式 | ユーザー名 + パスワードのみ。保存して無人再接続を可能にする |
+| R8 | 配布 | ADB サイドロード。Amazon Appstore 公開はしない |
+
+### 2.2 スコープ外（意図的に入れない）
+
+- アプリ単位のスプリットトンネル
+- クライアント証明書 / TOTP / SAML・SSO 認証
+- Always-on VPN
+- 速度・遅延の劣化を根拠とする切り替え
+- フェイルバック（優先度の高い候補が復活しても自動では戻らない）
+- `QSTileService`（TV に通知シェードがないため既存実装を削除）
+
+いずれも後から追加できる形に境界を切る。
+
+## 3. 前提条件と制約
+
+### 3.1 デバイス
+
+Android ベースの Fire OS 機を対象とする。
+
+**重要な制約**: Amazon は 2025 年の Fire TV Stick 4K Select 以降、Linux ベースの
+Vega OS へ移行した。Vega OS 機では ADB もサイドロードも一切使えず、Android APK は
+原理的に動作しない。本アプリは Vega OS 機では利用できない。
+
+### 3.2 開発環境（2026-09-19 時点の実測）
+
+| 項目 | 状態 |
+|---|---|
+| ホスト OS | Windows 11 Pro |
+| WSL2 (Ubuntu) | インストール済み |
+| Docker Desktop | 稼働中 |
+| Android Studio | インストール済み（JDK 17 同梱） |
+| Android SDK | Android Studio 経由で導入済み。NDK r27c は追加取得が必要 |
+
+### 3.3 フォーク元
+
+`https://gitlab.com/openconnect/ics-openconnect`（GitLab が本家）
+
+**注意**: GitHub の `cernekee/ics-openconnect` は 2019-06 で停止した古いミラー。
+こちらをフォークしてはならない。
+
+2026-09-19 時点の実測値:
+
+| 項目 | 値 |
+|---|---|
+| 最終コミット | 2025-03-10 |
+| minSdk / targetSdk / compileSdk | 23 / 34 / 35 |
+| ツールチェーン | JDK 17 / NDK r27c / 現行 AGP |
+| ライセンス | GPLv2 |
+| CI | 直近パイプラインすべて success |
+| AIDL | `buildFeatures { aidl true }` 有効 |
+
+**ビルド上の制約**: README に明記されているとおり、ネイティブ依存のビルド
+`make -C external` は Linux PC でのみ動作する。Windows 上では直接実行できない。
+
+## 4. 方式選定
+
+3案を比較し、案A を採用した。
+
+### 案A: GitLab 版 ics-openconnect をフォークし、TV UI とフェイルオーバー層を追加（採用）
+
+VPN クライアントで本当に難しいのは UI ではなくプロトコルとトンネル実装である。
+案A は検証済みのコードでそこを押さえたうえで、本当に必要な部分（リモコン操作・
+複数接続先・自動切替）だけを新規に書ける。
+
+### 案B: 別アプリを作り、既存アプリを AIDL で遠隔操作（不採用）
+
+既存の AIDL API は以下を提供する。
+
+```
+List<APIVpnProfile> getProfiles();
+void startProfile(String profileUUID);
+boolean addVPNProfile(String name, String config);
+void disconnect();
+void registerStatusCallback(IOpenVPNStatusCallback cb);
+```
+
+不採用の理由: この API は ics-openvpn から継承したコードで、インターフェース名も
+`IOpenVPNAPIService` のまま。`addVPNProfile(name, config)` の `config` は
+OpenVPN の設定ファイル文字列を前提としている可能性が高く、その場合は
+要件 R2（接続先をリモコンで追加）が API 経由で実現できない。
+加えて外部アプリ許可をスマホ向け設定画面でリモコン操作する必要があり、
+アプリ2本構成になる。中核要件が落ちるリスクが高い。
+
+### 案C: ゼロから自作（不採用）
+
+openconnect / GnuTLS / libxml2 / zlib のクロスコンパイルと複数ステップ認証フォームの
+XML 処理を全て自前で実装する必要があり、工数の大半をそこで消費して
+得られるのは UI の綺麗さだけ。
+
+## 5. アーキテクチャ
+
+既存の VPN コアには一切手を入れない。
+
+```
++----------------------------------------------+
+|  新規: TV UI 層 (Kotlin + Compose for TV)    |
+|   TvMainActivity / 接続先一覧 / 編集 / 設定  |
++-----------------------+----------------------+
+                        |
++-----------------------v----------------------+
+|  新規: フェイルオーバー層 (Kotlin)           |
+|   FailoverController  <- 純ロジック・状態機械 |
+|   HealthProbe         <- interface            |
+|   VpnController       <- interface            |
+|   NetworkGate         <- 下層ネット監視       |
+|   FailoverService     <- フォアグラウンド常駐 |
+|   GroupStore          <- グループ永続化       |
++-----------------------+----------------------+
+                        | 既存 API のみ経由（改変なし）
++-----------------------v----------------------+
+|  既存: OpenConnect コア (Java, 無改変)        |
+|   OpenVpnService / OpenConnectManagementThread|
+|   ProfileManager / AuthFormHandler            |
+|   VPNConnector                                |
++-----------------------+----------------------+
+                        | JNI
++-----------------------v----------------------+
+|  既存: libopenconnect + GnuTLS (NDK, 無改変)  |
++----------------------------------------------+
+```
+
+### 5.1 既存コードの統合ポイント（調査で確認済み）
+
+| 必要な機能 | 既存の資産 |
+|---|---|
+| 接続状態の通知 | `ACTION_VPN_STATUS` ブロードキャスト + `EXTRA_CONNECTION_STATE` + `EXTRA_UUID` |
+| 状態定義 | `OpenConnectManagementThread.STATE_AUTHENTICATING(1)` / `USER_PROMPT(2)` / `AUTHENTICATED(3)` / `CONNECTING(4)` / `CONNECTED(5)` / `DISCONNECTED(6)` |
+| 接続開始 | `GrantPermissionsActivity`（`EXTRA_UUID` 指定）から `OpenVpnService` が `ProfileManager.get(uuid)` でプロファイルを解決 |
+| 切断 | `OpenVpnService.stopVPN()` |
+| 通信量監視 | `VPNConnector` が `VPNStats`（rx/tx バイト・パケット）を1秒ごとにポーリング |
+| トンネル死活の高速検知 | プロファイル設定 `dpd_override` / `dpd_value` |
+| 無人での再認証 | `AuthFormHandler` が保存済み資格情報で非対話モードで通る |
+| プロファイル永続化 | `profile-<uuid>.xml` 形式の個別 SharedPreferences |
+| スリープ検知 | `DeviceStateReceiver` が `ACTION_SCREEN_OFF` / `ACTION_SCREEN_ON` を処理 |
+
+初回に `VpnService.prepare()` の許可を通せば、以降は `null` が返るため
+自動切替が無人で回る。
+
+### 5.2 パッケージ構成
+
+```
+net/openconnect_vpn/android/
+  tv/                          <- 新規
+    TvMainActivity.kt
+    ProfileListScreen.kt
+    ProfileEditScreen.kt
+    GroupEditScreen.kt
+    SettingsScreen.kt
+    CertWarningScreen.kt
+  failover/                    <- 新規
+    FailoverController.kt      状態機械（Android 非依存）
+    FailoverState.kt
+    Candidate.kt
+    FailoverConfig.kt
+    HealthProbe.kt             interface
+    TcpHealthProbe.kt          実装
+    VpnController.kt           interface
+    OpenConnectVpnController.kt
+    NetworkGate.kt
+    FailoverService.kt         フォアグラウンドサービス
+    GroupStore.kt              永続化
+```
+
+### 5.3 既存ファイルへの変更（4点のみ）
+
+1. `AndroidManifest.xml` — Leanback 対応、`FailoverService` 登録、ランチャー差し替え
+2. `app/build.gradle` — Kotlin プラグインと Compose for TV の追加、`applicationIdSuffix`
+3. ランチャー Activity を `TvMainActivity` に差し替え
+4. `QSTileService.java` の削除とマニフェスト登録の除去（TV に通知シェードがない）
+
+既存のスマホ向け UI は**削除せず残す**。認証が通らない場合の切り分けに既存のログ画面が
+有効なため、設定画面の奥から到達できるようにする。
+
+## 6. データモデル
+
+既存の `VpnProfile`（接続先1件）はそのまま使い、その上にグループの概念を足す。
+
+```kotlin
+data class FailoverGroup(
+    val id: String,
+    val name: String,                  // 例: 自宅優先
+    val memberUuids: List<String>,     // 並び順 = 優先順位
+    val autoFailoverEnabled: Boolean,  // R6
+    val config: FailoverConfig,
+)
+
+data class FailoverConfig(
+    val probeIntervalSec: Int = 30,
+    val probeTimeoutMs: Int = 5_000,
+    val failureThreshold: Int = 3,      // 連続失敗で切替
+    val graceAfterConnectSec: Int = 15, // 接続直後の猶予
+)
+```
+
+プローブ宛先はグループごとではなく**アプリ全体の設定に1箇所**だけ持つ
+（既定値 `1.1.1.1:443`、設定画面から変更可能）。
+
+グループは `SharedPreferences` に JSON で保存する。既存のプロファイル保存方式と揃え、
+新たな DB 依存を持ち込まない。`memberUuids` は UUID 参照なので、プロファイル単体の
+編集・削除と自然に共存する（削除済み UUID は読み込み時に除去）。
+
+## 7. フェイルオーバー状態機械
+
+```
+                   +------+
+      ユーザー接続 | IDLE |<------- ユーザーが明示的に切断
+          +--------+------+         （自動切替も停止）
+          v
+  +---------------+  STATE_CONNECTED   +-----------+
+  | CONNECTING(i) |------------------->| VERIFYING |
+  +-------+-------+                    +-----+-----+
+          |  接続失敗 / タイムアウト         | 初回プローブ成功
+          |                                  v
+          |                            +-----------+
+          |              プローブ成功  |  HEALTHY  |
+          |                       +--->+-----+-----+
+          |                       |          | 連続 N 回失敗
+          |                       +----------+ または予期しない切断
+          v                                  v
+  +--------------+                +----------------+
+  | EXHAUSTED    |<---------------| FAILING_OVER   |
+  | (バックオフ) |  全候補が尽きた +-------+--------+
+  +------+-------+                        | stopVPN() -> 次候補
+         | 指数バックオフ後に先頭から      |
+         +---------------------------------+
+```
+
+状態遷移の要点（図では読み取りにくい部分を明示する）:
+
+- `CONNECTING(i)` が接続失敗またはタイムアウトした場合は、`EXHAUSTED` には行かず
+  **`FAILING_OVER` を経て次候補 `CONNECTING(i+1)` へ進む**
+- `EXHAUSTED` に入るのは、**グループ内の全候補を一巡して全滅した場合のみ**
+- `autoFailoverEnabled = false` のグループでは `FAILING_OVER` へ遷移せず、
+  障害検知時に `IDLE`（切断状態）で停止する
+
+### 7.1 必須の安全策
+
+素直に実装すると必ず事故る4点。すべて実装必須。
+
+**S1: 認証失敗と「サーバ無応答」を区別する**
+認証エラーで無限リトライするとサーバ側でアカウントがロックされる。
+`STATE_AUTHENTICATING` から先へ進まずに落ちた候補は、そのセッション中は候補から
+**除外**し、通知でユーザーに知らせる。自動化する VPN クライアントで最も危険な落とし穴。
+
+**S2: 下層ネットワークが死んでいるときは切り替えない**
+Fire TV の Wi-Fi 自体が切れている場合、候補を巡回しても全滅するだけで候補リストを
+無駄に焼き切る。`NetworkGate` が `ConnectivityManager` で物理ネットワークの有無を見て、
+下層が落ちている間は状態機械を一時停止し、復帰時に即座にプローブする。
+
+**S3: ユーザーの意図的な切断を障害と誤認しない**
+`STATE_DISCONNECTED` は「障害」と「ユーザーが切った」の両方で飛んでくる。
+`VpnController` 経由の切断要求にフラグを立て、フラグが立っている切断は `IDLE` へ、
+立っていない切断だけ `FAILING_OVER` へ遷移させる。
+
+**S4: 接続直後の猶予期間を設ける**
+ルート設定と DNS が整う前にプローブすると必ず失敗し、接続成功直後に切り替わる
+無限ループになる。`VERIFYING` 状態と `graceAfterConnectSec` がこれを防ぐ。
+
+### 7.2 バックオフ
+
+全候補が枯渇したら `EXHAUSTED` に入り、30秒 -> 60秒 -> ... -> 上限10分の
+指数バックオフで先頭候補から再試行する。
+
+## 8. ヘルスチェック
+
+`HealthProbe` インターフェースの背後に実装を隠す。
+
+VpnService 配下では全トラフィックがトンネルに入るため、通常の `Socket` で対象へ
+TCP connect するだけで「VPN 越しの疎通」を検証できる。ICMP は Android で
+raw socket が使えないため採用しない。プローブは `withTimeout` 付きの
+コルーチンで実行する。
+
+判定は2系統の併用（R5）:
+
+1. `ACTION_VPN_STATUS` による予期しない `STATE_DISCONNECTED` で即座に切替
+2. 定期 TCP プローブが `failureThreshold` 回連続失敗したら切替
+   （「繋がっているのに通らない」状態を検知する）
+
+既定値（`probeIntervalSec = 30`、`failureThreshold = 3`）での**検知遅延は最大約90秒**
+となる。トンネルが明示的に切断される経路（系統1）は即座に検知されるため、この90秒は
+「繋がっているのに通らない」ケースにのみ適用される。動画視聴中の体感を優先して
+短縮したい場合は `probeIntervalSec` を下げるが、誤爆のリスクと引き換えになる。
+
+## 9. UI 設計
+
+Compose for TV を使う（`minSdk 23` のため問題なし）。既存は Java + 旧
+`PreferenceFragment` で D-pad 操作に適さないため、新規画面は最初から TV 向けに書く。
+
+```
+[ホーム] 接続先一覧
+  + グループ「自宅優先」   接続中 (sv1.example.com)  [自動切替 ON]
+  + グループ「予備」       未接続                    [自動切替 OFF]
+  + -- 個別の接続先 --
+  + sv1.example.com        接続中
+  + sv2.example.com        未接続
+  + [＋ 接続先を追加]
+
+  決定     = 接続 / 切断のトグル
+  長押し   = メニュー（編集・削除・グループに追加・複製）
+  メニュー = 設定
+```
+
+リモコンで完結させるための具体策:
+
+- すべてのフォーカス移動を D-pad で閉じる。Compose for TV の `Modifier.focusable()` と
+  明示的な `focusRequester` を使い、画面遷移ごとに初期フォーカスを必ず設定する
+  （TV UI で最も多いバグは「フォーカスがどこにも無い」状態）
+- テキスト入力は Fire TV 標準のソフトキーボードに委ねる。入力項目は
+  サーバ URL / ユーザー名 / パスワード / 任意の表示名の4つのみ
+- 接続先の追加は1画面のフォームにまとめ、内部で `profile-<uuid>.xml` を生成する
+- 削除は誤爆防止のため確認ダイアログを1枚挟む
+
+## 10. Fire TV 固有の対応
+
+`AndroidManifest.xml` に以下を入れる。これが無いとサイドロードしてもホーム画面に
+アイコンが出ない（サイドロード VPN の典型的な詰まりどころ）。
+
+- `android.intent.category.LEANBACK_LAUNCHER` インテントフィルタ
+- TV バナー（320x180）
+- `<uses-feature android:name="android.software.leanback" />`
+- `<uses-feature android:name="android.hardware.touchscreen" android:required="false" />`
+
+VPN 許可ダイアログはシステム標準のもので D-pad 操作可能。初回のみ通過すればよい。
+
+スタンバイ対応: 既存 `DeviceStateReceiver` に相乗りし、`ACTION_SCREEN_OFF` で
+プローブ間隔を延長、`ACTION_SCREEN_ON` で即プローブする。
+
+## 11. ビルド・配布
+
+ネイティブ層のビルドは WSL2 内で行う。ネイティブ成果物を Windows 側へ手作業で
+持ち越す運用は、パス・改行・実行属性で事故るため採らない。
+
+```
+WSL2 Ubuntu 側
+  git clone --recursive https://gitlab.com/openconnect/ics-openconnect
+  apt: build-essential autoconf automake libtool git
+  Android SDK (build-tools;34.0.0, platforms;android-35) + NDK r27c + JDK 17
+  make -C external          # 初回のみ、30〜60分想定
+      -> 成果物: jniLibs/ と assets/
+  ./gradlew assembleDebug
+      -> app-debug.apk
+  adb connect <FireTVのIP>:5555
+  adb install -r app-debug.apk
+```
+
+Windows 側に Android Studio が入っているため、日常のコード編集と Kotlin/Compose の
+補完は Android Studio、ネイティブ層のビルドは WSL2 という併用も可能。その場合は
+WSL2 側のクローンを Android Studio から開く（`\\wsl$\Ubuntu\...`）。ただし
+Gradle ビルドの実行位置を Windows と WSL2 で混在させるとキャッシュが衝突するため、
+**ビルドは常に WSL2 側で実行する**ことを規約とする。
+
+Fire TV への `adb connect` は WSL2 から通る。
+
+`make -C external` が詰まった場合の保険が2段:
+
+1. リポジトリの `misc/Dockerfile` を使い Docker Desktop でビルドする
+2. 最終手段として GitLab CI の成果物を取得する（直近パイプラインはすべて success）
+
+`applicationId` に `.firetv` サフィックスを付け、F-Droid 版 OpenConnect と
+同一端末に共存できるようにする。署名は debug キーで十分（サイドロード用途）。
+
+## 12. エラー処理
+
+| 事象 | 挙動 |
+|---|---|
+| 認証失敗 | その候補をセッション中除外し通知。リトライしない（S1） |
+| サーバ証明書の検証エラー | 接続中止。TV 向けに再実装した承認画面を出す（R7 のクライアント証明書認証とは別物） |
+| 全候補が枯渇 | `EXHAUSTED`。指数バックオフで先頭から再試行 |
+| 下層ネット断 | 切替せず一時停止。復帰時に即プローブ（S2） |
+| スタンバイ | プローブ間隔を延長、復帰時に即プローブ |
+| プロセス kill | フォアグラウンドサービスと `START_SERVICE_STICKY` で復帰し、最後の接続状態を復元 |
+
+## 13. テスト戦略
+
+`FailoverController` を Android 非依存の純粋 Kotlin にすることで、状態機械の
+全遷移を JVM 単体テストで検証できる。`Clock` / `HealthProbe` / `VpnController` /
+`NetworkGate` をすべて interface にし、テストではフェイクを注入する。
+Robolectric もエミュレータも不要。
+
+必ず書くテストケース:
+
+1. 候補1が無応答なら候補2へ切替し、候補2が HEALTHY になる
+2. 連続失敗が閾値未満で回復した場合は切替しない（誤爆防止）
+3. 猶予期間中のプローブ失敗では切替しない（S4）
+4. 認証失敗した候補は再試行されない（S1）
+5. 下層ネット断中は切替が発生しない（S2）
+6. ユーザーによる切断で `IDLE` に入り、自動切替が止まる（S3）
+7. 全候補枯渇でバックオフ間隔が指数的に伸びる
+8. `autoFailoverEnabled = false` のとき、障害時に切替せず切断状態で止まる（R6）
+9. 削除済み UUID を含むグループを読み込むと、その UUID が除去される
+
+実機検証は次の2シナリオを手動で通す:
+
+- サーバ側で `ocserv` を停止する（トンネル切断の検知）
+- サーバ側のファイアウォールでパケットを drop する（繋がっているのに通らない状態の検知）
+
+UI は D-pad 操作の手動チェックリストで担保する。
+
+## 14. 未解決事項・リスク
+
+| # | 内容 | 対応 |
+|---|---|---|
+| RK1 | `make -C external` が現行の WSL2 Ubuntu で通るか未検証 | 実装の最初のステップで検証する。Docker と CI 成果物の保険が2段ある |
+| RK2 | 既存 Java コードベースへの Kotlin/Compose 混在時のビルド設定 | 早期に空の Compose 画面を1枚ビルドして確認する |
+| RK3 | `applicationId` 変更が `profile-<uuid>.xml` や AIDL の参照に影響しないか | `namespace` は固定し `applicationIdSuffix` で対応する |
+| RK4 | Fire TV スタンバイ中のフォアグラウンドサービス継続性 | 実機で長時間の放置テストを行う |
