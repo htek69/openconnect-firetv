@@ -148,7 +148,8 @@ XML 処理を全て自前で実装する必要があり、工数の大半をそ�
 |---|---|
 | 接続状態の通知 | `ACTION_VPN_STATUS` ブロードキャスト + `EXTRA_CONNECTION_STATE` + `EXTRA_UUID` |
 | 状態定義 | `OpenConnectManagementThread.STATE_AUTHENTICATING(1)` / `USER_PROMPT(2)` / `AUTHENTICATED(3)` / `CONNECTING(4)` / `CONNECTED(5)` / `DISCONNECTED(6)` |
-| 接続開始 | `GrantPermissionsActivity`（`EXTRA_UUID` 指定）から `OpenVpnService` が `ProfileManager.get(uuid)` でプロファイルを解決 |
+| 接続開始（UI から） | `GrantPermissionsActivity` に `getPackageName() + ".UUID"` を渡す。同 Activity が `VpnService.prepare()` を通し `OpenVpnService` を起動する |
+| 接続開始（自動切替から） | `VpnService.prepare(ctx) == null`（許可済み）なら `OpenVpnService` を `EXTRA_UUID` 付きで直接 `startService` する。詳細は 5.2 |
 | 切断 | `OpenVpnService.stopVPN()` |
 | 通信量監視 | `VPNConnector` が `VPNStats`（rx/tx バイト・パケット）を1秒ごとにポーリング |
 | トンネル死活の高速検知 | プロファイル設定 `dpd_override` / `dpd_value` |
@@ -159,7 +160,44 @@ XML 処理を全て自前で実装する必要があり、工数の大半をそ�
 初回に `VpnService.prepare()` の許可を通せば、以降は `null` が返るため
 自動切替が無人で回る。
 
-### 5.2 パッケージ構成
+### 5.2 自動切替からの接続開始（重要）
+
+既存 UI は `GrantPermissionsActivity` を起動して接続するが、**フェイルオーバー層は
+この経路を使えない**。Android 10 以降のバックグラウンドからの Activity 起動制限により、
+フォアグラウンドサービスから Activity を起動しても確実に表示される保証がないためである。
+
+フェイルオーバー層は `GrantPermissionsActivity.onActivityResult` が行っている処理を
+直接実行する。
+
+```kotlin
+// 許可済みかを確認（未許可なら自動接続は不可能）
+if (VpnService.prepare(context) != null) return ConnectResult.NeedsUserConsent
+
+val intent = Intent(context, OpenVpnService::class.java)
+intent.putExtra(OpenVpnService.EXTRA_UUID, uuid)
+context.startService(intent)
+```
+
+`FailoverService` 自身がフォアグラウンドサービスであるため、そこからの
+`startService` はバックグラウンド起動制限に抵触しない。
+
+初回の VPN 許可だけは TV UI 上でユーザーに取得させ、以降は `VpnService.prepare()` が
+`null` を返すため自動切替が無人で回る。未許可の状態を検知した場合は通知で
+ユーザーに知らせ、状態機械は `IDLE` に留まる。
+
+### 5.3 targetSdk 34 で必要なサービス宣言
+
+`FailoverService` は Android 14 の要件により以下が必要になる。
+
+- `android:foregroundServiceType="specialUse"`
+- `<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="vpn_failover_monitoring" />`
+- `<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />`
+- `<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />`
+- `<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />`（API 33+、通知表示のため）
+
+`POST_NOTIFICATIONS` が拒否されても通知が出ないだけでサービス自体は稼働する。
+
+### 5.4 パッケージ構成
 
 ```
 net/openconnect_vpn/android/
@@ -169,7 +207,6 @@ net/openconnect_vpn/android/
     ProfileEditScreen.kt
     GroupEditScreen.kt
     SettingsScreen.kt
-    CertWarningScreen.kt
   failover/                    <- 新規
     FailoverController.kt      状態機械（Android 非依存）
     FailoverState.kt
@@ -184,7 +221,7 @@ net/openconnect_vpn/android/
     GroupStore.kt              永続化
 ```
 
-### 5.3 既存ファイルへの変更（4点のみ）
+### 5.5 既存ファイルへの変更（4点のみ）
 
 1. `AndroidManifest.xml` — Leanback 対応、`FailoverService` 登録、ランチャー差し替え
 2. `app/build.gradle` — Kotlin プラグインと Compose for TV の追加、`applicationIdSuffix`
@@ -329,19 +366,60 @@ Compose for TV を使う（`minSdk 23` のため問題なし）。既存は Java
   明示的な `focusRequester` を使い、画面遷移ごとに初期フォーカスを必ず設定する
   （TV UI で最も多いバグは「フォーカスがどこにも無い」状態）
 - テキスト入力は Fire TV 標準のソフトキーボードに委ねる。入力項目は
-  サーバ URL / ユーザー名 / パスワード / 任意の表示名の4つのみ
-- 接続先の追加は1画面のフォームにまとめ、内部で `profile-<uuid>.xml` を生成する
+  **サーバ URL と表示名の2つだけ**（理由は 9.1）
+- 接続先の追加は1画面のフォームにまとめ、内部で `ProfileManager.create(hostname)` を
+  呼んで `profile-<uuid>.xml` を生成する
 - 削除は誤爆防止のため確認ダイアログを1枚挟む
+
+### 9.1 資格情報を TV UI で事前入力できない理由（重要）
+
+調査により、既存コアはユーザー名とパスワードを**固定のプロファイル設定として持っていない**
+ことが判明した。`AuthFormHandler` は認証フォームの構造から鍵を組み立てて保存する。
+
+```
+キー = "FORMDATA-" + md5(フォーム構造) + "-" + md5(項目名 + ラベル)
+```
+
+フォーム構造はサーバが認証フォームを返してくるまで分からないため、**接続前に
+資格情報を書き込むことは原理的にできない**。したがって接続先の追加は次の流れになる。
+
+1. TV UI でサーバ URL と表示名を入力し、プロファイルを作成する
+2. 初回接続時に既存の認証ダイアログが出る。ユーザー名とパスワードを入力し、
+   「パスワードを保存」をチェックする
+3. 以降は非対話で接続でき、自動フェイルオーバーが無人で回る
+
+初回ログインダイアログは既存の Android View（`EditText` / `CheckBox`）で構成されており
+D-pad でフォーカス移動できる。TV 向けに作り直さず、そのまま使う。
+
+### 9.2 `batch_mode` を有効にすることが無人動作の必須条件（重要）
+
+プロファイル設定 `batch_mode` の値が無人フェイルオーバーの成否を決める。
+
+| 値 | 挙動 |
+|---|---|
+| `"enabled"` | 保存済みの回答をダイアログを出さずに送信する。**自動切替にはこれが必須** |
+| `"empty_only"` | 空欄がある場合のみダイアログを出す |
+| その他 | 毎回ダイアログを出す。自動切替が停止する |
+
+**TV UI でプロファイルを作成する際は必ず `batch_mode = "enabled"` を設定する。**
+
+なお `batch_mode = "enabled"` の状態でサーバが同じフォームを2回連続で返してきた場合
+（＝資格情報が拒否された場合）、既存コアは `BATCH_MODE_ABORTED` として接続を中断する。
+無限リトライにはならず、安全策 S1 が期待する「認証を通過せずに切断される」挙動と
+自然に一致する。
 
 ## 10. Fire TV 固有の対応
 
-`AndroidManifest.xml` に以下を入れる。これが無いとサイドロードしてもホーム画面に
-アイコンが出ない（サイドロード VPN の典型的な詰まりどころ）。
+**実測で判明した重要な事実**: フォーク元のマニフェストには TV 対応が**すでに入っている**。
 
-- `android.intent.category.LEANBACK_LAUNCHER` インテントフィルタ
-- TV バナー（320x180）
-- `<uses-feature android:name="android.software.leanback" />`
-- `<uses-feature android:name="android.hardware.touchscreen" android:required="false" />`
+- `<uses-feature android:name="android.software.leanback" android:required="false" />` 済
+- `<uses-feature android:name="android.hardware.touchscreen" android:required="false" />` 済
+- `android:banner="@drawable/banner"` 済
+- `MainActivity` に `android.intent.category.LEANBACK_LAUNCHER` 済
+
+したがって本項で必要な作業は、**ランチャーのカテゴリを `MainActivity` から
+`TvMainActivity` へ移設すること**だけである。フォーク元は元々 Fire TV 上でも
+ホーム画面にアイコンが出る状態にある（当初想定していた作業の大半は不要）。
 
 VPN 許可ダイアログはシステム標準のもので D-pad 操作可能。初回のみ通過すればよい。
 
@@ -387,7 +465,7 @@ Fire TV への `adb connect` は WSL2 から通る。
 | 事象 | 挙動 |
 |---|---|
 | 認証失敗 | その候補をセッション中除外し通知。リトライしない（S1） |
-| サーバ証明書の検証エラー | 接続中止。TV 向けに再実装した承認画面を出す（R7 のクライアント証明書認証とは別物） |
+| サーバ証明書の検証エラー | 接続中止。既存の `CertWarningDialog` をそのまま使う（9.1 の認証ダイアログと同じ判断。D-pad で操作できることの確認のみ行う）。R7 のクライアント証明書認証とは別物 |
 | 全候補が枯渇 | `EXHAUSTED`。指数バックオフで先頭から再試行 |
 | 下層ネット断 | 切替せず一時停止。復帰時に即プローブ（S2） |
 | スタンバイ | プローブ間隔を延長、復帰時に即プローブ |
@@ -425,5 +503,5 @@ UI は D-pad 操作の手動チェックリストで担保する。
 |---|---|---|
 | RK1 | `make -C external` が現行の WSL2 Ubuntu で通るか未検証 | 実装の最初のステップで検証する。Docker と CI 成果物の保険が2段ある |
 | RK2 | 既存 Java コードベースへの Kotlin/Compose 混在時のビルド設定 | 早期に空の Compose 画面を1枚ビルドして確認する |
-| RK3 | `applicationId` 変更が `profile-<uuid>.xml` や AIDL の参照に影響しないか | `namespace` は固定し `applicationIdSuffix` で対応する |
+| RK3 | `applicationId` 変更の影響 | **調査済み・低リスク**。Intent の extra キーは put 側（`VPNProfileList`）と get 側（`GrantPermissionsActivity`）の両方が `getPackageName()` を使うため自動的に整合する。`profile-<uuid>.xml` の名前にパッケージ名は含まれない。`namespace` は固定し `applicationIdSuffix` で対応する |
 | RK4 | Fire TV スタンバイ中のフォアグラウンドサービス継続性 | 実機で長時間の放置テストを行う |
