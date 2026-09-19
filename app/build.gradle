@@ -1,0 +1,67 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace "net.openconnect_vpn.android"
+    defaultConfig {
+        minSdk 23
+        targetSdk 34
+        compileSdk 35
+
+        versionCode 1120
+        versionName "1.12"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+    }
+    if (file("release.properties").exists()) {
+        signingConfigs {
+            release {
+                file("release.properties").with {
+                    def properties = new Properties()
+                    properties.load(new FileInputStream(it))
+
+                    storeFile file(properties['path'])
+                    keyAlias properties['alias']
+                    storePassword properties['password']
+                    keyPassword properties['password']
+                }
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (file("release.properties").exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+    lintOptions {
+        disable 'ExtraTranslation'
+        disable 'IconColors'
+        disable 'InconsistentArrays'
+        disable 'MissingTranslation'
+        disable 'OldTargetApi'
+        disable 'SuspiciousIndentation'
+
+        // It's a tremendous amount of work to get rid of all references to `Context` in the app
+        disable 'StaticFieldLeak'
+
+        baseline file("lint-baseline.xml")
+    }
+    buildFeatures {
+        aidl true
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'com.android.support.test:runner:1.0.2'
+    androidTestImplementation 'com.android.support.test.espresso:espresso-core:3.0.2'
+}

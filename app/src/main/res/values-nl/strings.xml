@@ -1,0 +1,15 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<resources>
+  <string name="app">OpenConnect</string>
+  <string name="cancel">Annuleer</string>
+  <string name="vpn_list_title">Profielen</string>
+  <string name="configure_the_vpn">VPN configureren</string>
+  <string name="menu_add_profile">Profiel toevoegen</string>
+  <string name="clear_log">logboek wissen</string>
+  <string name="remove_vpn">VPN wissen</string>
+  <string name="remove_vpn_query">De VPN-profiel \'%s\' verwijderen?</string>
+  <string name="clear">Leeg maken</string>
+  <string name="faq">Veelgestelde vragen </string>
+  <string name="speed_waiting">Wachten op status bericht…</string>
+  <!--OpenConnect preference strings-->
+</resources>

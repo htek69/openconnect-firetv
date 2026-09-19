@@ -3,8 +3,33 @@
 
 # Build outputs
 *.apk
+*.iml
 .gradle/
+/.gradle/
 build/
+/build/
+/app/build/
 local.properties
+/local.properties
 .idea/
+/.idea/
 .cxx/
+.externalNativeBuild
+/captures
+.*.sw*
+.settings/
+.classpath
+.project
+
+*.jar
+*.so
+
+arm/
+arm64-v8a/
+arm64/
+armeabi/
+x86/
+x86_64/
+
+external/.openconnect-sources
+external/curl/

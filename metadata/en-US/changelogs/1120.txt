@@ -1,0 +1,8 @@
+* Drop support for < Android 6 devices
+* Add support for latest Android versions
+* Update Chinese and Russian translations (thanks to mkevinstever)
+* Add Android TV support to AndroidManifest.xml
+* Add custom SNI option
+* Add DTLS option
+* Transition to native Android file selection dialog
+* Lots of tiny fixes

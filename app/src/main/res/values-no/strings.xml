@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<resources>
+  <string name="app">OpenConnect</string>
+  <string name="cancel">Avbryt</string>
+  <string name="configure_the_vpn">Konfigurer VPN</string>
+  <string name="menu_add_profile">Legge til profil</string>
+  <string name="clear_log">Tøm logg</string>
+  <string name="remove_vpn">Fjern VPN</string>
+  <string name="clear">Fjern</string>
+  <string name="faq">FAQ</string>
+  <string name="speed_waiting">Venter på tilstands melding…</string>
+  <string name="edit_profile_title">Rediger \"%s\"</string>
+  <string name="netchange">Koble til på nytt ved nettverks endring</string>
+  <string name="netstatus">Nettverksstatus:</string>
+  <string name="advanced">Avansert</string>
+    <string name="getproxy_error">Feil ved henting av proxy-innstillinger: %s</string>
+  <string name="no_vpn_profiles_defined">Ingen VPN-profiler er definert.</string>
+  <!--OpenConnect preference strings-->
+</resources>

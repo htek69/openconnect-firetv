@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<resources>
+  <string name="app">OpenConnect</string>
+  <string name="cancel">Anulare</string>
+  <string name="vpn_list_title">Profile</string>
+  <string name="configure_the_vpn">Configurare VPN</string>
+  <string name="menu_add_profile">Adaugă profil</string>
+  <string name="clear_log">Golire jurnal</string>
+  <string name="remove_vpn">Elimina VPN</string>
+  <string name="remove_vpn_query">Şterge profilul VPN \'%s\'?</string>
+  <string name="clear">Goleşte</string>
+  <string name="copied_entry">Linia din log s-a copiat in clip board</string>
+  <string name="faq">FAQ</string>
+  <string name="speed_waiting">Se aşteaptă mesajul de stare…</string>
+  <string name="generalsettings">Setări</string>
+  <string name="edit_profile_title">Editare \"%s\"</string>
+  <string name="netchange_summary">Activând această opţiune forţaţi o reconectare dacă se schimbă starea de reţea (e.g. WiFi la/de la mobil)</string>
+  <string name="netchange">Reconectare la schimbare reţea</string>
+  <string name="netstatus">Statutus reţea:</string>
+  <string name="advanced">Avansate</string>
+  <string name="getproxy_error">Eroare la obţinerea setărilor proxy: %s</string>
+  <string name="no_vpn_profiles_defined">nici un profil VPN definit.</string>
+  <string name="add_new_vpn_hint">Folosiţi icoana  &lt;img src=\"ic_menu_add\"/&gt; pentru a adăuga un nou VPN</string>
+  <string name="send_minidump">Trimite Minidump la dezvoltator</string>
+  <string name="send_minidump_summary">Trimite informații de depanare despre ultimul crash la dezvoltator</string>
+  <string name="statusline_bytecount">↓%2$s/s %1$s - ↑%4$s/s %3$s</string>
+  <string name="add">Adauga</string>
+  <string name="prompt">%1$s încercări de a controla %2$s</string>
+  <string name="remote_warning">Continuând, daţi permisiunea aplicaţiei de a controla complet OpenConnect pentru Android și de a intercepta tot traficul de rețea. <b>Nu acceptaţi decât dacă aveți încredere în aplicație</b> În caz contrar, riscaţi să aveţi datele compromise de software maliţios.\"</string>
+  <string name="remote_trust">Am încredere în această aplicaţie.</string>
+  <string name="no_external_app_allowed">Nici o aplicaţie nu are permisiunea de a folosi API-ul extern</string>
+  <string name="allowed_apps">Aplicaţii permise: %s</string>
+  <string name="clearappsdialog">Şterge lista aplicaţilor permise?\nLista curentă a aplicaţilor ce au permisiune:\n\n%s</string>
+  <string name="screenoff_title">Suspendă conexiunea VPN după închiderea ecranului</string>
+  <string name="save_password">Salvare parola</string>
+  <!--OpenConnect preference strings-->
+</resources>
