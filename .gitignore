@@ -33,3 +33,24 @@ x86_64/
 
 external/.openconnect-sources
 external/curl/
+
+# Task 1: native artifacts pinned from a known-good upstream CI build
+# (see app/src/main/jniLibs/PROVENANCE.md for exact provenance). These are
+# intentionally committed even though *.so and the arm64-v8a/, armeabi/, x86/,
+# x86_64/ directory patterns above are ignored for locally-built output.
+!/app/src/main/jniLibs/arm64-v8a/
+!/app/src/main/jniLibs/arm64-v8a/*.so
+!/app/src/main/jniLibs/armeabi/
+!/app/src/main/jniLibs/armeabi/*.so
+!/app/src/main/jniLibs/x86/
+!/app/src/main/jniLibs/x86/*.so
+!/app/src/main/jniLibs/x86_64/
+!/app/src/main/jniLibs/x86_64/*.so
+!/app/src/main/assets/raw/arm64-v8a/
+!/app/src/main/assets/raw/arm64-v8a/curl-bin
+!/app/src/main/assets/raw/armeabi/
+!/app/src/main/assets/raw/armeabi/curl-bin
+!/app/src/main/assets/raw/x86/
+!/app/src/main/assets/raw/x86/curl-bin
+!/app/src/main/assets/raw/x86_64/
+!/app/src/main/assets/raw/x86_64/curl-bin
