@@ -1091,6 +1091,8 @@ Expected: コンパイルエラー `Unresolved reference: GroupStore` で FAIL
 ```kotlin
 package net.openconnect_vpn.android.failover
 
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
