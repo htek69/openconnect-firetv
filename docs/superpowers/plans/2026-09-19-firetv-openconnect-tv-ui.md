@@ -1973,7 +1973,30 @@ git commit -m "feat(tv): 設定画面と VPN 許可取得、既存 UI への導�
 10. 接続先を1件削除する（確認ダイアログが出ること）
 11. アプリを終了して再起動し、登録内容が保持されていることを確認する
 
-- [ ] **Step 2: フォーカスの不具合を洗う**
+- [ ] **Step 2: D-pad 到達性を機械的に計測する（主観に頼らない）**
+
+仕様書 9.4 の客観基準を全画面に適用する。既存アプリの実測では、プロファイルの行
+（`vpn_list_item_left`）と各行の編集ボタン（`quickedit_settings`）が
+`clickable="true" focusable="false"` になっており、これがリモコンで接続先を
+切り替えられない直接の原因だった（仕様書 9.3）。同じ失敗を機械的に検出する。
+
+各画面を開いた状態で次を実行する。
+
+```bash
+ADB=/c/Users/htek6/AppData/Local/Android/Sdk/platform-tools/adb.exe
+"$ADB" shell uiautomator dump /sdcard/ui.xml
+MSYS_NO_PATHCONV=1 "$ADB" shell "cat /sdcard/ui.xml" | tr -d '\r' > ui.xml
+echo "clickable: $(grep -o 'clickable="true"' ui.xml | wc -l)"
+echo "focusable: $(grep -o 'focusable="true"' ui.xml | wc -l)"
+```
+
+**合格条件: すべての画面で clickable の数 <= focusable の数。**
+差分が出た画面は、どの要素が `clickable="true" focusable="false"` かを特定して修正する。
+
+対象画面: ホーム一覧 / 接続先の追加 / 接続先の編集 / グループ作成 / グループ編集 /
+設定 / 削除確認ダイアログ。
+
+- [ ] **Step 2b: フォーカスの不具合を洗う**
 
 各画面で次を確認する。フォーカスが消える画面があれば、その画面の `LaunchedEffect` と `focusRequester` を見直す。
 

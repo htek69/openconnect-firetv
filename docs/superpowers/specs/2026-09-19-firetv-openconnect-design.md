@@ -185,6 +185,21 @@ context.startService(intent)
 `null` を返すため自動切替が無人で回る。未許可の状態を検知した場合は通知で
 ユーザーに知らせ、状態機械は `IDLE` に留まる。
 
+#### 他の VPN アプリによる許可の取り消し（運用上の注意）
+
+Android は**同時に1つの VpnService しか許可しない**。別の VPN アプリが
+`VpnService.prepare()` の承認を得ると、システムは本アプリの許可を取り消す。
+
+検証端末には別の OpenConnect アプリ（`com.github.digitalsoftwaresolutions.openconnect`
+v1.15、2025-10-01 にサイドロード）が既に入っており、これは実際に起こりうる。
+パッケージ名が異なるためインストール上の衝突は無いが、**そちらで接続すると本アプリの
+許可が失われ、自動フェイルオーバーが停止する**。
+
+設計はこれを検知できる。`OpenConnectVpnController.connect()` が
+`ConnectResult.NeedsUserConsent` を返し、`FailoverService` が通知を出して状態機械は
+`IDLE` に留まる。ユーザーが本アプリを開いて再度許可するまで自動切替は再開しない。
+この挙動は仕様として意図したものであり、黙って再接続を試み続けてはならない。
+
 ### 5.3 targetSdk 34 で必要なサービス宣言
 
 `FailoverService` は Android 14 の要件により以下が必要になる。
@@ -407,6 +422,52 @@ D-pad でフォーカス移動できる。TV 向けに作り直さず、その�
 （＝資格情報が拒否された場合）、既存コアは `BATCH_MODE_ABORTED` として接続を中断する。
 無限リトライにはならず、安全策 S1 が期待する「認証を通過せずに切断される」挙動と
 自然に一致する。
+
+### 9.3 既存 UI が D-pad で操作できない原因（実機で計測）
+
+同一コードベースの既存アプリ（`com.github.digitalsoftwaresolutions.openconnect` v1.15、
+Activity は `app.openconnect.MainActivity` = ics-openconnect の旧パッケージ名）を
+検証端末で `uiautomator dump` して計測した結果、原因が特定できた。
+
+プロファイル一覧画面の実測値:
+
+```
+node 総数 40    clickable="true" 15    focusable="true" 7
+```
+
+クリック可能な15要素のうち**8要素が `focusable="false"`** で、D-pad では到達できない。
+
+| D-pad で到達できる | D-pad で到達できない |
+|---|---|
+| `ActionBar$Tab` ×2 | **`vpn_list_item_left` ×4（プロファイルの行そのもの）** |
+| 「追加」`TextView` | **`quickedit_settings` ×4（各行の編集ボタン）** |
+| 設定 `ImageButton` | |
+| `reconnect_button` | |
+
+結果として、リモコンで到達できるのは「最後に使った接続先への再接続」ボタンだけになり、
+**接続先を選び直すことも、プロファイルを編集・削除することもできない**。
+これが本プロジェクトが解決すべき中核の問題である。
+
+### 9.4 D-pad 到達性の客観的な受け入れ基準
+
+9.3 の計測方法をそのまま受け入れ基準に使う。主観的な「操作できた気がする」ではなく、
+次の条件を満たすことを機械的に検証する。
+
+> **本アプリの各画面について、`uiautomator dump` した結果の
+> `clickable="true"` の数と `focusable="true"` の数が一致すること。**
+
+`clickable` かつ `focusable` でない要素が1つでも残っていれば、それはリモコンから
+永久に到達できない要素であり、不具合として扱う。計測手順:
+
+```bash
+adb shell uiautomator dump /sdcard/ui.xml
+adb shell cat /sdcard/ui.xml > ui.xml
+# clickable と focusable の数が一致することを確認する
+```
+
+Compose for TV の `Card` や `Button` は既定でフォーカス可能なため、この基準は
+自然に満たされる見込みだが、`Modifier.clickable` を素の `Box` や `Row` に付けた場合は
+違反しうる。画面を追加するたびに計測する。
 
 ## 10. Fire TV 固有の対応
 
