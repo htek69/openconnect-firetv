@@ -145,7 +145,15 @@ class FailoverService : Service() {
                     dispatch(FailoverEvent.ProbeResult(reachable))
                 }
                 dispatch(FailoverEvent.Tick)
-                delay(if (screenOn) TICK_INTERVAL_MS else TICK_INTERVAL_STANDBY_MS)
+                delay(
+                    when {
+                        // Ruling 25: 切替中は切断完了の確認待ちなので細かく tick する。
+                        // 待機時の 30 秒間隔のままだとタイムアウトが実質 30 秒になる。
+                        controller.state is FailoverState.FailingOver -> TICK_INTERVAL_SWITCHING_MS
+                        screenOn -> TICK_INTERVAL_MS
+                        else -> TICK_INTERVAL_STANDBY_MS
+                    },
+                )
             }
         }
     }
@@ -309,6 +317,9 @@ class FailoverService : Service() {
 
         /** Ruling 17: 画面消灯中のティック間隔。省電力のため通常の6倍に延ばす。 */
         private const val TICK_INTERVAL_STANDBY_MS = 30_000L
+
+        /** Ruling 25: 切替中（FailingOver）の tick 間隔。 */
+        private const val TICK_INTERVAL_SWITCHING_MS = 1_000L
 
         /** 計画2 の TV UI から呼ぶ入口。 */
         fun connectGroup(context: Context, groupId: String) {

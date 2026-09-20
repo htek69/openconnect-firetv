@@ -36,10 +36,17 @@ sealed interface FailoverState {
         val lastProbeAtMs: Long,
     ) : FailoverState
 
-    /** 障害を検知し次候補へ移ろうとしている。 */
+    /**
+     * Ruling 25: 障害を検知し、現在の候補の切断完了を待っている。
+     * [awaitingUuid] は切断を待っている候補の UUID。null は照合しないことを意味し、
+     * テスト専用である。[startedAtMs] から `DISCONNECT_WAIT_MS` を過ぎたら
+     * 確認を諦めて次候補へ進む。
+     */
     data class FailingOver(
         val groupId: String,
         val failedIndex: Int,
+        val awaitingUuid: String?,
+        val startedAtMs: Long,
     ) : FailoverState
 
     /** グループ内の全候補が一巡して全滅した。バックオフ待ち。 */

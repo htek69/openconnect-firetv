@@ -39,9 +39,15 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
-        // （既存コアが新プロファイル起動時に自分で旧トンネルを止める）。
-        assertEquals(0, vpn.disconnectCalls)
+        // Ruling 25: 切替は2段階。まず切断を要求し FailingOver で確認を待つ。
+        // 次候補はまだ起動しない。
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // uuid-a の切断完了が確認できたので候補2へ進む
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
 
@@ -126,8 +132,13 @@ class FailoverControllerFailoverTest {
         clock.advance(group.config.connectTimeoutSec * 1_000L + 1_000L)
         controller.handle(FailoverEvent.Tick)
 
-        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
-        assertEquals(0, vpn.disconnectCalls)
+        // Ruling 25: タイムアウトでも切断を要求してから FailingOver で確認を待つ
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
         // タイムアウトはネットワーク障害であり認証失敗ではないので除外しない
@@ -161,8 +172,13 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
-        assertEquals(0, vpn.disconnectCalls)
+        // Ruling 25: 切断要求後、FailingOver で確認を待つ
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         // 疎通できないだけで認証は失敗していないので除外しない
         assertFalse("uuid-a" in controller.excludedUuids)
@@ -186,7 +202,13 @@ class FailoverControllerFailoverTest {
     // --- Ruling 24: 切替時は切断しない。諦めるときだけ切断する ---
 
     @Test
-    fun `閾値超過での切替は明示的な切断を要求しない`() {
+    fun `閾値超過での切替は切断を要求し確認後に次候補へ進む`() {
+        // Ruling 24 時代はここで「切替に明示的な切断は要らない」ことを検証していたが、
+        // Ruling 25 でその前提は覆った。既存コア（OpenVpnService.onStartCommand）の
+        // killVPNThread(true) はスレッド join を 1000ms で打ち切るため後から接続を
+        // 完了させることがあり、それに任せると放棄したトンネルが残る（実機で確認）。
+        // 現在の保証は「こちらから切断を要求し、確認してから次候補へ進む。かつ
+        // 余分な2回目の切断はしない」こと。
         toHealthy()
 
         repeat(group.config.failureThreshold) {
@@ -194,10 +216,14 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        // 既存コア（OpenVpnService.onStartCommand）が新プロファイル起動前に
-        // 自分で killVPNThread(true) して旧トンネルを止めるので、こちらから
-        // stopService してはならない（実機で健全な候補を巻き込んで切断していた）。
-        assertEquals(0, vpn.disconnectCalls)
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        // 確認後に次候補が起動する。余分な切断は発生していない。
+        assertEquals(1, vpn.disconnectCalls)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
     }
@@ -223,8 +249,16 @@ class FailoverControllerFailoverTest {
             soloController.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        // これ以上試す候補が無い。放置されたトンネルを残さないよう、
-        // ここで初めて明示的に切断する。
+        // Ruling 25: 次候補が無くても、まず切断を要求して FailingOver に入り
+        // 確認を待つ（切替の入口は常に同じ手順を踏む）。
+        assertTrue(soloController.state is FailoverState.FailingOver)
+        assertEquals(1, vpn.disconnectCalls)
+
+        // 確認できたら次候補が無いので Exhausted へ。
+        // 切断は既に FailingOver 入口で済んでいるので、ここで2回目の
+        // disconnect は発生しない。
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         assertTrue(soloController.state is FailoverState.Exhausted)
         assertEquals(1, vpn.disconnectCalls)
     }
@@ -265,7 +299,11 @@ class FailoverControllerFailoverTest {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
-        assertEquals(0, vpn.disconnectCalls)
+        // Ruling 25: 切断要求後、FailingOver で uuid-a の確認を待つ
+        assertEquals(1, vpn.disconnectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
         assertEquals("uuid-b", vpn.connectCalls.last())
 
         // 候補2(uuid-b)が繋がって健全になる
@@ -274,11 +312,199 @@ class FailoverControllerFailoverTest {
         controller.handle(FailoverEvent.ProbeResult(reachable = true))
         assertTrue(controller.state is FailoverState.Healthy)
 
-        // 候補2で本物の予期しない切断が起きる
+        // 候補2で本物の予期しない切断が起きる。これは Disconnected 自身が契機
+        // （alreadyDown = true）なので、FailingOver を経ずに直接次候補へ進む。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
 
         assertEquals("uuid-c", vpn.connectCalls.last())
         assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    // --- Ruling 25: 切替を2段階にする（FailingOver を実際の状態にする） ---
+
+    @Test
+    fun `プローブ失敗の閾値到達で切断を要求し FailingOver に入る`() {
+        toHealthy()
+
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        // 次候補はまだ起動しない
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(1, vpn.disconnectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.FailingOver)
+        assertEquals(0, (state as FailoverState.FailingOver).failedIndex)
+    }
+
+    @Test
+    fun `FailingOver で当該 UUID の Disconnected を受けると次候補が起動する`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(1, (state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `FailingOver で別候補の UUID の Disconnected は前進させない`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+        val callsBefore = vpn.connectCalls.size
+
+        // 無関係な候補（uuid-c）の Disconnected が届く。
+        // Ruling 13 の UUID 照合（onVpnState 冒頭）でまず弾かれ、
+        // FailingOver 内の照合（awaitingUuid）は届く前提でも二重に守る。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
+
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals(callsBefore, vpn.connectCalls.size)
+    }
+
+    @Test
+    fun `確認が来なくても DISCONNECT_WAIT_MS 経過後の Tick で前進する`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // DISCONNECT_WAIT_MS = 3000ms 経過
+        clock.advance(3_000L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    @Test
+    fun `DISCONNECT_WAIT_MS 未満の Tick では前進しない`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        clock.advance(2_999L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+    }
+
+    @Test
+    fun `S2 下層ネットが無い間は確認を受けても前進せずネット復帰後の Tick で前進する`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // 下層ネットが無い間に確認が届いても前進しない
+        network.available = false
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+
+        // 待ち時間経過済みのままネットが復帰し、Tick が来ると前進する
+        clock.advance(3_000L)
+        network.available = true
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    @Test
+    fun `欠陥13の回帰 FailingOver 中に放棄した候補の Connected が届いても戻らない`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // 遅れて張られた放棄済み候補（uuid-a）のトンネルが Connected を報告する。
+        // currentCandidateUuid はまだ uuid-a を指しているので Ruling 13 の
+        // UUID 照合では弾かれない。それでも FailingOver から復活してはならない
+        // （欠陥13: 誰も管理していないトンネルが残り続けた実機不具合の回帰）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+
+        assertTrue(controller.state is FailoverState.FailingOver)
+    }
+
+    @Test
+    fun `Disconnected 起因の切替は FailingOver を経ずに直接次候補へ進み切断しない`() {
+        toHealthy()
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertEquals(0, vpn.disconnectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(1, (state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `次候補が無い状態で切替が起きたら切断を1回だけ要求し確認後に Exhausted に入る`() {
+        val soloGroup = FailoverGroup(
+            id = "g1",
+            name = "単独候補",
+            memberUuids = listOf("uuid-a"),
+            autoFailoverEnabled = true,
+            config = FailoverConfig(),
+        )
+        val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
+        soloController.handle(FailoverEvent.UserConnectGroup("g1"))
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+        clock.advance(16_000L)
+        soloController.handle(FailoverEvent.ProbeResult(reachable = true))
+
+        repeat(soloGroup.config.failureThreshold) {
+            clock.advance(31_000L)
+            soloController.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        assertTrue(soloController.state is FailoverState.FailingOver)
+        assertEquals(1, vpn.disconnectCalls)
+
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertTrue(soloController.state is FailoverState.Exhausted)
+        // 確認後の前進では2回目の切断は発生しない
+        assertEquals(1, vpn.disconnectCalls)
+    }
+
+    @Test
+    fun `FailingOver 中の UserDisconnect は Idle に落ちる`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.UserDisconnect)
+
+        assertTrue(controller.state is FailoverState.Idle)
     }
 
     private fun toHealthy() {

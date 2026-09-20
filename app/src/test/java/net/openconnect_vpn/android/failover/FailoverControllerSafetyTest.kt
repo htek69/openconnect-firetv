@@ -139,22 +139,29 @@ class FailoverControllerSafetyTest {
     @Test
     fun `切替前の古い Disconnected は新しい候補を除外しない`() {
         toHealthy()
-        val callsBefore = vpn.connectCalls.size
 
-        // uuid-a は Healthy。プローブ失敗で uuid-b へ切替
+        // uuid-a は Healthy。プローブ失敗で切替が始まる
+        // （Ruling 25: まず切断を要求して FailingOver に入り、uuid-a の確認を待つ）
         repeat(3) {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // uuid-a の確認が届いて uuid-b へ進む
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
         assertTrue(controller.state is FailoverState.Connecting)
         assertEquals("uuid-b", vpn.connectCalls.last())
+        val callsBefore = vpn.connectCalls.size
 
-        // uuid-a が古い Disconnected で遅れて届く（uuid を指定）
+        // uuid-a の Disconnected がもう一度、遅れて重複して届く（旧候補の古い通知）。
+        // currentCandidateUuid は既に uuid-b を指しているので、Ruling 13 の
+        // UUID 照合で弾かれなければならない。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
 
         // uuid-b は一度も試していない除外対象ではない。接続要求も増えない。
         assertFalse("uuid-b" in controller.excludedUuids)
-        assertEquals(callsBefore + 1, vpn.connectCalls.size)
+        assertEquals(callsBefore, vpn.connectCalls.size)
     }
 
     // --- Ruling 14: S2 immediate probe on network recovery ---
@@ -241,12 +248,23 @@ class FailoverControllerSafetyTest {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
+        // Ruling 25: 切替1段階目。uuid-a の確認を待つ
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         assertTrue(controller.state is FailoverState.Connecting)
         assertEquals("uuid-b", vpn.connectCalls.last())
 
+        // uuid-b が認証ダイアログで止まる（人はいない）。除外して次候補へ進む。
+        // これも onUnattendedUserPrompt 経由の failOver であり、まだ生きている
+        // 可能性があるので Ruling 25 によりまず切断要求 -> FailingOver に入る。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
 
         assertTrue("uuid-b" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+
         assertEquals("uuid-c", vpn.connectCalls.last())
         assertTrue(controller.state is FailoverState.Connecting)
     }
@@ -259,6 +277,9 @@ class FailoverControllerSafetyTest {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
+        // Ruling 25: 確認ステップを挟んでから次候補へ進む
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
         assertEquals("uuid-b", vpn.connectCalls.last())
 
         // uuid-b: 認証段階まで到達してから切断 -> Ruling 23 により S1 で除外
@@ -290,6 +311,10 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
 
         assertTrue("uuid-a" in controller.excludedUuids)
+        // Ruling 25: まだ FailingOver（確認待ち）。確認できたら候補が尽きて Exhausted へ進む
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
         // uuid-b, uuid-c も除外済みなので、候補が尽きて再び Exhausted へ進む
         assertTrue(controller.state is FailoverState.Exhausted)
     }
