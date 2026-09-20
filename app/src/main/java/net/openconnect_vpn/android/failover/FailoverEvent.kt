@@ -9,8 +9,16 @@ sealed interface FailoverEvent {
     /** ユーザーが切断を指示した。 */
     data object UserDisconnect : FailoverEvent
 
-    /** 既存コアの接続状態が変化した。値は OpenConnectManagementThread.STATE_* に対応。 */
-    data class VpnStateChanged(val state: VpnCoreState) : FailoverEvent
+    /**
+     * 既存コアの接続状態が変化した。
+     * [uuid] はそのイベントがどの接続試行に属するかを示す。
+     * 現在の候補と一致しないイベントは、切替前の古い通知なので無視する。
+     * null は照合しないことを意味し、テスト専用である（本番の橋渡しは常に値を入れる）。
+     */
+    data class VpnStateChanged(
+        val state: VpnCoreState,
+        val uuid: String? = null,
+    ) : FailoverEvent
 
     /** 定期プローブの結果。 */
     data class ProbeResult(val reachable: Boolean) : FailoverEvent

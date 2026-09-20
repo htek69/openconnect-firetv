@@ -134,6 +134,54 @@ class FailoverControllerSafetyTest {
         assertTrue(controller.needsUserConsent)
     }
 
+    // --- Ruling 13: S3 with UUID correlation ---
+
+    @Test
+    fun `切替前の古い Disconnected は新しい候補を除外しない`() {
+        toHealthy()
+        val callsBefore = vpn.connectCalls.size
+
+        // uuid-a は Healthy。プローブ失敗で uuid-b へ切替
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // uuid-a が古い Disconnected で遅れて届く（uuid を指定）
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        // uuid-b は一度も試していない除外対象ではない。接続要求も増えない。
+        assertFalse("uuid-b" in controller.excludedUuids)
+        assertEquals(callsBefore + 1, vpn.connectCalls.size)
+    }
+
+    // --- Ruling 14: S2 immediate probe on network recovery ---
+
+    @Test
+    fun `下層ネット復帰で間隔満了前でもプローブできる`() {
+        toHealthy()
+        val interval = group.config.probeIntervalSec * 1_000L
+
+        // プローブ間隔より短い時間だけ進める（29秒、30秒以下）
+        clock.advance(interval - 2_000L)
+        assertFalse(controller.shouldProbeNow())
+
+        // ネットが一度落ちて復帰する
+        network.available = false
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = false))
+        assertFalse(controller.shouldProbeNow())
+
+        network.available = true
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = true))
+
+        // 間隔満了前だが、復帰フラグにより即座にプローブできる
+        assertTrue(controller.shouldProbeNow())
+        // 一度だけ消費される（再度呼ぶと false になる）
+        assertFalse(controller.shouldProbeNow())
+    }
+
     private fun toHealthy() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))

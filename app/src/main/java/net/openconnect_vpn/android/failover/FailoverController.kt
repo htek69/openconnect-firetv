@@ -32,19 +32,25 @@ class FailoverController(
     /** 安全策 S1: 現在の候補が認証を通過したか。通過前の切断は認証失敗とみなす。 */
     private var currentCandidatePassedAuth = false
 
+    /** 安全策 S3: 現在の候補の UUID。Ruling 13 により切替前の古い通知を除外する。 */
+    private var currentCandidateUuid: String? = null
+
     /**
      * 枯渇の世代。次に枯渇したときの Exhausted.attempt になる。
      * `onTick` の再試行で 1 つ進め、復旧（Healthy 到達）とユーザー操作でのみ 0 に戻す。
      */
     private var exhaustionAttempt = 0
 
+    /** 安全策 S2: 下層ネット復帰時に次のプローブを即座に実行するフラグ。Ruling 14 により一度だけ消費される。 */
+    private var probeImmediatelyOnNetworkRecovery = false
+
     fun handle(event: FailoverEvent) {
         state = when (event) {
             is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId)
             is FailoverEvent.UserDisconnect -> onUserDisconnect()
-            is FailoverEvent.VpnStateChanged -> onVpnState(event.state)
+            is FailoverEvent.VpnStateChanged -> onVpnState(event.state, event.uuid)
             is FailoverEvent.ProbeResult -> onProbeResult(event.reachable)
-            is FailoverEvent.UnderlyingNetworkChanged -> state
+            is FailoverEvent.UnderlyingNetworkChanged -> onUnderlyingNetworkChanged(event.available)
             is FailoverEvent.Tick -> onTick()
         }
     }
@@ -52,9 +58,17 @@ class FailoverController(
     /**
      * 呼び出し側がいまプローブを打つべきかの判定。
      * 安全策 S2 により下層ネットワークが無いときは常に false。
+     * Ruling 14 により下層ネット復帰時は即座にプローブする。
      */
     fun shouldProbeNow(): Boolean {
         if (!network.hasUnderlyingNetwork()) return false
+
+        // 下層ネット復帰時は即座にプローブする（一度だけ）
+        if (probeImmediatelyOnNetworkRecovery) {
+            probeImmediatelyOnNetworkRecovery = false
+            return true
+        }
+
         val now = clock.nowMs()
         return when (val s = state) {
             is FailoverState.Verifying ->
@@ -95,6 +109,7 @@ class FailoverController(
             }
             currentCandidatePassedAuth = false
             expectingDisconnect = false
+            currentCandidateUuid = uuid
             return when (vpn.connect(uuid)) {
                 ConnectResult.Started -> FailoverState.Connecting(
                     groupId = group.id,
@@ -117,8 +132,12 @@ class FailoverController(
         return enterExhausted(group.id, attempt = exhaustionAttempt)
     }
 
-    private fun onVpnState(core: VpnCoreState): FailoverState {
+    private fun onVpnState(core: VpnCoreState, uuid: String?): FailoverState {
         val s = state
+
+        // 切替前の古い通知は無視する。遅れて届いた切断通知を
+        // 新しい候補の障害と誤認すると、一度も試していない候補が S1 で除外される。
+        if (uuid != null && uuid != currentCandidateUuid) return state
 
         // 認証を通過したことを覚えておく（S1 の判定に使う）
         if (core == VpnCoreState.Authenticated || core == VpnCoreState.Connected) {
@@ -220,6 +239,14 @@ class FailoverController(
         // （リセットすると2回目の枯渇でも attempt が 0 に戻り、バックオフが伸びない）。
         exhaustionAttempt = s.attempt + 1
         return startCandidateFrom(group, fromIndex = 0)
+    }
+
+    private fun onUnderlyingNetworkChanged(available: Boolean): FailoverState {
+        if (available) {
+            // 下層ネットが復帰した。次のプローブを即座に実行する。
+            probeImmediatelyOnNetworkRecovery = true
+        }
+        return state
     }
 
     private fun groupOf(groupId: String): FailoverGroup? = groups.firstOrNull { it.id == groupId }
