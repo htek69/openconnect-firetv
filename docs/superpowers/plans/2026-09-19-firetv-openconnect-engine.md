@@ -1567,6 +1567,9 @@ class FailoverControllerFailoverTest {
 
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+        // トンネルは既に落ちているので切断要求を出してはならない。
+        // ここで余分な disconnect が入ると、安全策 S3（意図的切断と障害の判別）が壊れる。
+        assertEquals(0, vpn.disconnectCalls)
     }
 
     @Test
@@ -1578,6 +1581,8 @@ class FailoverControllerFailoverTest {
 
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+        // 同上。接続が成立していないので切断要求は不要。
+        assertEquals(0, vpn.disconnectCalls)
     }
 
     private fun toHealthy() {
@@ -2324,26 +2329,39 @@ Expected: FAIL（`Exhausted` に遷移せず `Idle` のままになる）
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
 
         // 再試行時は認証失敗による除外を維持したまま先頭から試す。
-        // 次に枯渇したときの attempt を1つ進めるため、退避しておく。
-        pendingAttempt = s.attempt + 1
-        val next = startCandidateFrom(group, fromIndex = 0)
-        pendingAttempt = 0
-        return next
+        // 次に枯渇したときの attempt を1つ進める。ここでリセットしてはならない
+        // （リセットすると2回目の枯渇でも attempt が 0 に戻り、バックオフが伸びない）。
+        exhaustionAttempt = s.attempt + 1
+        return startCandidateFrom(group, fromIndex = 0)
     }
 ```
 
-クラスのフィールドに次を追加する。
+クラスのフィールドに次を追加する。**一時変数ではなく永続フィールドであることが重要**で、
+`onTick` の中でリセットすると2回目の枯渇でも `attempt` が 0 に戻り、指数バックオフが成立しない。
 
 ```kotlin
-    /** 再試行中に再び枯渇したときに使う attempt。 */
-    private var pendingAttempt = 0
+    /**
+     * 枯渇の世代。次に枯渇したときの Exhausted.attempt になる。
+     * `onTick` の再試行で 1 つ進め、復旧（Healthy 到達）とユーザー操作でのみ 0 に戻す。
+     */
+    private var exhaustionAttempt = 0
 ```
 
-`startCandidateFrom` の枯渇時の行を、退避した attempt を使う形に直す。
+`startCandidateFrom` の枯渇時の行を、この世代を使う形に直す。
 
 ```kotlin
-        return enterExhausted(group.id, attempt = pendingAttempt)
+        return enterExhausted(group.id, attempt = exhaustionAttempt)
 ```
+
+リセットは3箇所に入れる。`onUserConnect` の先頭、`onUserDisconnect` の先頭、
+そして `onProbeResult` で `Verifying` から `Healthy` へ遷移する直前。
+
+```kotlin
+        exhaustionAttempt = 0
+```
+
+復旧したら世代を 0 に戻すことで、次に障害が起きたときのバックオフが再び 30 秒から始まる。
+これを忘れると、一度枯渇した後は復旧しても長い間隔が保持され続ける。
 
 - [ ] **Step 4: 全テストが通ることを確認する**
 
