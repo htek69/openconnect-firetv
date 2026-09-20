@@ -345,6 +345,17 @@ assets/raw/x86/curl-bin          (4,984,472 B)
 
 **`mingc/android-build-box:latest`**（Docker Hub、約13.9GB）を使用した。
 
+再現性のため、実際に使用したイメージのダイジェストを固定して記録する：
+
+```
+mingc/android-build-box@sha256:47a26138302605eb8a37b024e8a263af0812c14800813458bc674df47cc26331
+```
+
+`:latest` タグは初回 pull 時の入口としての利便性でしかなく、指すイメージが将来変わりうる
+（＝再現性を保証しない）。**再現するときは上記のダイジェスト形式で pull・run すること。**
+タグ名（`mingc/android-build-box`、通称 latest）は人間が「どのイメージか」を識別するために
+併記してあるだけで、実際に固定しているのはダイジェストの方である。
+
 選定理由：
 - Docker Hub 上のイメージは pull が安定して速い（セクション2で確認済みの経験則）。
 - JDK 8/11/17/21 が全て `/usr/lib/jvm/` 配下に揃っており、`JAVA_HOME` を切り替えるだけで
@@ -406,8 +417,11 @@ Caused by: java.net.SocketTimeoutException: Read timed out
 docker run --rm \
   -v "$PWD":/app -v "$HOME/.gradle-cache":/gradle-home \
   -w /app -e JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 -e GRADLE_USER_HOME=/gradle-home \
-  mingc/android-build-box:latest sh -c 'export PATH=$JAVA_HOME/bin:$PATH; sh gradlew --version'
+  mingc/android-build-box@sha256:47a26138302605eb8a37b024e8a263af0812c14800813458bc674df47cc26331 \
+  sh -c 'export PATH=$JAVA_HOME/bin:$PATH; sh gradlew --version'
 # → /gradle-home/wrapper/dists/gradle-8.10.2-bin/<hash>/ ができる
+# (上記イメージは "mingc/android-build-box:latest" として pull したものと同一。タグは
+#  可読性のためにここに書いているだけで、固定しているのはダイジェストの方)
 
 # 2. 8並列 Range ダウンロードでその中に gradle-8.10.2-bin.zip を完成させる（本文中スクリプト参照）
 #    完了確認:
@@ -484,7 +498,8 @@ docker run -d --name gradle-build2 \
   -w /app \
   -e JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 -e ANDROID_HOME=/opt/android-sdk \
   -e GRADLE_USER_HOME=/gradle-home \
-  mingc/android-build-box:latest sh -c '
+  mingc/android-build-box@sha256:47a26138302605eb8a37b024e8a263af0812c14800813458bc674df47cc26331 \
+  sh -c '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq && apt-get install -y -qq ant
     export PATH=$JAVA_HOME/bin:$PATH

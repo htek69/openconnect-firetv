@@ -68,7 +68,9 @@ unzip -o OpenConnect.debug.apk -d <展開先>
 | `app/src/main/assets/raw/x86/curl-bin` | 4984472 | `564a7c8c7f716665f68dbe7552a311d35d3ee83a57f9f290fcfb2350b7ddeeed` |
 | `app/src/main/assets/raw/x86_64/curl-bin` | 4761568 | `49620f664aba4044c9a76b46d48cc37373e7220ba52d6f1fb4ee12812060ac1a` |
 
-(`curl-bin` の実行ビットは `chmod +x` で立ててある。)
+（`curl-bin` はここでは通常ファイル（モード `100644`）としてコミットしてある。実行ビットは
+立てていない。`OpenConnectManagementThread.java` がアプリの files ディレクトリへ展開する際に
+`setExecutable(true)` を呼んで実行可能にするため、git 上のモードは実行時の挙動に影響しない。）
 
 ## ABI 命名についての注記
 
