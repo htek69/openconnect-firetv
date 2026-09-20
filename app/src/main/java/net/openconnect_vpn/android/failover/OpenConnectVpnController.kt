@@ -3,6 +3,7 @@ package net.openconnect_vpn.android.failover
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.util.Log
 import net.openconnect_vpn.android.core.OpenVpnService
 import net.openconnect_vpn.android.core.ProfileManager
 
@@ -32,6 +33,7 @@ class OpenConnectVpnController(private val context: Context) : VpnController {
             context.startService(intent)
             ConnectResult.Started
         } catch (e: Exception) {
+            Log.w(TAG, "startService(OpenVpnService) failed for uuid=$uuid", e)
             ConnectResult.Failed
         }
     }
@@ -40,5 +42,9 @@ class OpenConnectVpnController(private val context: Context) : VpnController {
         // OpenVpnService は START_SERVICE アクションで bind されている前提ではなく、
         // 停止要求として stopService を使う。サービス側の onDestroy が stopVPN を呼ぶ。
         context.stopService(Intent(context, OpenVpnService::class.java))
+    }
+
+    private companion object {
+        const val TAG = "OpenConnectVpnController"
     }
 }

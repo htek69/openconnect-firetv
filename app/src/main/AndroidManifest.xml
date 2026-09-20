@@ -112,6 +112,15 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".failover.FailoverService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn_failover_monitoring" />
+        </service>
 <!--
         <service
             android:name=".api.ExternalOpenVPNService"
