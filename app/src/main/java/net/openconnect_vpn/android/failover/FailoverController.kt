@@ -198,8 +198,8 @@ class FailoverController(
      * 止まった（＝保存済み認証情報が拒否された等）。TV の前に人がいる保証は無く、
      * このまま放置すると S1 の安全策（認証失敗した候補を除外して次へ進む）が
      * 一度も働かずに無期限へ止まってしまう。よって認証失敗と同じ扱いにする：
-     * この候補を除外し、まだ張られていないトンネルを明示的に切断してから
-     * 次候補へ進める（alreadyDown = false）。
+     * この候補を除外して次候補へ進める（alreadyDown = false。Ruling 24 により
+     * 切替先があれば明示的な切断はしない。次候補が無ければ failOver が切断する）。
      */
     private fun onUnattendedUserPrompt(s: FailoverState): FailoverState {
         val groupId = groupIdOf(s) ?: return s
@@ -253,10 +253,11 @@ class FailoverController(
                     // （ここに来る時点で shouldProbeNow() 経由なら必ず post-grace のはず、
                     // という前提が仮に崩れても、直前の分岐で二重に守られている）。
                     // 無視し続けるとトンネルは張れたが疎通が無い候補に無期限に留まって
-                    // しまうので、Healthy と同じ閾値で切替える。トンネルは生きているので
-                    // alreadyDown = false で明示的に切断する。疎通できないだけで認証は
-                    // 失敗していないので、タイムアウト（Ruling 22 a）と同様に候補は
-                    // 除外しない。
+                    // しまうので、Healthy と同じ閾値で切替える。alreadyDown = false
+                    // だが、Ruling 24 により切替先があれば明示的な切断はしない
+                    // （次候補の起動が既存コア側で旧トンネルを止める）。疎通できないだけで
+                    // 認証は失敗していないので、タイムアウト（Ruling 22 a）と同様に
+                    // 候補は除外しない。
                     val failures = s.consecutiveFailures + 1
                     if (failures >= configOf(s.groupId).failureThreshold) {
                         failOver(s.groupId, s.candidateIndex, alreadyDown = false)
@@ -281,16 +282,43 @@ class FailoverController(
     /**
      * 候補 [failedIndex] を諦めて次候補へ進む。
      * 自動切替が無効なグループでは切り替えず Idle で停止する（R6）。
-     * [alreadyDown] が false のときはトンネルがまだ生きているので明示的に切断する。
+     *
+     * Ruling 24: 切り替える先の候補があるうちは、こちらから明示的に切断しない。
+     * `vpn.connect()`（= `OpenVpnService.onStartCommand`）は新しいプロファイルを
+     * 起動する前に自分で `killVPNThread(true)` して旧トンネルを止めるので、
+     * 直前に `stopService` してから `startService` するのは冗長なだけでなく、
+     * 停止処理の最中に新しい起動が割り込む競合を生む（実機で確認: `Authenticating`
+     * まで到達した健全な候補が、自分自身の停止処理に巻き込まれて切断され、
+     * S1 に認証失敗と誤判定されて焼き切られた）。
+     * 切替先が無く「これ以上何もしない」ときだけ、ここで初めて明示的に切断する
+     * （[alreadyDown] が false の場合。true ならトンネルは既に落ちている）。
+     * Ruling 13 の UUID 照合により、この切断で発生する `Disconnected` は
+     * 新しい候補の UUID と一致しないので S1 の誤判定は起きない。
      */
     private fun failOver(groupId: String, failedIndex: Int, alreadyDown: Boolean): FailoverState {
         val group = groupOf(groupId) ?: return FailoverState.Idle
-        if (!alreadyDown) {
-            expectingDisconnect = true
-            vpn.disconnect()
+
+        if (!group.autoFailoverEnabled) {
+            disconnectIfStillUp(alreadyDown)
+            return FailoverState.Idle
         }
-        if (!group.autoFailoverEnabled) return FailoverState.Idle
-        return startCandidateFrom(group, fromIndex = failedIndex + 1, unattended = true)
+
+        val next = startCandidateFrom(group, fromIndex = failedIndex + 1, unattended = true)
+        // Connecting = 次候補への接続を開始できた。トンネルの後始末は
+        // OpenVpnService 自身に任せ、こちらからは切断しない。
+        // それ以外（Exhausted や、VPN 許可喪失による Idle）はこれ以上何も
+        // 起こらないので、ここで初めて切断する。
+        if (next !is FailoverState.Connecting) {
+            disconnectIfStillUp(alreadyDown)
+        }
+        return next
+    }
+
+    /** [alreadyDown] が false のときだけ、S3 のフラグを立てたうえで実際に切断する。 */
+    private fun disconnectIfStillUp(alreadyDown: Boolean) {
+        if (alreadyDown) return
+        expectingDisconnect = true
+        vpn.disconnect()
     }
 
     /** 全候補が枯渇した。指数バックオフ後に先頭から再試行する（仕様書 7.2）。 */
@@ -314,7 +342,8 @@ class FailoverController(
      * 状態機械もそれに引きずられて何もしなくなる。`connectTimeoutSec` を超えたら
      * 次候補へ進める。タイムアウトはネットワーク障害であり認証失敗ではないので、
      * S1 の除外はしない（10分後には繋がるかもしれない候補を焼き切らない）。
-     * トンネルはまだ生きている可能性があるので alreadyDown = false で明示的に切断する。
+     * alreadyDown = false だが、Ruling 24 により切替先があれば明示的な切断は
+     * しない（次候補の起動が既存コア側で旧トンネルを止める）。
      */
     private fun onConnectTimeout(s: FailoverState.Connecting): FailoverState {
         val timeoutMs = configOf(s.groupId).connectTimeoutSec * 1_000L

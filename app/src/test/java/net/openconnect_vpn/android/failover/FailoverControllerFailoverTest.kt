@@ -39,8 +39,9 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        // 切断要求が出て候補2への接続が始まる
-        assertEquals(1, vpn.disconnectCalls)
+        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
+        // （既存コアが新プロファイル起動時に自分で旧トンネルを止める）。
+        assertEquals(0, vpn.disconnectCalls)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
 
@@ -125,7 +126,8 @@ class FailoverControllerFailoverTest {
         clock.advance(group.config.connectTimeoutSec * 1_000L + 1_000L)
         controller.handle(FailoverEvent.Tick)
 
-        assertEquals(1, vpn.disconnectCalls)
+        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
+        assertEquals(0, vpn.disconnectCalls)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
         // タイムアウトはネットワーク障害であり認証失敗ではないので除外しない
@@ -159,7 +161,8 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
 
-        assertEquals(1, vpn.disconnectCalls)
+        // Ruling 24: 切替先があるので、こちらから明示的な切断は要求しない
+        assertEquals(0, vpn.disconnectCalls)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         // 疎通できないだけで認証は失敗していないので除外しない
         assertFalse("uuid-a" in controller.excludedUuids)
@@ -178,6 +181,104 @@ class FailoverControllerFailoverTest {
 
         assertTrue(controller.state is FailoverState.Healthy)
         assertEquals(0, vpn.disconnectCalls)
+    }
+
+    // --- Ruling 24: 切替時は切断しない。諦めるときだけ切断する ---
+
+    @Test
+    fun `閾値超過での切替は明示的な切断を要求しない`() {
+        toHealthy()
+
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        // 既存コア（OpenVpnService.onStartCommand）が新プロファイル起動前に
+        // 自分で killVPNThread(true) して旧トンネルを止めるので、こちらから
+        // stopService してはならない（実機で健全な候補を巻き込んで切断していた）。
+        assertEquals(0, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `最後の候補が失敗して Exhausted に入るときは切断する`() {
+        // 候補が1件だけのグループ。失敗すれば切替先が無く Exhausted へ諦める。
+        val soloGroup = FailoverGroup(
+            id = "g1",
+            name = "単独候補",
+            memberUuids = listOf("uuid-a"),
+            autoFailoverEnabled = true,
+            config = FailoverConfig(),
+        )
+        val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
+        soloController.handle(FailoverEvent.UserConnectGroup("g1"))
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+        clock.advance(16_000L)
+        soloController.handle(FailoverEvent.ProbeResult(reachable = true))
+
+        repeat(soloGroup.config.failureThreshold) {
+            clock.advance(31_000L)
+            soloController.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        // これ以上試す候補が無い。放置されたトンネルを残さないよう、
+        // ここで初めて明示的に切断する。
+        assertTrue(soloController.state is FailoverState.Exhausted)
+        assertEquals(1, vpn.disconnectCalls)
+    }
+
+    @Test
+    fun `自動切替が無効なら失敗時に切断して Idle へ戻る`() {
+        val manualGroup = FailoverGroup(
+            id = "g1",
+            name = "手動運用",
+            memberUuids = listOf("uuid-a", "uuid-b"),
+            autoFailoverEnabled = false,
+            config = FailoverConfig(),
+        )
+        val manualController = FailoverController(listOf(manualGroup), clock, vpn, network)
+        manualController.handle(FailoverEvent.UserConnectGroup("g1"))
+        manualController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+        clock.advance(16_000L)
+        manualController.handle(FailoverEvent.ProbeResult(reachable = true))
+
+        repeat(manualGroup.config.failureThreshold) {
+            clock.advance(31_000L)
+            manualController.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        // 切替先を試しにすら行かない（R6）。生きたトンネルを残さないよう切断する。
+        assertTrue(manualController.state is FailoverState.Idle)
+        assertEquals(1, vpn.disconnectCalls)
+    }
+
+    @Test
+    fun `切替後の新候補で本物の障害が起きても検知される`() {
+        // S3(expectingDisconnect)・S1(Ruling13 UUID照合)の両方が守っている境界。
+        // 切替時に disconnect を要求しなくなった後も、新候補自身の本物の障害は
+        // 飲み込まれず検知されなければならない。
+        toHealthy()
+
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertEquals(0, vpn.disconnectCalls)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // 候補2(uuid-b)が繋がって健全になる
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-b"))
+        clock.advance(16_000L)
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        assertTrue(controller.state is FailoverState.Healthy)
+
+        // 候補2で本物の予期しない切断が起きる
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+
+        assertEquals("uuid-c", vpn.connectCalls.last())
+        assertTrue(controller.state is FailoverState.Connecting)
     }
 
     private fun toHealthy() {
