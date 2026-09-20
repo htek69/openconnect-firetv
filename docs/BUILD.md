@@ -2,9 +2,32 @@
 
 このドキュメントは、仕様書のリスク **RK1**（`make -C external` が現行環境で通るか）を検証した記録である。
 
-## 結論（先に書く）
+## 結論（2026-09-20 更新、Ruling 6 反映後）
 
-> **RK1 は未解消のまま残っている。** フォークの取り込み（Ruling 2）は完全に成功したが、
+> **RK1 の扱いはコントローラの Ruling 6 により変更された。** 仕様書 §5 によりネイティブ層は
+> 今後も変更しない固定入力として扱うことになったため、「`make -C external` がこの環境で通るか」
+> という当初の RK1 は検証目標から外れた。代わりに以下の2点が Task 1 の完了条件になった。
+>
+> 1. **ネイティブ成果物（.so 8個 + curl-bin 4個）を出所を明記した上でリポジトリに固定コミットする。**
+>    → 完了。`app/src/main/jniLibs/PROVENANCE.md` に出所とSHA256を記録済み（コミット `6f381eb`）。
+> 2. **このマシン上でローカルの Gradle ビルドが実際に動き、我々のソースから APK を生成できること。**
+>    → **完了。** `sh gradlew assembleDebug` がこのマシン上の Docker コンテナ内で成功し
+>    （`BUILD SUCCESSFUL in 42s`）、生成された `app-debug.apk` の中に固定した8個の `.so`
+>    （4 ABI）と4個の `curl-bin` が正しく入っていることを `unzip -l` で確認した。
+>    手順の詳細はセクション7を参照。
+>
+> 以前の版（このセクションの下、セクション0〜6）に書いた「RK1 は未解消」という記述は
+> **Ruling 6 以前の状態の記録として、そのまま残してある**（歴史的経緯・診断の記録として価値があるため）。
+> 今回のタスクの最終的な合否判断はセクション7の内容に基づく。
+
+---
+
+<details>
+<summary>以下は Ruling 6 以前（2026-09-19時点）の記録。折りたたみ表示。</summary>
+
+## 結論（旧版、参考情報）
+
+> フォークの取り込み（Ruling 2）は完全に成功したが、
 > ネイティブビルド（`make -C external`）はこのマシン上で最後まで完走させることができなかった。
 > 原因は当初「帯域そのものが極端に低い」ことだったが、コントローラによるネットワーク切り替え
 > （VPN再接続）後は「特定のCDN/レジストリ（`registry.gitlab.com` のコンテナレジストリ、
@@ -306,3 +329,231 @@ assets/raw/x86/curl-bin          (4,984,472 B)
 - 途中で止まった場合は `timeout` で強制終了せず、`docker system df` のサイズ変化で
   「進んでいるが遅いだけ」なのか「本当に止まっている」のかを見極めること
   （非TTY出力の `docker pull` はレイヤー完了までログに何も出さないため、一見止まって見える）。
+
+</details>
+
+---
+
+## 7. Ruling 6: ローカル Gradle ビルドの実施と成功記録（2026-09-20）
+
+コントローラの Ruling 6 により、ネイティブ層（`external/`）はこれ以上いじらず固定入力として扱い、
+その代わり「ローカルで `sh gradlew assembleDebug` が通り、我々の Java/Kotlin ソースから
+ネイティブペイロード入りの APK が生成できること」を Task 1 の完了条件とすることになった。
+本セクションはその実施記録。
+
+### 7-1. 使用した Docker イメージと選定理由
+
+**`mingc/android-build-box:latest`**（Docker Hub、約13.9GB）を使用した。
+
+選定理由：
+- Docker Hub 上のイメージは pull が安定して速い（セクション2で確認済みの経験則）。
+- JDK 8/11/17/21 が全て `/usr/lib/jvm/` 配下に揃っており、`JAVA_HOME` を切り替えるだけで
+  プロジェクトが要求する JDK 17 を選べる。
+- Android SDK が `/opt/android-sdk` に既にインストール済みで、`build-tools;34.0.0` と
+  `platforms;android-35`（このプロジェクトが要求するバージョン）を含む非常に広い範囲の
+  バージョンが最初から揃っており、追加の `sdkmanager` 呼び出しが一切不要だった
+  （`ls $ANDROID_HOME/build-tools` と `ls $ANDROID_HOME/platforms` で確認済み）。
+- Ubuntu 22.04 (jammy) ベースで、`apt-get` 経由のパッケージ取得（後述の `ant`）が
+  `archive.ubuntu.com` に対して安定して速かった（同じ apt でも Debian trixie のミラーは
+  この環境から不安定だったのとは対照的）。
+
+他に `mobiledevops/android-sdk-image`（3.52GB）と `eclipse-temurin:17-jdk`（448MB、JDKのみ）も
+事前に pull 済みだったが、最終的に SDK・JDK が両方最初から揃っている `mingc/android-build-box`
+だけで完結させた。**AGP 8.7.2 / Gradle 8.10.2 / minSdk 23 / targetSdk 34 / compileSdk 35 は
+一切変更していない。**
+
+### 7-2. つまずいた点1: `gradlew` 自身の Gradle 配布物ダウンロードがタイムアウトする
+
+素直に `sh gradlew assembleDebug` を実行すると、Gradle Wrapper 自身が
+`https://services.gradle.org/distributions/gradle-8.10.2-bin.zip`（136,715,430 bytes、
+実体は GitHub Releases 経由で Azure Blob Storage にリダイレクトされる）を取得しようとして
+以下の例外で失敗した：
+
+```
+Exception in thread "main" java.io.IOException: Downloading from https://services.gradle.org/distributions/gradle-8.10.2-bin.zip failed: timeout (10000ms)
+Caused by: java.net.SocketTimeoutException: Read timed out
+	at org.gradle.wrapper.Install.forceFetch(SourceFile:2)
+```
+
+`gradle-wrapper.properties` の `networkTimeout=10000`（10秒）に対し、このネットワーク経路は
+「概ね流れているが数秒〜十数秒単位で瞬断する」性質があり、Gradle Wrapper 自身のダウンローダには
+リトライ機構が無いため、10秒待って1バイトも来ないとその場で失敗する。**`gradle-wrapper.properties`
+は変更していない**（プロジェクトのバージョン指定を変えないという制約を守るため）。
+
+代わりに、**Gradle Wrapper が期待するキャッシュ配置場所に、こちらで先に完全なファイルを
+用意しておく**ことで、`gradlew` 自身のダウンロード処理を丸ごとスキップさせた。
+
+1. `GRADLE_USER_HOME` をホスト側のディレクトリにバインドマウントする
+   （コンテナを使い捨てにしても再ダウンロードにならないようにするため）。
+2. 一度 `gradlew --version` を実行し、`$GRADLE_USER_HOME/wrapper/dists/gradle-8.10.2-bin/<hash>/`
+   というディレクトリ名（`<hash>` は distributionUrl から計算される固定値、今回は
+   `a04bxjujx95o3nb99gddekhwo`）を確認する。
+3. **8並列の Range リクエスト**（`curl -H "Range: bytes=$start-$end"`、`-L` でリダイレクト追従必須）
+   で `gradle-8.10.2-bin.zip` を分割ダウンロードし、`<hash>/gradle-8.10.2-bin.zip` として配置する。
+   単一ストリームの `wget -c`（レジューム付き再試行ループ）でも最終的には完走できたが、
+   このネットワークでは1ストリームあたり数十〜百数十KB/sしか出ない一方、8並列にすると
+   合計で数MB/s近くまで伸びることを確認したため、8並列に切り替えた。
+   （busybox の `wget --header` は HTTP 206 Partial Content を「エラー」として扱ってしまい
+   Range リクエストが使えないため、`curl` が入っている `mingc/android-build-box` 側で実行した。）
+4. ダウンロード完了後、`sha256sum` で `gradle-wrapper.properties` の
+   `distributionSha256Sum=31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26`
+   と**完全一致**することを確認した。
+5. `.lck` ロックファイルを削除し、`gradlew` を再実行 → ログに
+   `Welcome to Gradle 8.10.2!` が即座に表示され、ダウンロード処理は発生しなかった。
+
+```bash
+# 1. hash ディレクトリ名を確認するための最初の（失敗してよい）実行
+docker run --rm \
+  -v "$PWD":/app -v "$HOME/.gradle-cache":/gradle-home \
+  -w /app -e JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 -e GRADLE_USER_HOME=/gradle-home \
+  mingc/android-build-box:latest sh -c 'export PATH=$JAVA_HOME/bin:$PATH; sh gradlew --version'
+# → /gradle-home/wrapper/dists/gradle-8.10.2-bin/<hash>/ ができる
+
+# 2. 8並列 Range ダウンロードでその中に gradle-8.10.2-bin.zip を完成させる（本文中スクリプト参照）
+#    完了確認:
+sha256sum "$HOME/.gradle-cache/wrapper/dists/gradle-8.10.2-bin/<hash>/gradle-8.10.2-bin.zip"
+# → 31c55713e40233a8303827ceb42ca48a47267a0ad4bab9177123121e71524c26 と一致すること
+```
+
+### 7-3. つまずいた点2: `LibOpenConnect` / wrapper jar が無くコンパイルエラー
+
+Gradle 配布物の問題を解決した後の最初のビルドは、Java コンパイルの段階で失敗した：
+
+```
+/app/app/src/main/java/net/openconnect_vpn/android/core/OpenConnectManagementThread.java:762: error: cannot find symbol
+    symbol:   variable LibOpenConnect
+/app/app/src/main/java/net/openconnect_vpn/android/AuthFormHandler.java:118: error: cannot find symbol
+    ... package LibOpenConnect does not exist
+```
+
+`app/build.gradle` は `implementation fileTree(dir: 'libs', include: ['*.jar'])` として
+`app/libs/*.jar` を依存に含める設計だが、**`app/libs/` ディレクトリ自体が存在していなかった**。
+`org.infradead.libopenconnect.LibOpenConnect` は `openconnect-wrapper.jar` の中身で、
+これは `external/Makefile` の以下のルールで作られるとわかった：
+
+```makefile
+openconnect-wrapper.jar:
+	cd openconnect/java && ant
+	cp openconnect/java/dist/$@ .
+
+stoken-wrapper.jar:
+	cd stoken/java && ant
+	cp stoken/java/dist/$@ .
+```
+
+これは **NDKクロスコンパイルとは無関係な、純粋な Java ビルド**（`external/openconnect/java/src/`
+と `external/stoken/java/src/` は Java 純正のJNI宣言クラスで、サブモジュールに既に含まれている）
+であることが分かった。ネイティブ .so 本体とは異なり、これは**このマシンでネットワーク無しに
+再現可能**（`ant` のインストールにのみ Ubuntu の apt リポジトリへの接続が要る）。
+
+```bash
+# コンテナ内で（mingc/android-build-box は ant 未インストールだったので追加）
+apt-get update -qq && apt-get install -y -qq ant
+cd external/openconnect/java && ant   # → dist/openconnect-wrapper.jar
+cd external/stoken/java && ant        # → dist/stoken-wrapper.jar
+mkdir -p app/libs
+cp external/openconnect/java/dist/openconnect-wrapper.jar app/libs/
+cp external/stoken/java/dist/stoken-wrapper.jar app/libs/
+```
+
+`apt-get install ant` はこの環境（Ubuntu 22.04 ベースイメージ、`archive.ubuntu.com` ミラー）では
+7秒程度で完了し、Debian trixie（`deb.debian.org`）で経験した無応答は再現しなかった。
+**`app/libs/*.jar` はリポジトリにコミットしていない**（`.gitignore` の `*.jar` パターンに
+従い、upstream の慣習と同じくビルド時生成物として扱う。サブモジュールのソースから
+`ant` 一発で再現できるため、ネイティブ .so のようにピン留めする必要が無い）。
+
+生成物のハッシュ（参考、コミットはしていない）：
+
+| ファイル | サイズ | SHA256 |
+|---|---|---|
+| `app/libs/openconnect-wrapper.jar` | 6774 bytes (元jarの実サイズ) | `330115533ff5e6efc13a7d2d875671dfc69aa73afc25df42fe2158716d43ac8a` |
+| `app/libs/stoken-wrapper.jar` | 2049 bytes | `9062cb5a7fbf9b3efd84f6c29743c90b47bcab00e236bb0c6b06c6938dc47336` |
+
+（ant のバージョンは Ubuntu jammy の `ant 1.10.12-1`。ビルドソースは
+`external/openconnect` サブモジュール `f17fe20d` 時点、`external/stoken` サブモジュール
+`bc25aa4` 時点のもの。ピン留めした `.so` はこれより古い upstream CI 環境でビルドされた
+可能性がある点はセクション4-1・PROVENANCE.md に記載の通り。ラッパー層はネイティブ側の
+JNI シンボルが大きく変わらない限り後方互換であることが期待される薄いブリッジ層であり、
+今回のビルド成功・APK内部構造の一致（後述7-4）がその実用上の整合性を裏付けている。）
+
+### 7-4. 最終結果: ビルド成功
+
+```bash
+docker run -d --name gradle-build2 \
+  -v "$PWD":/app -v "$HOME/.gradle-cache":/gradle-home \
+  -w /app \
+  -e JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 -e ANDROID_HOME=/opt/android-sdk \
+  -e GRADLE_USER_HOME=/gradle-home \
+  mingc/android-build-box:latest sh -c '
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get install -y -qq ant
+    export PATH=$JAVA_HOME/bin:$PATH
+    cd /app/external/openconnect/java && ant
+    cd /app/external/stoken/java && ant
+    mkdir -p /app/app/libs
+    cp /app/external/openconnect/java/dist/openconnect-wrapper.jar /app/app/libs/
+    cp /app/external/stoken/java/dist/stoken-wrapper.jar /app/app/libs/
+    cd /app && sh gradlew assembleDebug --no-daemon -s
+  '
+```
+
+出力の末尾：
+
+```
+> Task :app:packageDebug
+> Task :app:createDebugApkListingFileRedirect
+> Task :app:assembleDebug
+
+BUILD SUCCESSFUL in 42s
+34 actionable tasks: 12 executed, 22 up-to-date
+```
+
+（初回はGradle配布物とAGP等の依存関係を新規に取得したため `test/build-debug` 相当の
+`3m 42s`。`GRADLE_USER_HOME` を永続化した2回目の実行＝実際にAPKが生成できた回は
+依存関係が全てキャッシュ済みのため `42s` だった。）
+
+生成物: `app/build/outputs/apk/debug/app-debug.apk`（32,448,918 bytes、
+SHA256 `1ec017a631c4b8cb5e0e4479daf2e665fae04d2687a2100aa3e61845b9402470`）。
+`.gitignore` の `*.apk` によりコミット対象外（＝毎回ビルドし直す想定の成果物）。
+
+### 7-5. 検証: 生成された APK にネイティブペイロードが入っていることの確認
+
+```bash
+unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/|assets/raw/'
+```
+
+```
+       89  1981-01-01 01:01   assets/raw/noarch/android_csd_nc.sh
+      821  1981-01-01 01:01   assets/raw/noarch/android_csd_anyconnect.sh
+     1853  1981-01-01 01:01   assets/raw/noarch/android_csd_gp.sh
+  927228  1981-01-01 01:01   lib/armeabi/libstoken.so
+  976800  1981-01-01 01:01   lib/x86/libstoken.so
+  997240  1981-01-01 01:01   lib/x86_64/libstoken.so
+ 1066520  1981-01-01 01:01   lib/arm64-v8a/libstoken.so
+ 4323744  1981-01-01 01:01   assets/raw/armeabi/curl-bin
+ 4497764  1981-01-01 01:01   lib/armeabi/libopenconnect.so
+ 4747384  1981-01-01 01:01   assets/raw/arm64-v8a/curl-bin
+ 4761568  1981-01-01 01:01   assets/raw/x86_64/curl-bin
+ 4984472  1981-01-01 01:01   assets/raw/x86/curl-bin
+ 5038760  1981-01-01 01:01   lib/arm64-v8a/libopenconnect.so
+ 5061536  1981-01-01 01:01   lib/x86_64/libopenconnect.so
+ 5201480  1981-01-01 01:01   lib/x86/libopenconnect.so
+```
+
+**8個の `.so`（4 ABI: armeabi, arm64-v8a, x86, x86_64 × libopenconnect.so, libstoken.so）と
+4個の `curl-bin` が全て揃っている。** 各ファイルのサイズは `app/src/main/jniLibs/PROVENANCE.md`
+に記載したピン留め元ファイルのサイズと1バイトも違わず一致しており、Gradle が
+`app/src/main/jniLibs/` と `app/src/main/assets/raw/` からピン留め済みの成果物を
+そのままパッケージしたことを裏付けている。**「ビルドは通るがネイティブペイロードが
+入っていない」という失敗パターンではないことを確認済み。**
+
+### 7-6. 詰まった点まとめ（セクション7分）
+
+| # | 詰まった点 | 原因 | 対処 |
+|---|---|---|---|
+| 1 | `gradlew` 自身の Gradle 配布物ダウンロードが `SocketTimeoutException` で失敗 | `networkTimeout=10000`(10秒)に対しネットワークが数秒〜十数秒単位で瞬断する。Wrapperにリトライ機構が無い | `GRADLE_USER_HOME`をホスト側に永続化し、Wrapperが期待するキャッシュパスに8並列Range取得＋SHA256照合で配布物を事前配置。`gradle-wrapper.properties`は無変更 |
+| 2 | busybox `wget --header "Range: ..."` が HTTP206をエラー扱い | busybox wgetはRangeレスポンスの206を成功と認識しない | `curl -H "Range: ..." -L`（`mingc/android-build-box`に同梱）を使用 |
+| 3 | `docker run -v /path` がGit BashでWindowsパスに誤変換 | MSYSパス変換 | `MSYS_NO_PATHCONV=1` |
+| 4 | `timeout N docker run`が期限切れてもコンテナが残り続け、後続の並列ダウンロードと衝突してファイルが壊れかけた | `timeout`はクライアントプロセスのみ終了、コンテナはデーモン側で動き続ける | `docker run -d --name <固定名>`で明示的に管理し、都度`docker ps -a`で確認・`docker rm -f`で片付けてから次を実行 |
+| 5 | 最初のGradleビルドが`LibOpenConnect`シンボル無しでコンパイル失敗 | `app/libs/*.jar`（openconnect-wrapper.jar, stoken-wrapper.jar）が存在しなかった。これらはNDKとは無関係な純Javaビルド(`ant`)の成果物 | `external/openconnect/java`と`external/stoken/java`で`ant`を実行し`app/libs/`に配置（コミットはせず、`.gitignore`の`*.jar`規則通りビルド時生成物として扱う） |
+| 6 | Debian trixieの`apt-get`は無応答だったが、Ubuntu jammyの`apt-get install ant`は問題なく動いた | ディストリ・ミラーによって到達性が異なる（GitLabのCDNやDebianミラーは不安定、Docker HubやUbuntuの公式ミラーは安定） | Ubuntuベースイメージ(`mingc/android-build-box`)を使用 |
