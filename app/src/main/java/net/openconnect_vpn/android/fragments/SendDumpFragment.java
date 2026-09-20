@@ -39,7 +39,6 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.ViewGroup;
-import net.openconnect_vpn.android.BuildConfig;
 import net.openconnect_vpn.android.R;
 import net.openconnect_vpn.android.core.OpenVPN;
 
@@ -90,8 +89,8 @@ public class SendDumpFragment extends Fragment  {
 			OpenVPN.logError("No Minidump found!");
 		}
 
-		uris.add(Uri.parse("content://" + BuildConfig.APPLICATION_ID + ".FileProvider/" + ldump.getName()));
-		uris.add(Uri.parse("content://" + BuildConfig.APPLICATION_ID + ".FileProvider/" + ldump.getName() + ".log"));
+		uris.add(Uri.parse("content://" + getActivity().getPackageName() + ".FileProvider/" + ldump.getName()));
+		uris.add(Uri.parse("content://" + getActivity().getPackageName() + ".FileProvider/" + ldump.getName() + ".log"));
 
 		emailIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 		emailIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
