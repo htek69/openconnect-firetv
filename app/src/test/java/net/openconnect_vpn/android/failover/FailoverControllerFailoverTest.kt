@@ -513,44 +513,45 @@ class FailoverControllerFailoverTest {
         assertTrue(controller.state is FailoverState.Idle)
     }
 
-    // --- Ruling 26: FailingOver 中の UserPrompt 再入を止める（レビュー指摘1・MAJOR） ---
+    // --- 裁定30: FailingOver 中の UserPrompt を無害にする（Ruling 26 の性質の継承） ---
 
     @Test
-    fun `FailingOver 中の UserPrompt は切断を再要求せず待ち時間もリセットしない`() {
+    fun `FailingOver 中に UserPrompt が来ても待ち時間はリセットされず除外もされない`() {
+        // Ruling 26 が守っていた性質（FailingOver 中の UserPrompt 再入を止める）を
+        // 裁定30 の形（onTick が FailingOver に onFailingOverTimeout しか適用せず、
+        // onUnattendedPromptTimeout は呼ばれない）で保てているかの確認。
         toHealthy()
         repeat(group.config.failureThreshold) {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
-        assertTrue(controller.state is FailoverState.FailingOver)
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
-        assertTrue(controller.state is FailoverState.Connecting)
-        assertEquals("uuid-b", vpn.connectCalls.last())
-
-        // uuid-b が認証ダイアログで止まる（人はいない）。除外して次候補へ進む
-        // -> FailingOver に入る（1回目の切断要求）。
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
         val firstFailingOver = controller.state
         assertTrue(firstFailingOver is FailoverState.FailingOver)
-        val disconnectCallsAfterFirstPrompt = vpn.disconnectCalls
-        val startedAtMsAfterFirstPrompt = (firstFailingOver as FailoverState.FailingOver).startedAtMs
+        val startedAtMsBefore = (firstFailingOver as FailoverState.FailingOver).startedAtMs
+        val disconnectCallsBefore = vpn.disconnectCalls
+        val excludedBefore = controller.excludedUuids.size
 
-        // Ruling 26: 既存コアは1つの認証フォームにつき USER_PROMPT を2回
-        // ブロードキャストする（setState と promptUser の2箇所）。時刻を進めてから
-        // 同じ uuid-b の UserPrompt がもう一度届いても、切断の再要求や
-        // 待ち時間のリセットが起きてはならない。clock.advance を入れるのは、
-        // リセットが起きたら startedAtMs が変化して必ず落ちるようにするため
-        // （時刻を進めずに書くと、この検証は無意味になる）。
-        clock.advance(1_000L)
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        // FailingOver 中に UserPrompt が届いても、待ち時間はリセットされず
+        // （FailingOver 突入時に userPromptSinceMs を null にしているうえ、
+        // onTick は FailingOver に onUnattendedPromptTimeout を適用しない）、
+        // 切断の再要求も除外も起きない。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
 
-        val secondFailingOver = controller.state
-        assertTrue(secondFailingOver is FailoverState.FailingOver)
-        assertEquals(disconnectCallsAfterFirstPrompt, vpn.disconnectCalls)
-        assertEquals(
-            startedAtMsAfterFirstPrompt,
-            (secondFailingOver as FailoverState.FailingOver).startedAtMs,
-        )
+        val stateAfterPrompt = controller.state
+        assertTrue(stateAfterPrompt is FailoverState.FailingOver)
+        assertEquals(startedAtMsBefore, (stateAfterPrompt as FailoverState.FailingOver).startedAtMs)
+        assertEquals(disconnectCallsBefore, vpn.disconnectCalls)
+        assertEquals(excludedBefore, controller.excludedUuids.size)
+
+        // USER_PROMPT_WAIT_MS（10秒）は DISCONNECT_WAIT_MS（3秒）を超えるので、
+        // ここで Tick すると確認を諦めて次候補へ進む（別の理由による正しい前進）。
+        // 除外は増えておらず、2度目の disconnect() も起きていないことを確認する。
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
+
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals(disconnectCallsBefore, vpn.disconnectCalls)
+        assertEquals(excludedBefore, controller.excludedUuids.size)
     }
 
     private fun toHealthy() {

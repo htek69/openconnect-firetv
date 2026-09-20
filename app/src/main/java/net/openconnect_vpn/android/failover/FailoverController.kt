@@ -54,6 +54,20 @@ class FailoverController(
     private var currentCandidateUnattended = false
 
     /**
+     * 裁定30: 無人運用中の候補が `UserPrompt`（認証フォーム処理中）に入った時刻。
+     * 次の状態へ進んだら null に戻す。
+     *
+     * `UserPrompt` 自体は「人の入力が必要」を意味しない。既存コアは
+     * `onProcessAuthForm` の冒頭で無条件に `STATE_USER_PROMPT` を送るので、
+     * 保存済み認証情報で完全に自動ログインする場合でも必ず観測される
+     * （`AuthFormHandler` は `batch_mode=empty_only` かつ全項目が埋まっていれば
+     * ダイアログを出さずに即 OK を返す）。区別できるのは「その後進むかどうか」だけで、
+     * 自動入力なら `Authenticating` がミリ秒で続き、ダイアログが出た場合は
+     * `waitForResponse()` で無期限に止まる。
+     */
+    private var userPromptSinceMs: Long? = null
+
+    /**
      * 枯渇の世代。次に枯渇したときの Exhausted.attempt になる。
      * `onTick` の再試行で 1 つ進め、復旧（Healthy 到達）とユーザー操作でのみ 0 に戻す。
      */
@@ -129,6 +143,7 @@ class FailoverController(
             currentCandidatePassedAuth = false
             currentCandidateReachedAuth = false
             currentCandidateUnattended = unattended
+            userPromptSinceMs = null
             expectingDisconnect = false
             currentCandidateUuid = uuid
             probeImmediatelyOnNetworkRecovery = false
@@ -173,6 +188,18 @@ class FailoverController(
             currentCandidateReachedAuth = true
         }
 
+        // 裁定30: `UserPrompt` に入った時刻を覚え、次の状態へ進んだら解除する。
+        // 進展の有無だけがダイアログの有無を見分ける唯一の手段である（詳細は
+        // userPromptSinceMs の説明）。無人運用の候補だけが対象で、ユーザー自身が
+        // 接続した候補（画面の前にいる）はいつまでも待たせてよい。
+        if (core == VpnCoreState.UserPrompt) {
+            if (currentCandidateUnattended && userPromptSinceMs == null) {
+                userPromptSinceMs = clock.nowMs()
+            }
+        } else {
+            userPromptSinceMs = null
+        }
+
         return when {
             core == VpnCoreState.Connected && s is FailoverState.Connecting ->
                 FailoverState.Verifying(
@@ -197,30 +224,24 @@ class FailoverController(
 
             core == VpnCoreState.Disconnected -> onDisconnected(s)
 
-            // Ruling 21: 人が見ている保証の無い候補（自動切替・枯渇後の再試行）が
-            // 認証ダイアログで止まった。誰も答えられないので認証失敗と同様に扱う。
-            // ユーザー自身が接続した候補（画面の前にいる）はそのまま待たせる。
-            //
-            // Ruling 26: ただし FailingOver 中は何もしない。その候補は既に除外済みで
-            // 切断要求も出ており、ここで再入すると2度目の切断要求と startedAtMs の
-            // リセットが起きて待ち時間が有界でなくなる。既存コアは1つの認証フォームに
-            // つき USER_PROMPT を2回ブロードキャストする（setState と promptUser の
-            // 2箇所）ので、これは例外ではなく通常経路で必ず起きる。
-            core == VpnCoreState.UserPrompt &&
-                currentCandidateUnattended &&
-                s !is FailoverState.FailingOver -> onUnattendedUserPrompt(s)
-
             else -> s
         }
     }
 
     /**
-     * Ruling 21: 自動切替または枯渇後の再試行で開始した候補が認証ダイアログで
-     * 止まった（＝保存済み認証情報が拒否された等）。TV の前に人がいる保証は無く、
-     * このまま放置すると S1 の安全策（認証失敗した候補を除外して次へ進む）が
-     * 一度も働かずに無期限へ止まってしまう。よって認証失敗と同じ扱いにする：
-     * この候補を除外して次候補へ進める（alreadyDown = false。Ruling 25 により
-     * 切断を要求してから完了を待って次候補へ進む）。
+     * 裁定30: 自動切替または枯渇後の再試行で開始した候補の `UserPrompt` が
+     * [USER_PROMPT_WAIT_MS] を過ぎても次の状態へ進まなかった（＝ダイアログが出て
+     * 人の入力を待っている。保存済み認証情報が拒否された等）。TV の前に人がいる
+     * 保証は無く、このまま放置すると S1 の安全策（認証失敗した候補を除外して
+     * 次へ進む）が一度も働かずに無期限へ止まってしまう。よって認証失敗と同じ
+     * 扱いにする：この候補を除外して次候補へ進める（alreadyDown = false。
+     * Ruling 25 により切断を要求してから完了を待って次候補へ進む）。
+     *
+     * `UserPrompt` を観測しただけでは呼ばない（Ruling 21 時代の誤り）。既存コアは
+     * `onProcessAuthForm` の冒頭で無条件に `STATE_USER_PROMPT` を送るため、
+     * 保存済み認証情報で完全に自動ログインする場合でも必ず観測され、それだけで
+     * 除外すると認証情報が正しい健全な候補まで焼き切ってしまう（実機で確認:
+     * 起動から約1秒で健全な候補が除外された）。
      */
     private fun onUnattendedUserPrompt(s: FailoverState): FailoverState {
         val groupId = groupIdOf(s) ?: return s
@@ -331,6 +352,9 @@ class FailoverController(
         // S3 で捨てるのではなく、次候補へ進む合図として観測する必要がある。
         val awaiting = currentCandidateUuid
         vpn.disconnect()
+        // 裁定30: FailingOver 中は UserPrompt の判定を走らせない
+        // （Ruling 26 が守っていた性質。この候補は既に除外・切断要求済みである）。
+        userPromptSinceMs = null
         return FailoverState.FailingOver(
             groupId = groupId,
             failedIndex = failedIndex,
@@ -368,10 +392,24 @@ class FailoverController(
         )
 
     private fun onTick(): FailoverState = when (val s = state) {
-        is FailoverState.Connecting -> onConnectTimeout(s)
+        is FailoverState.Connecting -> onUnattendedPromptTimeout(s) ?: onConnectTimeout(s)
+        is FailoverState.Verifying -> onUnattendedPromptTimeout(s) ?: s
+        is FailoverState.Healthy -> onUnattendedPromptTimeout(s) ?: s
         is FailoverState.FailingOver -> onFailingOverTimeout(s)
         is FailoverState.Exhausted -> onExhaustedRetry(s)
-        else -> state
+        FailoverState.Idle -> state
+    }
+
+    /**
+     * 裁定30: 無人運用の候補が `UserPrompt` から [USER_PROMPT_WAIT_MS] 経っても
+     * 進まない＝ダイアログが出て人の入力を待っている。誰も答えられないので
+     * 認証失敗と同じ扱いにする（除外して次候補へ）。
+     * 該当しなければ null を返し、呼び出し側の判定を続けさせる。
+     */
+    private fun onUnattendedPromptTimeout(s: FailoverState): FailoverState? {
+        val since = userPromptSinceMs ?: return null
+        if (clock.nowMs() - since < USER_PROMPT_WAIT_MS) return null
+        return onUnattendedUserPrompt(s)
     }
 
     /** Ruling 25: 切断完了の確認が来ないまま [DISCONNECT_WAIT_MS] を過ぎたら先へ進む。 */
@@ -453,5 +491,15 @@ class FailoverController(
          * 後からトンネルを張る可能性そのものは残る（アプリ層で打てる手が無い）。
          */
         const val DISCONNECT_WAIT_MS = 3_000L
+
+        /**
+         * 裁定30: `UserPrompt` から次の状態へ進むのを待つ上限。これを超えたら
+         * ダイアログが出て人の入力を待っているとみなす（無人運用では誰も答えられない）。
+         * 自動入力の経路はローカル処理だけなのでミリ秒で `Authenticating` へ進む。
+         * `connectTimeoutSec`（既定 45 秒）より十分小さくしておくこと。接続タイムアウトが
+         * 先に発火すると、候補が除外されずに（Ruling 22 の意味論で）切り替わってしまい、
+         * 認証情報が間違っている候補を何度も試してアカウントロックを招く。
+         */
+        const val USER_PROMPT_WAIT_MS = 10_000L
     }
 }

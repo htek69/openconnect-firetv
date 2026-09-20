@@ -448,12 +448,15 @@ Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は
 例外は、切替の契機が `Disconnected` 自身だった場合である。このときトンネルは既に
 落ちているので待つ対象が無く、`FailingOver` を経ずに次候補へ進む。
 
-Ruling 26: `FailingOver` 中に届いた `UserPrompt`（Ruling 21 の「人が見ていない候補」
-判定）は無視する。その候補は既に切断要求済みであり、ここで
-`onUnattendedUserPrompt` に再入すると2度目の `disconnect()` と `startedAtMs` の
-リセットが起きて `DISCONNECT_WAIT_MS` の上限が上限でなくなる。既存コアは1つの
-認証フォームにつき `USER_PROMPT` を2回ブロードキャストするため、これは稀な
-競合ではなく Ruling 21 が絡む切替のほぼ全てで起きる。
+Ruling 26（裁定30 で分岐自体は無くなった）: 当初は `FailingOver` 中に届いた
+`UserPrompt` で `onUnattendedUserPrompt` に再入し、2度目の `disconnect()` と
+`startedAtMs` のリセットが起き `DISCONNECT_WAIT_MS` の上限が上限でなくなる欠陥が
+あった（既存コアは1つの認証フォームにつき `USER_PROMPT` を2回ブロードキャストする
+ため、稀な競合ではなく Ruling 21 が絡む切替のほぼ全てで起きていた）。この分岐は
+裁定30 で「`UserPrompt` を観測したら除外」自体をやめたことで丸ごと不要になった。
+`FailingOver` 突入時に `userPromptSinceMs` を解除し、かつ `onTick` が `FailingOver`
+には `onFailingOverTimeout` しか適用しない（`onUnattendedPromptTimeout` を通らない）
+ため、`FailingOver` 中の `UserPrompt` は現在も無害という同じ性質を保っている。
 
 Ruling 27: `FailoverService` の tick 間隔は `FailingOver` かつ下層ネットがある間
 だけ 1 秒に詰める（S2 で保留中は待ちが進まないので細かく起きても意味が無い）。
@@ -578,10 +581,30 @@ Error obtaining cookie
 接続は認証もせず切断もしないため、**安全策 S1 が発火しない**。
 
 これを補うため、状態機械は `VpnCoreState.UserPrompt`（コアの `STATE_USER_PROMPT = 2`）を
-「この候補は人間の操作を要求している」信号として扱う。ユーザーが自分で接続を指示した
-候補での `UserPrompt` は正当なので状態を変えない。**自動切替または枯渇後の再試行で
-到達した候補**での `UserPrompt` は、誰も見ていないことを意味するため、S1 と同様に
-その候補を除外して次へ進む。
+観測する（Ruling 21）。ユーザーが自分で接続を指示した候補での `UserPrompt` は正当なので
+状態を変えない。**自動切替または枯渇後の再試行で到達した候補**での `UserPrompt` は、
+誰も見ていない可能性があるため注意して扱う必要がある。
+
+**Ruling 21 の当初の実装は誤りだった（裁定30・欠陥14、実機で確定）。** 「`UserPrompt`
+を観測した = 人間の操作が必要」と解釈し、観測した瞬間に候補を除外していた。しかし
+`OpenConnectManagementThread.onProcessAuthForm`（229-244行）は `AuthFormHandler` が
+ダイアログを出すかどうか決める**前**に、無条件に `setState(STATE_USER_PROMPT)` を送る。
+`AuthFormHandler`（469-474行）には `batch_mode=empty_only` かつ全項目が埋まっていれば
+ダイアログを出さずに `saveAndStore()` して即座に `OC_FORM_RESULT_OK` を返す経路がある。
+つまり **`UserPrompt` は「認証フォームを処理中」という意味しかなく、保存済み資格情報で
+完全に自動ログインする場合でも必ず1回（フォームごとに1回）観測される。** Ruling 21 の
+当初の実装は、この区別ができず、**認証情報が完全に保存されている健全な候補を、
+起動から約1秒で除外して切り替えていた**（実機シナリオ①、v-server で確認）。
+
+裁定30 で「`UserPrompt` を観測した瞬間」から「`UserPrompt` から
+`USER_PROMPT_WAIT_MS`（10秒）経っても次の状態（`Authenticating` など）へ進まない」
+に判定基準を変えた。自動入力の経路は `promptUser` のローカル処理だけなのでミリ秒単位で
+次の状態へ進み、ダイアログを出す経路は `waitForResponse()` で無期限にブロックして
+進展が止まる。この形は S1 が本来守りたかったケース（保存済み資格情報がサーバに
+拒否された場合）でも正しく働く: サーバが同じフォームを再送すると
+`AuthFormHandler` のコンストラクタ（99-105行）が `formPfx.equals(lastFormDigest)` で
+`BATCH_MODE_EMPTY_ONLY` を `BATCH_MODE_DISABLED` に落とすため、ダイアログが出て
+進展が止まり、タイムアウトが正しく発火する。
 
 ### 9.3 既存 UI が D-pad で操作できない原因（実機で計測）
 

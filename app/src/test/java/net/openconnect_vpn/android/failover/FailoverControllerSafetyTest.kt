@@ -255,10 +255,16 @@ class FailoverControllerSafetyTest {
         assertTrue(controller.state is FailoverState.Connecting)
         assertEquals("uuid-b", vpn.connectCalls.last())
 
-        // uuid-b が認証ダイアログで止まる（人はいない）。除外して次候補へ進む。
-        // これも onUnattendedUserPrompt 経由の failOver であり、まだ生きている
-        // 可能性があるので Ruling 25 によりまず切断要求 -> FailingOver に入る。
+        // uuid-b が認証ダイアログで止まる（人はいない）。
+        // 裁定30: UserPrompt 自体は「人の入力が必要」を意味しない
+        // （既存コアは自動入力でも必ず1回送るため）。USER_PROMPT_WAIT_MS を
+        // 過ぎても次の状態へ進まなかった場合だけダイアログが出ているとみなし、
+        // 除外して次候補へ進む。これも onUnattendedUserPrompt 経由の failOver
+        // であり、まだ生きている可能性があるので Ruling 25 によりまず
+        // 切断要求 -> FailingOver に入る。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
 
         assertTrue("uuid-b" in controller.excludedUuids)
         assertTrue(controller.state is FailoverState.FailingOver)
@@ -307,8 +313,11 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.Tick)
         assertEquals("uuid-a", vpn.connectCalls.last())
 
-        // uuid-a が認証ダイアログで止まる。自動再試行なので人はいない -> 除外して進める
+        // uuid-a が認証ダイアログで止まる。自動再試行なので人はいない。
+        // 裁定30: USER_PROMPT_WAIT_MS を過ぎても次の状態へ進まなければ除外して進める。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
 
         assertTrue("uuid-a" in controller.excludedUuids)
         // Ruling 25: まだ FailingOver（確認待ち）。確認できたら候補が尽きて Exhausted へ進む
@@ -317,6 +326,124 @@ class FailoverControllerSafetyTest {
 
         // uuid-b, uuid-c も除外済みなので、候補が尽きて再び Exhausted へ進む
         assertTrue(controller.state is FailoverState.Exhausted)
+    }
+
+    // --- 裁定30: UserPrompt は「人が必要」を意味しない（欠陥14・実機で確定） ---
+
+    @Test
+    fun `自動入力で即座に Authenticating へ進む UserPrompt は候補を除外しない`() {
+        // 欠陥14 の回帰テスト。実機では認証情報が完全に保存された健全な候補
+        // （v-server）が起動から約1秒で除外されていた。既存コアは
+        // onProcessAuthForm の冒頭で無条件に STATE_USER_PROMPT を送るため、
+        // 保存済み認証情報による完全に自動的なログインでも UserPrompt が
+        // 必ず観測され、その直後（ミリ秒単位）に Authenticating へ進む。
+        // 修正前のコード（UserPrompt を観測した時点で除外）ならこの時点で
+        // 焼き切られるので、このテストはその欠陥を確実に検出する。
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // 保存済み認証情報での自動ログイン: UserPrompt の直後（時刻を進めずに）
+        // Authenticating へ進む。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-b"))
+
+        // 十分に時間を進めてから Tick しても、除外も切替も起きてはならない
+        // （Authenticating へ進んだ時点で userPromptSinceMs は解除済み）。
+        clock.advance(10_000L * 2) // USER_PROMPT_WAIT_MS * 2
+        controller.handle(FailoverEvent.Tick)
+
+        assertFalse("uuid-b" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `UserPrompt のまま USER_PROMPT_WAIT_MS 経過したら除外して次候補へ進む`() {
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
+
+        assertTrue("uuid-b" in controller.excludedUuids)
+        // Ruling 25 により切替は2段階。ここでは FailingOver に入る（次候補はまだ起動しない）。
+        assertTrue(controller.state is FailoverState.FailingOver)
+    }
+
+    @Test
+    fun `USER_PROMPT_WAIT_MS 未満では除外しない`() {
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(9_999L) // USER_PROMPT_WAIT_MS - 1
+        controller.handle(FailoverEvent.Tick)
+
+        assertFalse("uuid-b" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    @Test
+    fun `ユーザー自身が接続した候補は UserPrompt で止まっても除外されない`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+
+        // ブリーフは USER_PROMPT_WAIT_MS * 10 を指定しているが、それは
+        // connectTimeoutSec（既定45秒）を超えてしまい、UserPrompt とは無関係の
+        // Ruling 22a の接続タイムアウトで切り替わってしまう（この経路は除外は
+        // しないが、状態が Connecting のままではなくなる）。この事故を避けつつ
+        // 「時間が経っても UserPrompt 由来では何も起きない」ことを検証するため、
+        // connectTimeoutSec 未満に収まる USER_PROMPT_WAIT_MS * 2 を使う。
+        clock.advance(10_000L * 2) // USER_PROMPT_WAIT_MS * 2
+        controller.handle(FailoverEvent.Tick)
+
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `多段フォームの UserPrompt は毎回リセットされる`() {
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // 1段目のフォーム
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(9_999L) // USER_PROMPT_WAIT_MS - 1
+
+        // 1段目のフォームが終わり（Authenticating）、2段目のフォームが表示される
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-b"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(9_999L) // USER_PROMPT_WAIT_MS - 1
+        controller.handle(FailoverEvent.Tick)
+
+        // 合計では USER_PROMPT_WAIT_MS を超えているが、2回目のフォームには
+        // 自分の猶予があるので除外されない。
+        assertFalse("uuid-b" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.Connecting)
     }
 
     // --- Ruling 23: 認証段階に到達したかどうかで S1 の除外判定を分ける ---
