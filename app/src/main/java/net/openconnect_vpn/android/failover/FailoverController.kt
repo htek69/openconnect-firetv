@@ -32,6 +32,12 @@ class FailoverController(
     /** 安全策 S1: 現在の候補が認証を通過したか。通過前の切断は認証失敗とみなす。 */
     private var currentCandidatePassedAuth = false
 
+    /**
+     * 枯渇の世代。次に枯渇したときの Exhausted.attempt になる。
+     * `onTick` の再試行で 1 つ進め、復旧（Healthy 到達）とユーザー操作でのみ 0 に戻す。
+     */
+    private var exhaustionAttempt = 0
+
     fun handle(event: FailoverEvent) {
         state = when (event) {
             is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId)
@@ -39,7 +45,7 @@ class FailoverController(
             is FailoverEvent.VpnStateChanged -> onVpnState(event.state)
             is FailoverEvent.ProbeResult -> onProbeResult(event.reachable)
             is FailoverEvent.UnderlyingNetworkChanged -> state
-            is FailoverEvent.Tick -> state
+            is FailoverEvent.Tick -> onTick()
         }
     }
 
@@ -62,12 +68,14 @@ class FailoverController(
     }
 
     private fun onUserConnect(groupId: String): FailoverState {
+        exhaustionAttempt = 0
         val group = groupOf(groupId) ?: return FailoverState.Idle
         needsUserConsent = false
         return startCandidateFrom(group, fromIndex = 0)
     }
 
     private fun onUserDisconnect(): FailoverState {
+        exhaustionAttempt = 0
         expectingDisconnect = true
         vpn.disconnect()
         return FailoverState.Idle
@@ -75,7 +83,7 @@ class FailoverController(
 
     /**
      * [fromIndex] 以降で除外されていない最初の候補へ接続する。
-     * 候補が無ければ Idle（Task 10 で Exhausted に差し替える）。
+     * 候補が無ければ Exhausted に入る。
      */
     private fun startCandidateFrom(group: FailoverGroup, fromIndex: Int): FailoverState {
         var index = fromIndex
@@ -106,7 +114,7 @@ class FailoverController(
                 }
             }
         }
-        return FailoverState.Idle
+        return enterExhausted(group.id, attempt = exhaustionAttempt)
     }
 
     private fun onVpnState(core: VpnCoreState): FailoverState {
@@ -154,6 +162,7 @@ class FailoverController(
         return when (val s = state) {
             is FailoverState.Verifying ->
                 if (reachable) {
+                    exhaustionAttempt = 0
                     FailoverState.Healthy(
                         groupId = s.groupId,
                         candidateIndex = s.candidateIndex,
@@ -180,6 +189,7 @@ class FailoverController(
 
     /**
      * 候補 [failedIndex] を諦めて次候補へ進む。
+     * 自動切替が無効なグループでは切り替えず Idle で停止する（R6）。
      * [alreadyDown] が false のときはトンネルがまだ生きているので明示的に切断する。
      */
     private fun failOver(groupId: String, failedIndex: Int, alreadyDown: Boolean): FailoverState {
@@ -188,7 +198,28 @@ class FailoverController(
             expectingDisconnect = true
             vpn.disconnect()
         }
+        if (!group.autoFailoverEnabled) return FailoverState.Idle
         return startCandidateFrom(group, fromIndex = failedIndex + 1)
+    }
+
+    /** 全候補が枯渇した。指数バックオフ後に先頭から再試行する（仕様書 7.2）。 */
+    private fun enterExhausted(groupId: String, attempt: Int): FailoverState =
+        FailoverState.Exhausted(
+            groupId = groupId,
+            attempt = attempt,
+            retryAtMs = clock.nowMs() + Backoff.delayMsForAttempt(attempt),
+        )
+
+    private fun onTick(): FailoverState {
+        val s = state as? FailoverState.Exhausted ?: return state
+        if (clock.nowMs() < s.retryAtMs) return s
+        val group = groupOf(s.groupId) ?: return FailoverState.Idle
+
+        // 再試行時は認証失敗による除外を維持したまま先頭から試す。
+        // 次に枯渇したときの attempt を1つ進める。ここでリセットしてはならない
+        // （リセットすると2回目の枯渇でも attempt が 0 に戻り、バックオフが伸びない）。
+        exhaustionAttempt = s.attempt + 1
+        return startCandidateFrom(group, fromIndex = 0)
     }
 
     private fun groupOf(groupId: String): FailoverGroup? = groups.firstOrNull { it.id == groupId }
