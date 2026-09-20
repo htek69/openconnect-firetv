@@ -572,3 +572,40 @@ unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'lib/|assets/raw/'
 | 4 | `timeout N docker run`が期限切れてもコンテナが残り続け、後続の並列ダウンロードと衝突してファイルが壊れかけた | `timeout`はクライアントプロセスのみ終了、コンテナはデーモン側で動き続ける | `docker run -d --name <固定名>`で明示的に管理し、都度`docker ps -a`で確認・`docker rm -f`で片付けてから次を実行 |
 | 5 | 最初のGradleビルドが`LibOpenConnect`シンボル無しでコンパイル失敗 | `app/libs/*.jar`（openconnect-wrapper.jar, stoken-wrapper.jar）が存在しなかった。これらはNDKとは無関係な純Javaビルド(`ant`)の成果物 | `external/openconnect/java`と`external/stoken/java`で`ant`を実行し`app/libs/`に配置（コミットはせず、`.gitignore`の`*.jar`規則通りビルド時生成物として扱う） |
 | 6 | Debian trixieの`apt-get`は無応答だったが、Ubuntu jammyの`apt-get install ant`は問題なく動いた | ディストリ・ミラーによって到達性が異なる（GitLabのCDNやDebianミラーは不安定、Docker HubやUbuntuの公式ミラーは安定） | Ubuntuベースイメージ(`mingc/android-build-box`)を使用 |
+
+## 8. debug 署名の安定化（実機で判明した必須事項）
+
+**この設定をしないと、ビルドし直すたびに実機のアプリデータが消える。**
+
+`debug.keystore` はコンテナ内で自動生成され、コンテナ終了とともに消える。次に
+ビルドすると別の鍵が生成されるため署名が変わり、`adb install -r` が
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match` で失敗する。
+回避のためアンインストールすると、**ユーザーが手入力した VPN 認証情報も消える**
+（`FORMDATA-*` は `shared_prefs/profile-<uuid>.xml` にあるため）。
+
+このイメージは `ANDROID_SDK_HOME=/opt/android-sdk` を設定しているため、AGP は
+`/opt/android-sdk/.android/debug.keystore` を見る（`$HOME/.android` ではない）。
+そこをホスト側のディレクトリにバインドマウントして永続化する。
+
+```bash
+docker run --rm   -v "$PWD":/app   -v "/c/Users/htek6/.gradle-cache":/gradle-home   -v "/c/Users/htek6/.android-docker":/opt/android-sdk/.android   -e GRADLE_USER_HOME=/gradle-home -w /app   mingc/android-build-box@sha256:47a26138302605eb8a37b024e8a263af0812c14800813458bc674df47cc26331   sh gradlew assembleDebug --console=plain
+```
+
+初回ビルド時に `/c/Users/htek6/.android-docker/debug.keystore` が生成され、
+以降のビルドはすべて同じ鍵で署名される。実機で `adb install -r` がアンインストール
+なしで通り、認証情報が保持されることを確認済み。
+
+Git Bash から実行する場合は `MSYS_NO_PATHCONV=1` を前置すること（パス変換対策）。
+
+### 実機インストール時の注意
+
+**VPN 接続中に APK をインストールしてはならない。** 小さな adb コマンドは通るが、
+40MB 規模の転送は `tun0` が経路を取るため
+`connect error for write: closed` で失敗し、adb が offline になる。
+先に切断する:
+
+```bash
+adb shell am force-stop net.openconnect_vpn.android.firetv
+```
+
+`onDestroy` → `killVPNThread(true)` → `mVPN.stopVPN()` が走ってトンネルが落ちる。
