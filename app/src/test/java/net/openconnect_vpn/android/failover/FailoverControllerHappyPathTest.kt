@@ -71,7 +71,7 @@ class FailoverControllerHappyPathTest {
     }
 
     @Test
-    fun `猶予期間を過ぎるとプローベを打つ`() {
+    fun `猶予期間を過ぎるとプローブを打つ`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
 

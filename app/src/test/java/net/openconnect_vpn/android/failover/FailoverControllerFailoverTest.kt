@@ -93,6 +93,10 @@ class FailoverControllerFailoverTest {
 
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+
+        // トンネルは既に落ちているので切断要求を出してはならない。
+        // ここで余分な disconnect が入ると、安全策 S3（意図的切断と障害の判別）が壊れる。
+        assertEquals(0, vpn.disconnectCalls)
     }
 
     @Test
@@ -104,6 +108,9 @@ class FailoverControllerFailoverTest {
 
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+
+        // 同上。接続が成立していないので切断要求は不要。
+        assertEquals(0, vpn.disconnectCalls)
     }
 
     private fun toHealthy() {
