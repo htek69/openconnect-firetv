@@ -434,19 +434,47 @@ D-pad でフォーカス移動できる。TV 向けに作り直さず、その�
 ### 9.2 `batch_mode` を有効にすることが無人動作の必須条件（重要）
 
 プロファイル設定 `batch_mode` の値が無人フェイルオーバーの成否を決める。
+判定は `AuthFormHandler.java:470-471` にある。
+
+```java
+if ((batchMode == BATCH_MODE_EMPTY_ONLY && mAllFilled) ||
+    batchMode == BATCH_MODE_ENABLED || !hasUserOptions) { /* ダイアログを出さない */ }
+```
 
 | 値 | 挙動 |
 |---|---|
-| `"enabled"` | 保存済みの回答をダイアログを出さずに送信する。**自動切替にはこれが必須** |
-| `"empty_only"` | 空欄がある場合のみダイアログを出す |
-| その他 | 毎回ダイアログを出す。自動切替が停止する |
+| `"enabled"` | **常に**ダイアログを出さない。保存済み資格情報が無ければ空欄を送信する |
+| `"empty_only"` | 全項目が埋まっているときだけ出さない。空欄があればダイアログを出す |
+| その他 | 毎回ダイアログを出す |
 
-**TV UI でプロファイルを作成する際は必ず `batch_mode = "enabled"` を設定する。**
+**必ず `batch_mode = "empty_only"` を設定する。`"enabled"` を使ってはならない。**
 
-なお `batch_mode = "enabled"` の状態でサーバが同じフォームを2回連続で返してきた場合
-（＝資格情報が拒否された場合）、既存コアは `BATCH_MODE_ABORTED` として接続を中断する。
-無限リトライにはならず、安全策 S1 が期待する「認証を通過せずに切断される」挙動と
-自然に一致する。
+理由は実機で確認した。`"enabled"` は保存済み資格情報が無い状態でも空欄を送信するため、
+**初回ログインが原理的に不可能になる**。実機のログにこう出た。
+
+```
+CALLBACK: onProcessAuthForm
+AUTH: message 'Please enter your username.'    ← フォームは正常に受信できている
+LIB: POST .../auth → HTTP/1.1 401 Authentication failed
+LIB: Server requested Basic authentication which is disabled by default
+Error obtaining cookie
+```
+
+`"empty_only"` なら初回はダイアログが出て、資格情報が保存されたあとは全項目が
+埋まるためダイアログを出さず、無人で再接続できる。
+
+#### `"empty_only"` の副作用と、その対処
+
+保存済み資格情報が**拒否された**場合、`AuthFormHandler`（99-105行）は
+`BATCH_MODE_DISABLED` に落ちてダイアログを表示する（`"enabled"` なら
+`BATCH_MODE_ABORTED` で中断していた）。誰も見ていない TV では無期限に停止し、
+接続は認証もせず切断もしないため、**安全策 S1 が発火しない**。
+
+これを補うため、状態機械は `VpnCoreState.UserPrompt`（コアの `STATE_USER_PROMPT = 2`）を
+「この候補は人間の操作を要求している」信号として扱う。ユーザーが自分で接続を指示した
+候補での `UserPrompt` は正当なので状態を変えない。**自動切替または枯渇後の再試行で
+到達した候補**での `UserPrompt` は、誰も見ていないことを意味するため、S1 と同様に
+その候補を除外して次へ進む。
 
 ### 9.3 既存 UI が D-pad で操作できない原因（実機で計測）
 

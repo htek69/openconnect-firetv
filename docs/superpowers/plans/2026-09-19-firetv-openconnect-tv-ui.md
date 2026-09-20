@@ -20,7 +20,7 @@
 - **AGP 8.7.2 / Gradle 8.10.2 / Kotlin 2.1.0 / Compose BOM 2025.01.00 / tv-material 1.0.0** は変更しない
 - **ビルドは常に WSL2 側で実行する**
 - **入力項目はサーバ URL と表示名の2つだけ**: 資格情報はフォーム構造の MD5 を鍵にして保存されるため、接続前に書き込めない（仕様書 9.1）
-- **プロファイル作成時に `batch_mode = "enabled"` を必ず設定する**: これが無い場合、再接続ごとに認証ダイアログが出て自動切替が停止する（仕様書 9.2）
+- **プロファイル作成時に `batch_mode = "empty_only"` を必ず設定する**: `"enabled"` は保存済み資格情報が無くても空欄を送信するため**初回ログインが原理的に不可能**になる（実機で確認済み。仕様書 9.2）
 - **フェイルバックは実装しない**
 - **初期フォーカスを必ず設定する**: TV UI で最も多い不具合は「フォーカスがどこにも無い」状態
 
@@ -88,7 +88,7 @@ UI を書く前に、UI が依存する2つの部品を先に固める。
     - `fun list(): List<ProfileSummary>`
     - `fun create(serverAddress: String, displayName: String): String`（戻り値は UUID）
     - `fun rename(uuid: String, displayName: String)`
-    - `fun ensureBatchMode(uuid: String)` — 既存プロファイルに `batch_mode = "enabled"` を補う
+    - `fun ensureBatchMode(uuid: String)` — 既存プロファイルに `batch_mode = "empty_only"` を補う
     - `fun delete(uuid: String)`
   - `data class ProfileSummary(val uuid: String, val name: String, val serverAddress: String)`
 
@@ -264,7 +264,7 @@ data class ProfileSummary(
 /**
  * 既存の ProfileManager への薄いアダプタ。
  *
- * プロファイル作成時に batch_mode を "enabled" にするのが最も重要な役目である。
+ * プロファイル作成時に batch_mode を "empty_only" にするのが最も重要な役目である。
  * これが無いと再接続ごとに認証ダイアログが出て自動フェイルオーバーが止まる（仕様書 9.2）。
  */
 class ProfileRepository(private val context: Context) {
@@ -291,7 +291,7 @@ class ProfileRepository(private val context: Context) {
         val profile = ProfileManager.create(serverAddress)
         profile.mPrefs.edit()
             .putString("server_address", serverAddress)
-            .putString("batch_mode", BATCH_MODE_ENABLED)
+            .putString("batch_mode", BATCH_MODE_EMPTY_ONLY)
             .apply()
         if (displayName.isNotBlank()) {
             profile.mPrefs.edit().putString("profile_name", displayName).apply()
@@ -309,8 +309,8 @@ class ProfileRepository(private val context: Context) {
     fun ensureBatchMode(uuid: String) {
         ProfileManager.init(context)
         val profile = ProfileManager.get(uuid) ?: return
-        if (profile.mPrefs.getString("batch_mode", null) != BATCH_MODE_ENABLED) {
-            profile.mPrefs.edit().putString("batch_mode", BATCH_MODE_ENABLED).apply()
+        if (profile.mPrefs.getString("batch_mode", null) != BATCH_MODE_EMPTY_ONLY) {
+            profile.mPrefs.edit().putString("batch_mode", BATCH_MODE_EMPTY_ONLY).apply()
         }
     }
 
@@ -320,7 +320,12 @@ class ProfileRepository(private val context: Context) {
     }
 
     private companion object {
-        const val BATCH_MODE_ENABLED = "enabled"
+        /**
+         * "enabled" ではなく "empty_only" を使う。"enabled" は保存済み資格情報が
+         * 無くてもダイアログを出さずに空欄を送信するため、初回ログインが不可能になる。
+         * "empty_only" は全項目が埋まっているときだけダイアログを省く（仕様書 9.2）。
+         */
+        const val BATCH_MODE_EMPTY_ONLY = "empty_only"
     }
 }
 ```
@@ -346,8 +351,8 @@ git add app/src/main/java/net/openconnect_vpn/android/tv/ \
         app/src/test/java/net/openconnect_vpn/android/tv/
 git commit -m "feat(tv): 入力検証とプロファイルリポジトリ
 
-作成時に batch_mode=enabled を設定する。これが無いと再接続ごとに
-認証ダイアログが出て自動フェイルオーバーが停止する。"
+作成時に batch_mode=empty_only を設定する。"enabled" では初回ログインが不可能、
+未設定では再接続ごとにダイアログが出て自動フェイルオーバーが停止する。"
 ```
 
 ---
@@ -1498,7 +1503,7 @@ adb shell run-as net.openconnect_vpn.android.firetv \
     cat shared_prefs/profile-<追加したUUID>.xml | grep batch_mode
 ```
 
-Expected: `<string name="batch_mode">enabled</string>`
+Expected: `<string name="batch_mode">empty_only</string>`
 
 これが無いと自動フェイルオーバーが止まるため、必ず確認する。
 
