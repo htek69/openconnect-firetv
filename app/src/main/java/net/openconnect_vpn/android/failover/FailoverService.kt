@@ -312,8 +312,13 @@ class FailoverService : Service() {
         bridge.unregister()
         runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()
-        wakeLoop.close()
         scope.cancel()
+        // wakeLoop は明示的に close しない。CONFLATED チャネルは close を必要とせず
+        // サービスと一緒に回収される。一方 close すると「閉じたチャネルへ receive が
+        // 再入すると ClosedReceiveChannelException が SupervisorJob 配下の launch から
+        // 未処理で飛ぶ」という経路を作る。現在の単一 main スレッド構成では到達不能だが、
+        // 到達不能性が coroutines 内部のキャンセル伝達順序という契約外の性質に
+        // 依存しているため、危険そのものを持たない形にしておく。
         super.onDestroy()
     }
 
