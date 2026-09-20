@@ -2873,7 +2873,7 @@ class FailoverService : Service() {
         probeTarget = groupStore.loadProbeTarget()
 
         ProfileManager.init(this)
-        val knownUuids = ProfileManager.getProfiles().map { it.uuidString }.toSet()
+        val knownUuids = ProfileManager.getProfiles().map { it.getUUIDString() }.toSet()
 
         controller = FailoverController(
             groups = groupStore.loadGroups(knownUuids),
@@ -2991,15 +2991,20 @@ class FailoverService : Service() {
 }
 ```
 
-- [ ] **Step 6: VpnProfile に uuidString の getter があるか確認する**
+- [ ] **Step 6: VpnProfile の UUID アクセサ名を確認する**
 
-`FailoverService` が `it.uuidString` を使っている。既存の `VpnProfile` の API を確認する。
+`FailoverService` が UUID を取り出している。既存の `VpnProfile` の API を確認する。
 
 ```bash
 grep -nE 'getUUIDString|getUUID|uuidString' app/src/main/java/net/openconnect_vpn/android/VpnProfile.java
 ```
 
-`getUUIDString()` のみが存在する場合、Kotlin からは `it.uuidString` で参照できる（Java の getter は Kotlin のプロパティとして見える）。異なる名前だった場合は `FailoverService.onCreate` の該当行を実際の getter 名に合わせる。
+**注意: `getUUIDString()` を Kotlin から `it.uuidString` として参照することはできない。**
+Kotlin が Java の getter をプロパティとして見せるのは、getter 名を decapitalize できる場合に限る。
+`UUIDString` は先頭に大文字が2つ以上続くため decapitalize されず、`uuidString` という
+プロパティ名は生成されない。`it.getUUIDString()` とメソッドとして呼ぶ。
+
+実際の名前が異なっていた場合は `FailoverService.onCreate` の該当行をそれに合わせる。
 
 - [ ] **Step 7: マニフェストにサービスを登録する**
 
