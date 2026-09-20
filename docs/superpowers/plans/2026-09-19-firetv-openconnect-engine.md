@@ -2099,7 +2099,13 @@ class FailoverController(
 }
 ```
 
-`failOver` が `vpn.disconnect()` の前に `expectingDisconnect = true` を立てているため、切替に伴う `Disconnected` は障害として二重カウントされない。
+（実装訂正・Ruling 25）上記は初期実装のメモであり、現在は誤り。`failOver` が
+`vpn.disconnect()` を呼ぶ経路（`alreadyDown = false`）では `expectingDisconnect`
+を**意図的に立てない**。この `Disconnected` は S3 で捨てる対象ではなく、
+`FailingOver` から次候補へ進む合図として観測しなければならないためである。
+切替に伴う `Disconnected` を障害として二重カウントしないための仕組みは
+`expectingDisconnect` ではなく、`FailingOver.awaitingUuid` との照合と
+Ruling 13 の UUID 照合である。
 
 - [ ] **Step 4: 全テストが通ることを確認する**
 

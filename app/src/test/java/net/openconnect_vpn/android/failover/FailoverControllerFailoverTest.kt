@@ -357,7 +357,7 @@ class FailoverControllerFailoverTest {
     }
 
     @Test
-    fun `FailingOver で別候補の UUID の Disconnected は前進させない`() {
+    fun `FailingOver 中に別候補の UUID で届いた Disconnected は Ruling 13 のガードで捨てられる`() {
         toHealthy()
         repeat(group.config.failureThreshold) {
             clock.advance(31_000L)
@@ -367,8 +367,10 @@ class FailoverControllerFailoverTest {
         val callsBefore = vpn.connectCalls.size
 
         // 無関係な候補（uuid-c）の Disconnected が届く。
-        // Ruling 13 の UUID 照合（onVpnState 冒頭）でまず弾かれ、
-        // FailingOver 内の照合（awaitingUuid）は届く前提でも二重に守る。
+        // onVpnState 冒頭の Ruling 13 ガード（uuid != currentCandidateUuid）で
+        // ここまで来ずに捨てられる。FailingOver 内の awaitingUuid 照合は
+        // このガードにより実際には到達不能であり、このテストはそのガードを
+        // 外すと落ちる（awaitingUuid 照合だけでは検出できない）。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
 
         assertTrue(controller.state is FailoverState.FailingOver)
@@ -440,6 +442,10 @@ class FailoverControllerFailoverTest {
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
         assertTrue(controller.state is FailoverState.FailingOver)
+        // 放棄した候補（uuid-a）へ切断を要求したこと自体も検証する。欠陥13は
+        // 「切断を要求せずに放置した」ことが原因だったので、これを確認しないと
+        // このテストは本来の欠陥を検出できない。
+        assertEquals(1, vpn.disconnectCalls)
 
         // 遅れて張られた放棄済み候補（uuid-a）のトンネルが Connected を報告する。
         // currentCandidateUuid はまだ uuid-a を指しているので Ruling 13 の
@@ -505,6 +511,46 @@ class FailoverControllerFailoverTest {
         controller.handle(FailoverEvent.UserDisconnect)
 
         assertTrue(controller.state is FailoverState.Idle)
+    }
+
+    // --- Ruling 26: FailingOver 中の UserPrompt 再入を止める（レビュー指摘1・MAJOR） ---
+
+    @Test
+    fun `FailingOver 中の UserPrompt は切断を再要求せず待ち時間もリセットしない`() {
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // uuid-b が認証ダイアログで止まる（人はいない）。除外して次候補へ進む
+        // -> FailingOver に入る（1回目の切断要求）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        val firstFailingOver = controller.state
+        assertTrue(firstFailingOver is FailoverState.FailingOver)
+        val disconnectCallsAfterFirstPrompt = vpn.disconnectCalls
+        val startedAtMsAfterFirstPrompt = (firstFailingOver as FailoverState.FailingOver).startedAtMs
+
+        // Ruling 26: 既存コアは1つの認証フォームにつき USER_PROMPT を2回
+        // ブロードキャストする（setState と promptUser の2箇所）。時刻を進めてから
+        // 同じ uuid-b の UserPrompt がもう一度届いても、切断の再要求や
+        // 待ち時間のリセットが起きてはならない。clock.advance を入れるのは、
+        // リセットが起きたら startedAtMs が変化して必ず落ちるようにするため
+        // （時刻を進めずに書くと、この検証は無意味になる）。
+        clock.advance(1_000L)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+
+        val secondFailingOver = controller.state
+        assertTrue(secondFailingOver is FailoverState.FailingOver)
+        assertEquals(disconnectCallsAfterFirstPrompt, vpn.disconnectCalls)
+        assertEquals(
+            startedAtMsAfterFirstPrompt,
+            (secondFailingOver as FailoverState.FailingOver).startedAtMs,
+        )
     }
 
     private fun toHealthy() {

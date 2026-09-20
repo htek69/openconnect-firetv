@@ -16,8 +16,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.openconnect_vpn.android.core.ProfileManager
 
 /**
@@ -48,6 +49,9 @@ class FailoverService : Service() {
      */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loop: Job? = null
+
+    /** Ruling 27b: 外部イベントでループを早起こしするための合図。 */
+    private val wakeLoop = Channel<Unit>(Channel.CONFLATED)
 
     private lateinit var controller: FailoverController
     private lateinit var probe: HealthProbe
@@ -119,7 +123,7 @@ class FailoverService : Service() {
             network = networkGate,
         )
 
-        bridge = VpnStatusBridge(this) { event -> dispatch(event) }
+        bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
         bridge.register()
         registerScreenReceiver()
 
@@ -145,15 +149,18 @@ class FailoverService : Service() {
                     dispatch(FailoverEvent.ProbeResult(reachable))
                 }
                 dispatch(FailoverEvent.Tick)
-                delay(
-                    when {
-                        // Ruling 25: 切替中は切断完了の確認待ちなので細かく tick する。
-                        // 待機時の 30 秒間隔のままだとタイムアウトが実質 30 秒になる。
-                        controller.state is FailoverState.FailingOver -> TICK_INTERVAL_SWITCHING_MS
-                        screenOn -> TICK_INTERVAL_MS
-                        else -> TICK_INTERVAL_STANDBY_MS
-                    },
-                )
+                val interval = when {
+                    // Ruling 25/27a: 切替中は切断完了の確認待ちなので細かく tick する。
+                    // ただし S2 で保留されている（下層ネットが無い）間は待ちが
+                    // 進まないので、細かく起きる意味がない。待機間隔に戻す。
+                    controller.state is FailoverState.FailingOver &&
+                        networkGate.hasUnderlyingNetwork() -> TICK_INTERVAL_SWITCHING_MS
+
+                    screenOn -> TICK_INTERVAL_MS
+                    else -> TICK_INTERVAL_STANDBY_MS
+                }
+                // Ruling 27b: 外部イベントが来たら待たずに起きる。
+                withTimeoutOrNull(interval) { wakeLoop.receive() }
             }
         }
     }
@@ -164,12 +171,12 @@ class FailoverService : Service() {
                 // Ruling 18: 次回 onCreate（プロセス kill 後の復帰）で同じグループへ
                 // 自動的に再接続できるよう、要求された時点で記録する。
                 groupStore.saveActiveGroupId(groupId)
-                dispatch(FailoverEvent.UserConnectGroup(groupId))
+                dispatchExternal(FailoverEvent.UserConnectGroup(groupId))
             }
 
             ACTION_DISCONNECT -> {
                 groupStore.saveActiveGroupId(null)
-                dispatch(FailoverEvent.UserDisconnect)
+                dispatchExternal(FailoverEvent.UserDisconnect)
             }
 
             // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの分岐も削除すること。
@@ -240,6 +247,16 @@ class FailoverService : Service() {
         logHarnessState()
     }
 
+    /**
+     * Ruling 27b: ブロードキャストや onStartCommand のような、ループの外から来る
+     * イベント用。状態が変わったことをループに知らせ、`delay` を待たずに
+     * 次の判定を走らせる。ループ自身からは呼んではならない（ビジーループになる）。
+     */
+    private fun dispatchExternal(event: FailoverEvent) {
+        dispatch(event)
+        wakeLoop.trySend(Unit)
+    }
+
     private fun updateForegroundText() {
         val text = when (val s = controller.state) {
             FailoverState.Idle -> "待機中"
@@ -295,6 +312,7 @@ class FailoverService : Service() {
         bridge.unregister()
         runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()
+        wakeLoop.close()
         scope.cancel()
         super.onDestroy()
     }

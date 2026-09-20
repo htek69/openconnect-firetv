@@ -183,6 +183,11 @@ class FailoverController(
                 )
 
             // Ruling 25: 切断完了の確認。これを合図に次候補を起動する。
+            // awaitingUuid との照合は、このメソッド冒頭の Ruling 13 ガード
+            // （uuid != currentCandidateUuid の通知はここまで来ない）により
+            // 実際には到達不能な分岐である。二重の安全策ではなく、
+            // 「FailingOver は自分が待っている候補の Disconnected だけを合図とする」
+            // という不変条件をこの状態自身に明示するために残してある。
             core == VpnCoreState.Disconnected && s is FailoverState.FailingOver ->
                 if (s.awaitingUuid == null || uuid == null || uuid == s.awaitingUuid) {
                     advanceAfterFailingOver(s)
@@ -195,7 +200,15 @@ class FailoverController(
             // Ruling 21: 人が見ている保証の無い候補（自動切替・枯渇後の再試行）が
             // 認証ダイアログで止まった。誰も答えられないので認証失敗と同様に扱う。
             // ユーザー自身が接続した候補（画面の前にいる）はそのまま待たせる。
-            core == VpnCoreState.UserPrompt && currentCandidateUnattended -> onUnattendedUserPrompt(s)
+            //
+            // Ruling 26: ただし FailingOver 中は何もしない。その候補は既に除外済みで
+            // 切断要求も出ており、ここで再入すると2度目の切断要求と startedAtMs の
+            // リセットが起きて待ち時間が有界でなくなる。既存コアは1つの認証フォームに
+            // つき USER_PROMPT を2回ブロードキャストする（setState と promptUser の
+            // 2箇所）ので、これは例外ではなく通常経路で必ず起きる。
+            core == VpnCoreState.UserPrompt &&
+                currentCandidateUnattended &&
+                s !is FailoverState.FailingOver -> onUnattendedUserPrompt(s)
 
             else -> s
         }
@@ -430,8 +443,14 @@ class FailoverController(
          * Ruling 25: 切断完了の確認を待つ上限。既存コアの `killVPNThread(true)` は
          * スレッド join を 1000ms で打ち切るので、正常終了ならその内に
          * `Disconnected` が届く。届かないまま待ち続けて機能停止するよりは、
-         * 諦めて次候補へ進むほうがマシである（次候補の起動が既存コア側で
-         * もう一度 `killVPNThread` を走らせる）。
+         * 諦めて次候補へ進むほうがマシである。
+         *
+         * Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は `stopService`
+         * であり、その時点で `OpenVpnService` インスタンスは破棄される。後の
+         * `startService` は別インスタンスを作るので `mVPN` は null であり、2度目の
+         * `killVPNThread` は起きない。したがって確認が来なかった場合は、既存コアに
+         * 1000ms ではなく 3000ms を与えた分だけ成功率が上がるだけで、放棄した候補が
+         * 後からトンネルを張る可能性そのものは残る（アプリ層で打てる手が無い）。
          */
         const val DISCONNECT_WAIT_MS = 3_000L
     }
