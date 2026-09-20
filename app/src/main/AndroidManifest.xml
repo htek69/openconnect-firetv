@@ -148,7 +148,7 @@
 
         <provider
             android:name=".FileProvider"
-            android:authorities="net.openconnect_vpn.android.FileProvider"
+            android:authorities="${applicationId}.FileProvider"
             android:exported="true"
             android:grantUriPermissions="true"
             tools:ignore="ExportedContentProvider" />
