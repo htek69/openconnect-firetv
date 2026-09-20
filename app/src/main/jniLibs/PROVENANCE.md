@@ -57,8 +57,8 @@ unzip -o OpenConnect.debug.apk -d <展開先>
 |---|---|---|
 | `app/src/main/jniLibs/arm64-v8a/libopenconnect.so` | 5038760 | `df08fc90cebac4070476847e22c628616a45432bd00ed8ef070b4b496f821b76` |
 | `app/src/main/jniLibs/arm64-v8a/libstoken.so` | 1066520 | `cc681e00ed40da8f7e04589869b686346485310e84a26e7d2c504bf584b16c0c` |
-| `app/src/main/jniLibs/armeabi/libopenconnect.so` | 4497764 | `032409ce5409c7709c19db2b126d6313b63fec9c81744d464ac85e3fdb809b05` |
-| `app/src/main/jniLibs/armeabi/libstoken.so` | 927228 | `1ecd136af2b392c375f4ec53298196a1ae6ddb765f38129847eb27f6784dde6c` |
+| `app/src/main/jniLibs/armeabi-v7a/libopenconnect.so` | 4497764 | `032409ce5409c7709c19db2b126d6313b63fec9c81744d464ac85e3fdb809b05` |
+| `app/src/main/jniLibs/armeabi-v7a/libstoken.so` | 927228 | `1ecd136af2b392c375f4ec53298196a1ae6ddb765f38129847eb27f6784dde6c` |
 | `app/src/main/jniLibs/x86/libopenconnect.so` | 5201480 | `5249c838ab65eb4c532ba01a176da3ad09512ffa7f3ad751911540c8902fa4e9` |
 | `app/src/main/jniLibs/x86/libstoken.so` | 976800 | `bd64baee81b407fe0d5db47987ea28236df275edd39aca9448d49e147bc70c4d` |
 | `app/src/main/jniLibs/x86_64/libopenconnect.so` | 5061536 | `ff69960877924d7d0f4c2a978add6dec7b077e59228298ba7eb2e9498215b9d7` |
@@ -76,6 +76,30 @@ unzip -o OpenConnect.debug.apk -d <展開先>
 
 `armeabi` は upstream の `external/Makefile` が 32bit ARMv7 ビルド
 （`-march=armv7-a -mthumb`）の出力先に意図的に使っている名前であり、`armeabi-v7a` という
-名前のディレクトリは存在しない。Fire TV Stick 4K（`ro.product.cpu.abilist=armeabi-v7a,armeabi`）
-は `armeabi` をサポートABIとして持つため、この命名のままで解決されるはずである
-（実機での最終確認はこのタスクのスコープ外）。詳細は `docs/BUILD.md` を参照。
+名前のディレクトリは（upstream のビルド出力上は）存在しない。詳細は `docs/BUILD.md` を参照。
+
+**Ruling 8（Task 2/3 修正）: `jniLibs/` 配下のみ `armeabi-v7a` に改名した。**
+Compose 導入（Task 2）により `libandroidx.graphics.path.so` が APK の
+`lib/armeabi-v7a/` に自動的にパッケージされるようになった結果、APK 内に
+`lib/armeabi/`（このプロジェクトの `.so`）と `lib/armeabi-v7a/`（Compose由来）の
+**2つの ABI ディレクトリが共存する状態になった。** Android は1アプリにつき1つの
+ABI ディレクトリしか選択しないため、対象機（Fire TV Stick 4K, `abilist=armeabi-v7a,armeabi`）
+では `armeabi-v7a` が優先され、そちらには openconnect/stoken の `.so` が無いという
+`UnsatisfiedLinkError` を起こす状態になっていた。
+
+この2つの `.so`（`libopenconnect.so` / `libstoken.so`）は実体としては ARMv7 向けバイナリ
+であり（`file` で `ELF 32-bit LSB shared object, ARM, EABI5 ... built by NDK r27c` と確認済み。
+NDK r27c は ARMv5 相当の `armeabi` ターゲットのサポート自体を r17 で廃止済みのため、
+ARMv7 でしかありえない）、ディレクトリ名が `armeabi` だったのは前述のとおり upstream の
+`external/Makefile`（`NDK_ARCH_arm := armeabi` だが `TRIPLET_arm := armv7a-linux-androideabi`）
+の慣習的な誤命名に過ぎない。そのため **`app/src/main/jniLibs/armeabi/` を
+`app/src/main/jniLibs/armeabi-v7a/` へ改名するだけで安全に解決できる**（バイナリの
+再ビルドや変換は一切不要、`git mv` によるパス変更のみ。ファイルはバイト単位で同一のため、
+上表のハッシュは変更していない）。
+
+**`app/src/main/assets/raw/armeabi/` は改名していない。** こちらは Android プラットフォームの
+ABI 選択ではなく、アプリ自身のコード（`AssetExtractor.getArch()`）が
+`System.getProperty("os.arch")` を見て解決しており、32bit ARM 機（`os.arch=armv7l`）では
+常に文字列 `"armeabi"` を返す実装になっている。もしこちらも `armeabi-v7a` に改名すると
+`curl-bin` の展開先パスがコード側の期待と一致しなくなり、実行時に静かに失敗する。
+`jniLibs/` と `assets/raw/` は異なる解決規則を持つため、意図的に非対称な扱いにしている。
