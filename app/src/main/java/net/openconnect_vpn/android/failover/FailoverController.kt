@@ -66,6 +66,14 @@ class FailoverController(
                     connectedAtMs = clock.nowMs(),
                 )
 
+            // 予期しない切断。接続中でも接続後でも次候補へ進む。
+            core == VpnCoreState.Disconnected -> when (s) {
+                is FailoverState.Connecting -> failOver(s.groupId, s.candidateIndex, alreadyDown = true)
+                is FailoverState.Verifying -> failOver(s.groupId, s.candidateIndex, alreadyDown = true)
+                is FailoverState.Healthy -> failOver(s.groupId, s.candidateIndex, alreadyDown = true)
+                else -> s
+            }
+
             else -> s
         }
     }
@@ -81,17 +89,37 @@ class FailoverController(
                         lastProbeAtMs = clock.nowMs(),
                     )
                 } else {
+                    // 猶予期間中の失敗は無視する（安全策 S4）
                     s
                 }
 
-            is FailoverState.Healthy ->
-                s.copy(
-                    consecutiveFailures = if (reachable) 0 else s.consecutiveFailures + 1,
-                    lastProbeAtMs = clock.nowMs(),
-                )
+            is FailoverState.Healthy -> {
+                val failures = if (reachable) 0 else s.consecutiveFailures + 1
+                if (failures >= configOf(s.groupId).failureThreshold) {
+                    failOver(s.groupId, s.candidateIndex, alreadyDown = false)
+                } else {
+                    s.copy(consecutiveFailures = failures, lastProbeAtMs = clock.nowMs())
+                }
+            }
 
             else -> s
         }
+    }
+
+    /**
+     * 候補 [failedIndex] を諦めて次候補へ進む。
+     * [alreadyDown] が false のときはトンネルがまだ生きているので明示的に切断する。
+     */
+    private fun failOver(groupId: String, failedIndex: Int, alreadyDown: Boolean): FailoverState {
+        val group = groupOf(groupId) ?: return FailoverState.Idle
+        if (!alreadyDown) {
+            vpn.disconnect()
+        }
+        val next = failedIndex + 1
+        if (next >= group.memberUuids.size) {
+            return FailoverState.Idle  // Task 10 で Exhausted に差し替える
+        }
+        return startCandidate(group, next)
     }
 
     private fun groupOf(groupId: String): FailoverGroup? = groups.firstOrNull { it.id == groupId }
