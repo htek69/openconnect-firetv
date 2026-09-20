@@ -32,6 +32,16 @@ class FailoverController(
     /** 安全策 S1: 現在の候補が認証を通過したか。通過前の切断は認証失敗とみなす。 */
     private var currentCandidatePassedAuth = false
 
+    /**
+     * Ruling 23: 現在の候補が認証段階まで到達したか
+     * （`Authenticating` = TLS接続成功かつサーバが認証フォームを返した、または
+     * `UserPrompt` を観測した）。S1 は「認証段階に到達していながら通過しなかった」
+     * 場合だけを認証失敗とみなす。到達すらしていない切断（`10.255.255.1` のような
+     * 到達不能ホストなど）はネットワーク障害であり、S1 で除外すると健全な候補まで
+     * 一時的な障害で焼き切ってしまう。
+     */
+    private var currentCandidateReachedAuth = false
+
     /** 安全策 S3: 現在の候補の UUID。Ruling 13 により切替前の古い通知を除外する。 */
     private var currentCandidateUuid: String? = null
 
@@ -117,6 +127,7 @@ class FailoverController(
                 continue
             }
             currentCandidatePassedAuth = false
+            currentCandidateReachedAuth = false
             currentCandidateUnattended = unattended
             expectingDisconnect = false
             currentCandidateUuid = uuid
@@ -153,6 +164,13 @@ class FailoverController(
         // 認証を通過したことを覚えておく（S1 の判定に使う）
         if (core == VpnCoreState.Authenticated || core == VpnCoreState.Connected) {
             currentCandidatePassedAuth = true
+        }
+
+        // Ruling 23: 認証段階まで到達したことを覚えておく（S1 の誤判定を防ぐ）。
+        // Authenticating は TLS 接続が成功しサーバが認証フォームを返したことを、
+        // UserPrompt はそのフォームとやり取りしていたことを意味する。
+        if (core == VpnCoreState.Authenticating || core == VpnCoreState.UserPrompt) {
+            currentCandidateReachedAuth = true
         }
 
         return when {
@@ -202,8 +220,11 @@ class FailoverController(
         val groupId = groupIdOf(s) ?: return s
         val index = candidateIndexOf(s) ?: return s
 
-        // S1: 認証を通過せずに落ちたら認証失敗とみなして除外する
-        if (!currentCandidatePassedAuth) {
+        // Ruling 23: 認証段階まで到達していながら通過せずに落ちた場合だけ
+        // 認証失敗とみなして除外する。到達すらしていない切断（TLS接続失敗など）は
+        // ネットワーク障害であり、除外すると一時的な障害で健全な候補まで
+        // セッション中焼き切ってしまう。除外しない場合も次候補へは進める。
+        if (currentCandidateReachedAuth && !currentCandidatePassedAuth) {
             groupOf(groupId)?.memberUuids?.getOrNull(index)?.let { _excludedUuids.add(it) }
         }
         return failOver(groupId, index, alreadyDown = true)

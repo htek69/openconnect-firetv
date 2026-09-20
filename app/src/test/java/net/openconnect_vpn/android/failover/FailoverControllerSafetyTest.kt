@@ -261,11 +261,19 @@ class FailoverControllerSafetyTest {
         }
         assertEquals("uuid-b", vpn.connectCalls.last())
 
-        // uuid-b: 認証前に切断 -> S1 で除外
+        // uuid-b: 認証段階まで到達してから切断 -> Ruling 23 により S1 で除外
+        // （Ruling 23 前は認証段階に到達したかどうかを見ていなかったため、
+        // Authenticating を経ずに Disconnected を送るだけで除外されていた。
+        // このテストの主眼は Ruling 21 の再試行時 UserPrompt 処理であり、
+        // ここで uuid-b/uuid-c を除外させるのは「Exhausted へ落として
+        // uuid-a だけが再試行される」状況を作るための前提設定に過ぎないので、
+        // Authenticating を追加することはテストの弱体化ではない）
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-b"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
         assertEquals("uuid-c", vpn.connectCalls.last())
 
-        // uuid-c: 認証前に切断 -> S1 で除外。候補が尽きて Exhausted へ
+        // uuid-c も同様に認証段階まで到達してから切断 -> 除外。候補が尽きて Exhausted へ
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-c"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
         assertTrue(controller.state is FailoverState.Exhausted)
         assertFalse("uuid-a" in controller.excludedUuids)
@@ -284,5 +292,52 @@ class FailoverControllerSafetyTest {
         assertTrue("uuid-a" in controller.excludedUuids)
         // uuid-b, uuid-c も除外済みなので、候補が尽きて再び Exhausted へ進む
         assertTrue(controller.state is FailoverState.Exhausted)
+    }
+
+    // --- Ruling 23: 認証段階に到達したかどうかで S1 の除外判定を分ける ---
+
+    @Test
+    fun `認証段階に到達してから切断された候補は除外され次候補へ進む`() {
+        // S1 の本来の対象ケース。Ruling 23 の前後どちらでも除外されなければならない。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+
+        assertTrue("uuid-a" in controller.excludedUuids)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `認証段階に到達しないまま切断された候補は除外されないが次候補へ進む`() {
+        // 実機で確認された不具合そのもの。10_255_255_1 のような到達不能ホストは
+        // TLS 接続すら成立せず Authenticating に届かないまま Disconnected が来る。
+        // これはネットワーク障害であり認証失敗ではないので除外してはならない。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `全候補が認証前に切断してもバックオフ後は全候補から再試行できる`() {
+        // 実機のログ: Connecting idx=0,1,2 が全て認証前に切断し、3件とも除外され、
+        // Exhausted の再試行が毎回全滅して attempt が伸び続けバックオフが
+        // 10分の上限へ張り付いた。グループが恒久的に死ぬ不具合そのもの。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        repeat(3) {
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        }
+
+        assertTrue(controller.state is FailoverState.Exhausted)
+        assertTrue(controller.excludedUuids.isEmpty())
+
+        // バックオフが明けて Tick が再試行する。除外が空のままなので先頭候補から
+        val exhausted = controller.state as FailoverState.Exhausted
+        clock.advance(Backoff.delayMsForAttempt(exhausted.attempt) + 1_000L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals("uuid-a", vpn.connectCalls.last())
+        assertTrue(controller.excludedUuids.isEmpty())
     }
 }
