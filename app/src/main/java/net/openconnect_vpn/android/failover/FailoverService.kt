@@ -10,6 +10,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.preference.PreferenceManager
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -162,8 +163,35 @@ class FailoverService : Service() {
                 groupStore.saveActiveGroupId(null)
                 dispatch(FailoverEvent.UserDisconnect)
             }
+
+            // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの分岐も削除すること。
+            ACTION_SET_PROBE_TARGET -> {
+                val host = intent.getStringExtra(EXTRA_PROBE_HOST)
+                val port = intent.getIntExtra(EXTRA_PROBE_PORT, -1)
+                if (host != null && port in 1..65535) {
+                    val target = ProbeTarget(host = host, port = port)
+                    groupStore.saveProbeTarget(target)
+                    probeTarget = target
+                    Log.d(HARNESS_TAG, "probeTarget set to $target")
+                } else {
+                    Log.w(HARNESS_TAG, "ignored invalid SET_PROBE_TARGET host=$host port=$port")
+                }
+                logHarnessState()
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Task 13 検証ハーネス用。コントローラの状態とプローブ宛先を distinctive tag で
+     * ログに出す。FailoverDebugReceiver 削除時にこのメソッドと呼び出し箇所も削除すること。
+     */
+    private fun logHarnessState() {
+        Log.d(
+            HARNESS_TAG,
+            "state=${controller.state} excludedUuids=${controller.excludedUuids} " +
+                "needsUserConsent=${controller.needsUserConsent} probeTarget=$probeTarget",
+        )
     }
 
     /**
@@ -200,6 +228,8 @@ class FailoverService : Service() {
         if (controller.needsUserConsent) {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
         }
+        // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの行も削除すること。
+        logHarnessState()
     }
 
     private fun updateForegroundText() {
@@ -268,6 +298,13 @@ class FailoverService : Service() {
         const val ACTION_DISCONNECT = "net.openconnect_vpn.android.failover.DISCONNECT"
         const val EXTRA_GROUP_ID = "net.openconnect_vpn.android.failover.GROUP_ID"
 
+        // Task 13 検証ハーネス用の一時的なアクション。FailoverDebugReceiver とセットで
+        // ブランチ完了前に削除すること。
+        const val ACTION_SET_PROBE_TARGET = "net.openconnect_vpn.android.failover.SET_PROBE_TARGET"
+        const val EXTRA_PROBE_HOST = "net.openconnect_vpn.android.failover.PROBE_HOST"
+        const val EXTRA_PROBE_PORT = "net.openconnect_vpn.android.failover.PROBE_PORT"
+        private const val HARNESS_TAG = "FailoverTask13Harness"
+
         private const val TICK_INTERVAL_MS = 5_000L
 
         /** Ruling 17: 画面消灯中のティック間隔。省電力のため通常の6倍に延ばす。 */
@@ -285,6 +322,19 @@ class FailoverService : Service() {
         fun disconnect(context: Context) {
             val intent = Intent(context, FailoverService::class.java).apply {
                 action = ACTION_DISCONNECT
+            }
+            startCompat(context, intent)
+        }
+
+        /**
+         * Task 13 検証ハーネス用。FailoverDebugReceiver からのみ呼ばれる想定。
+         * FailoverDebugReceiver 削除時にこのメソッドとその呼び出し元も削除すること。
+         */
+        fun setProbeTarget(context: Context, host: String, port: Int) {
+            val intent = Intent(context, FailoverService::class.java).apply {
+                action = ACTION_SET_PROBE_TARGET
+                putExtra(EXTRA_PROBE_HOST, host)
+                putExtra(EXTRA_PROBE_PORT, port)
             }
             startCompat(context, intent)
         }

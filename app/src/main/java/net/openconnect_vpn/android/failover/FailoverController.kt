@@ -36,6 +36,14 @@ class FailoverController(
     private var currentCandidateUuid: String? = null
 
     /**
+     * Ruling 21: 現在の候補を人が見ている保証が無いか。
+     * onUserConnect（ユーザーが画面の前で接続操作をした）から開始した候補は false、
+     * failOver（自動切替）や onTick の再試行から開始した候補は true になる。
+     * true のときに UserPrompt に来ても誰も答えられないので、認証失敗と同様に扱う。
+     */
+    private var currentCandidateUnattended = false
+
+    /**
      * 枯渇の世代。次に枯渇したときの Exhausted.attempt になる。
      * `onTick` の再試行で 1 つ進め、復旧（Healthy 到達）とユーザー操作でのみ 0 に戻す。
      */
@@ -85,7 +93,7 @@ class FailoverController(
         exhaustionAttempt = 0
         val group = groupOf(groupId) ?: return FailoverState.Idle
         needsUserConsent = false
-        return startCandidateFrom(group, fromIndex = 0)
+        return startCandidateFrom(group, fromIndex = 0, unattended = false)
     }
 
     private fun onUserDisconnect(): FailoverState {
@@ -100,7 +108,7 @@ class FailoverController(
      * [fromIndex] 以降で除外されていない最初の候補へ接続する。
      * 候補が無ければ Exhausted に入る。
      */
-    private fun startCandidateFrom(group: FailoverGroup, fromIndex: Int): FailoverState {
+    private fun startCandidateFrom(group: FailoverGroup, fromIndex: Int, unattended: Boolean): FailoverState {
         var index = fromIndex
         while (index < group.memberUuids.size) {
             val uuid = group.memberUuids[index]
@@ -109,6 +117,7 @@ class FailoverController(
                 continue
             }
             currentCandidatePassedAuth = false
+            currentCandidateUnattended = unattended
             expectingDisconnect = false
             currentCandidateUuid = uuid
             probeImmediatelyOnNetworkRecovery = false
@@ -156,8 +165,28 @@ class FailoverController(
 
             core == VpnCoreState.Disconnected -> onDisconnected(s)
 
+            // Ruling 21: 人が見ている保証の無い候補（自動切替・枯渇後の再試行）が
+            // 認証ダイアログで止まった。誰も答えられないので認証失敗と同様に扱う。
+            // ユーザー自身が接続した候補（画面の前にいる）はそのまま待たせる。
+            core == VpnCoreState.UserPrompt && currentCandidateUnattended -> onUnattendedUserPrompt(s)
+
             else -> s
         }
+    }
+
+    /**
+     * Ruling 21: 自動切替または枯渇後の再試行で開始した候補が認証ダイアログで
+     * 止まった（＝保存済み認証情報が拒否された等）。TV の前に人がいる保証は無く、
+     * このまま放置すると S1 の安全策（認証失敗した候補を除外して次へ進む）が
+     * 一度も働かずに無期限へ止まってしまう。よって認証失敗と同じ扱いにする：
+     * この候補を除外し、まだ張られていないトンネルを明示的に切断してから
+     * 次候補へ進める（alreadyDown = false）。
+     */
+    private fun onUnattendedUserPrompt(s: FailoverState): FailoverState {
+        val groupId = groupIdOf(s) ?: return s
+        val index = candidateIndexOf(s) ?: return s
+        groupOf(groupId)?.memberUuids?.getOrNull(index)?.let { _excludedUuids.add(it) }
+        return failOver(groupId, index, alreadyDown = false)
     }
 
     private fun onDisconnected(s: FailoverState): FailoverState {
@@ -220,7 +249,7 @@ class FailoverController(
             vpn.disconnect()
         }
         if (!group.autoFailoverEnabled) return FailoverState.Idle
-        return startCandidateFrom(group, fromIndex = failedIndex + 1)
+        return startCandidateFrom(group, fromIndex = failedIndex + 1, unattended = true)
     }
 
     /** 全候補が枯渇した。指数バックオフ後に先頭から再試行する（仕様書 7.2）。 */
@@ -240,7 +269,7 @@ class FailoverController(
         // 次に枯渇したときの attempt を1つ進める。ここでリセットしてはならない
         // （リセットすると2回目の枯渇でも attempt が 0 に戻り、バックオフが伸びない）。
         exhaustionAttempt = s.attempt + 1
-        return startCandidateFrom(group, fromIndex = 0)
+        return startCandidateFrom(group, fromIndex = 0, unattended = true)
     }
 
     private fun onUnderlyingNetworkChanged(available: Boolean): FailoverState {

@@ -219,4 +219,70 @@ class FailoverControllerSafetyTest {
         clock.advance(16_000L)
         controller.handle(FailoverEvent.ProbeResult(reachable = true))
     }
+
+    // --- Ruling 21: UserPrompt は「人が見ていない」候補でだけ認証失敗扱いする ---
+
+    @Test
+    fun `ユーザーが接続した候補が認証ダイアログで止まっても現状を維持する`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        val stateBefore = controller.state
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+
+        assertEquals(stateBefore, controller.state)
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `閾値超過で自動切替した候補が認証ダイアログで止まったら除外して次候補へ進む`() {
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+
+        assertTrue("uuid-b" in controller.excludedUuids)
+        assertEquals("uuid-c", vpn.connectCalls.last())
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    @Test
+    fun `枯渇後の再試行で開始した候補が認証ダイアログで止まったら除外して次候補へ進む`() {
+        // uuid-a: Healthy に到達したあと閾値超過で失格する（S1 の除外対象ではない）
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // uuid-b: 認証前に切断 -> S1 で除外
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+        assertEquals("uuid-c", vpn.connectCalls.last())
+
+        // uuid-c: 認証前に切断 -> S1 で除外。候補が尽きて Exhausted へ
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
+        assertTrue(controller.state is FailoverState.Exhausted)
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertTrue("uuid-b" in controller.excludedUuids)
+        assertTrue("uuid-c" in controller.excludedUuids)
+
+        // バックオフが明けて Tick が再試行する。除外されていない uuid-a から試す
+        val exhausted = controller.state as FailoverState.Exhausted
+        clock.advance(Backoff.delayMsForAttempt(exhausted.attempt) + 1_000L)
+        controller.handle(FailoverEvent.Tick)
+        assertEquals("uuid-a", vpn.connectCalls.last())
+
+        // uuid-a が認証ダイアログで止まる。自動再試行なので人はいない -> 除外して進める
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+
+        assertTrue("uuid-a" in controller.excludedUuids)
+        // uuid-b, uuid-c も除外済みなので、候補が尽きて再び Exhausted へ進む
+        assertTrue(controller.state is FailoverState.Exhausted)
+    }
 }
