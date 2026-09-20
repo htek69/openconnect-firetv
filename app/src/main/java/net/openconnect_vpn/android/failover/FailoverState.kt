@@ -16,11 +16,16 @@ sealed interface FailoverState {
         val startedAtMs: Long,
     ) : FailoverState
 
-    /** トンネルは張れた。猶予期間中で初回プローブを待っている。 */
+    /**
+     * トンネルは張れた。猶予期間中で初回プローブを待っている。
+     * [consecutiveFailures] は Ruling 22: 猶予期間経過後に届いた連続プローブ失敗数。
+     * `failureThreshold` に達すると [Healthy] へ進まずに切り替える。
+     */
     data class Verifying(
         val groupId: String,
         val candidateIndex: Int,
         val connectedAtMs: Long,
+        val consecutiveFailures: Int = 0,
     ) : FailoverState
 
     /** 疎通確認済み。定期プローブで監視している。 */

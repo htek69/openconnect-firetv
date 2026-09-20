@@ -264,6 +264,7 @@ data class FailoverConfig(
     val probeTimeoutMs: Int = 5_000,
     val failureThreshold: Int = 3,      // 連続失敗で切替
     val graceAfterConnectSec: Int = 15, // 接続直後の猶予
+    val connectTimeoutSec: Int = 45,    // Ruling 22: CONNECTING の上限
 )
 ```
 
@@ -307,6 +308,11 @@ data class FailoverConfig(
 - `EXHAUSTED` に入るのは、**グループ内の全候補を一巡して全滅した場合のみ**
 - `autoFailoverEnabled = false` のグループでは `FAILING_OVER` へ遷移せず、
   障害検知時に `IDLE`（切断状態）で停止する
+- Ruling 22a: `CONNECTING(i)` の「タイムアウト」は `connectTimeoutSec`（既定45秒）を
+  `Tick` で監視して検出する。ブラックホール宛先など既存コアから `RST` が返らない
+  相手だと `STATE_CONNECTED` も `STATE_DISCONNECTED` も来ないため、これが無いと
+  OS の TCP タイムアウト（約2分）まで状態機械側は何もできない。タイムアウトは
+  ネットワーク障害であり認証失敗ではないので、S1 と違って**候補を除外しない**
 
 ### 7.1 必須の安全策
 
@@ -329,7 +335,12 @@ Fire TV の Wi-Fi 自体が切れている場合、候補を巡回しても全�
 
 **S4: 接続直後の猶予期間を設ける**
 ルート設定と DNS が整う前にプローブすると必ず失敗し、接続成功直後に切り替わる
-無限ループになる。`VERIFYING` 状態と `graceAfterConnectSec` がこれを防ぐ。
+無限ループになる。`VERIFYING` 状態と `graceAfterConnectSec` がこれを防ぐ:
+猶予期間中はプローブそのものを打たない。ただし Ruling 22b により、この猶予は
+**期間限定**であって「`VERIFYING` の間は失敗を無視し続ける」という意味ではない。
+猶予期間を過ぎてから届いた連続失敗は `failureThreshold` 回で `HEALTHY` と同じ
+基準で切替える（トンネルは張れたが疎通が無い、という状態に無期限に留まらない
+ため）。これも認証失敗ではないので候補は除外しない。
 
 ### 7.1.1 状態通知は接続試行と照合する（S3 の前提）
 

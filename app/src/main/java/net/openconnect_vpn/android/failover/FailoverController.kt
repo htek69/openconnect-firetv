@@ -161,6 +161,7 @@ class FailoverController(
                     groupId = s.groupId,
                     candidateIndex = s.candidateIndex,
                     connectedAtMs = clock.nowMs(),
+                    consecutiveFailures = 0,
                 )
 
             core == VpnCoreState.Disconnected -> onDisconnected(s)
@@ -219,9 +220,28 @@ class FailoverController(
                         consecutiveFailures = 0,
                         lastProbeAtMs = clock.nowMs(),
                     )
-                } else {
-                    // 猶予期間中の失敗は無視する（S4）
+                } else if (clock.nowMs() - s.connectedAtMs < configOf(s.groupId).graceAfterConnectSec * 1_000L) {
+                    // S4: 猶予期間中の失敗は無視する。本来 shouldProbeNow() が
+                    // graceAfterConnectSec 経過前はプローブの実行自体を許可しないため、
+                    // 実運用ではこの分岐に届く失敗は無いはずである。それでも
+                    // S2（下層ネット断）・S3（意図的切断）と同様、呼び出し側の規律だけに
+                    // 頼らず状態機械自身でも猶予期間を再確認する。
                     s
+                } else {
+                    // Ruling 22: 猶予期間を過ぎてから届いた失敗は意味のある疎通断である
+                    // （ここに来る時点で shouldProbeNow() 経由なら必ず post-grace のはず、
+                    // という前提が仮に崩れても、直前の分岐で二重に守られている）。
+                    // 無視し続けるとトンネルは張れたが疎通が無い候補に無期限に留まって
+                    // しまうので、Healthy と同じ閾値で切替える。トンネルは生きているので
+                    // alreadyDown = false で明示的に切断する。疎通できないだけで認証は
+                    // 失敗していないので、タイムアウト（Ruling 22 a）と同様に候補は
+                    // 除外しない。
+                    val failures = s.consecutiveFailures + 1
+                    if (failures >= configOf(s.groupId).failureThreshold) {
+                        failOver(s.groupId, s.candidateIndex, alreadyDown = false)
+                    } else {
+                        s.copy(consecutiveFailures = failures)
+                    }
                 }
 
             is FailoverState.Healthy -> {
@@ -260,8 +280,28 @@ class FailoverController(
             retryAtMs = clock.nowMs() + Backoff.delayMsForAttempt(attempt),
         )
 
-    private fun onTick(): FailoverState {
-        val s = state as? FailoverState.Exhausted ?: return state
+    private fun onTick(): FailoverState = when (val s = state) {
+        is FailoverState.Connecting -> onConnectTimeout(s)
+        is FailoverState.Exhausted -> onExhaustedRetry(s)
+        else -> state
+    }
+
+    /**
+     * Ruling 22: `Connecting` に無期限に留まらないための上限。
+     * ブラックホール宛先など RST が返らない相手だと、`Connected`/`Disconnected` の
+     * どちらも来ないまま既存コアが OS の TCP タイムアウトまで沈黙し、
+     * 状態機械もそれに引きずられて何もしなくなる。`connectTimeoutSec` を超えたら
+     * 次候補へ進める。タイムアウトはネットワーク障害であり認証失敗ではないので、
+     * S1 の除外はしない（10分後には繋がるかもしれない候補を焼き切らない）。
+     * トンネルはまだ生きている可能性があるので alreadyDown = false で明示的に切断する。
+     */
+    private fun onConnectTimeout(s: FailoverState.Connecting): FailoverState {
+        val timeoutMs = configOf(s.groupId).connectTimeoutSec * 1_000L
+        if (clock.nowMs() - s.startedAtMs < timeoutMs) return s
+        return failOver(s.groupId, s.candidateIndex, alreadyDown = false)
+    }
+
+    private fun onExhaustedRetry(s: FailoverState.Exhausted): FailoverState {
         if (clock.nowMs() < s.retryAtMs) return s
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
 

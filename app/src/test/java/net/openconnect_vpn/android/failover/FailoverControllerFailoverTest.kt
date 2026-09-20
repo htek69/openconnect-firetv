@@ -1,6 +1,7 @@
 package net.openconnect_vpn.android.failover
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -110,6 +111,72 @@ class FailoverControllerFailoverTest {
         assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
 
         // 同上。接続が成立していないので切断要求は不要。
+        assertEquals(0, vpn.disconnectCalls)
+    }
+
+    // --- Ruling 22a: Connecting に無期限に留まらない ---
+
+    @Test
+    fun `接続タイムアウトで次候補へ切替する`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+
+        // connectTimeoutSec を超えて Tick が来る
+        clock.advance(group.config.connectTimeoutSec * 1_000L + 1_000L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+        // タイムアウトはネットワーク障害であり認証失敗ではないので除外しない
+        assertFalse("uuid-a" in controller.excludedUuids)
+    }
+
+    @Test
+    fun `接続タイムアウト前の Tick では切替しない`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        val stateBefore = controller.state
+
+        // connectTimeoutSec 未満で Tick が来る
+        clock.advance(group.config.connectTimeoutSec * 1_000L - 1_000L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(stateBefore, controller.state)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(0, vpn.disconnectCalls)
+    }
+
+    // --- Ruling 22b: Verifying も無期限に留まらない ---
+
+    @Test
+    fun `猶予期間後のプローブ失敗が閾値に達したら切替する`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+
+        // 猶予期間を過ぎてから閾値回数だけ失敗する
+        clock.advance((group.config.graceAfterConnectSec + 1) * 1_000L)
+        repeat(group.config.failureThreshold) {
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        assertEquals(1, vpn.disconnectCalls)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        // 疎通できないだけで認証は失敗していないので除外しない
+        assertFalse("uuid-a" in controller.excludedUuids)
+    }
+
+    @Test
+    fun `猶予期間後の失敗が閾値未満で回復したら Healthy になる`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+
+        clock.advance((group.config.graceAfterConnectSec + 1) * 1_000L)
+        repeat(group.config.failureThreshold - 1) {
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+
+        assertTrue(controller.state is FailoverState.Healthy)
         assertEquals(0, vpn.disconnectCalls)
     }
 

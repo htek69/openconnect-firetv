@@ -16,6 +16,13 @@ data class FailoverConfig(
     val probeTimeoutMs: Int = 5_000,
     val failureThreshold: Int = 3,
     val graceAfterConnectSec: Int = 15,
+    /**
+     * Ruling 22: `Connecting` に留まれる上限。ブラックホール宛先など RST が返らない
+     * 相手だと、既存コアは OS の TCP タイムアウト（約2分）まで沈黙する。それより
+     * 十分短く、かつ低速回線での TLS ハンドシェイク＋認証をタイムアウトさせない
+     * 45秒を既定値にする。
+     */
+    val connectTimeoutSec: Int = 45,
 )
 
 /**
