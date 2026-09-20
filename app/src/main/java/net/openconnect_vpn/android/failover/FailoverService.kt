@@ -1,13 +1,17 @@
 package net.openconnect_vpn.android.failover
 
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.preference.PreferenceManager
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -23,7 +27,25 @@ import net.openconnect_vpn.android.core.ProfileManager
  */
 class FailoverService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob())
+    /**
+     * Ruling 16: FailoverController は一切同期化されていない（state・除外集合・
+     * needsUserConsent などをロック無しで保持する）。dispatch() の呼び出し元は
+     * ブロードキャスト受信（VpnStatusBridge・本サービスの ScreenReceiver。どちらも
+     * デフォルトでメインスレッド配送）、onStartCommand（メインスレッド）、そして
+     * このティックループの3経路あり、ディスパッチャを指定しないと
+     * ティックループは Dispatchers.Default の任意のプールスレッドで走る。
+     * 3経路すべてを同じスレッド（メイン）に固定することで、事実上のロックとして
+     * 機能させ、状態機械へのデータ競合を無くす。
+     *
+     * これは実測プローブをメインスレッドでブロックすることを意味しない。
+     * TcpHealthProbe.probe は内部で withContext(Dispatchers.IO) しているため、
+     * ここから呼んでも実際のソケット処理は IO ディスパッチャに逃げ、
+     * このコルーチンは suspend するだけである（delay も同様）。
+     *
+     * これを Dispatchers.Default に「最適化」で戻すと、この協調が失われて
+     * 元のデータ競合が復活するので変更しないこと。
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loop: Job? = null
 
     private lateinit var controller: FailoverController
@@ -40,10 +62,38 @@ class FailoverService : Service() {
      */
     private var groups: List<FailoverGroup> = emptyList()
 
+    /** Minor fix: 直前に実際に反映した通知文言。同じ文言では再投稿しない。 */
+    private var lastForegroundText: String? = null
+
+    /** Ruling 17: 画面が点いているか。消灯中はティック間隔を延ばす。 */
+    private var screenOn = true
+
+    /**
+     * Ruling 17: 画面点灯時に「次のティックで無条件にプローブする」ことを示すフラグ。
+     * Healthy のときだけ立てる（Verifying 中に立てて S4 の猶予期間を迂回しないため）。
+     * 一度使ったら消費する。
+     */
+    private var probeOnScreenWake = false
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> screenOn = false
+                Intent.ACTION_SCREEN_ON -> {
+                    screenOn = true
+                    if (controller.state is FailoverState.Healthy) {
+                        probeOnScreenWake = true
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         FailoverNotifications.ensureChannel(this)
         startForegroundCompat("待機中")
+        lastForegroundText = "待機中"
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         groupStore = GroupStore(PrefsKeyValueStore(prefs))
@@ -70,6 +120,9 @@ class FailoverService : Service() {
 
         bridge = VpnStatusBridge(this) { event -> dispatch(event) }
         bridge.register()
+        registerScreenReceiver()
+
+        restoreActiveGroupIfAny()
 
         loop = scope.launch {
             var lastNetworkAvailable = networkGate.hasUnderlyingNetwork()
@@ -79,12 +132,19 @@ class FailoverService : Service() {
                     lastNetworkAvailable = available
                     dispatch(FailoverEvent.UnderlyingNetworkChanged(available))
                 }
-                if (controller.shouldProbeNow()) {
+
+                val wake = probeOnScreenWake
+                if (wake) probeOnScreenWake = false
+                val forcedByWake = wake &&
+                    controller.state is FailoverState.Healthy &&
+                    networkGate.hasUnderlyingNetwork()
+
+                if (controller.shouldProbeNow() || forcedByWake) {
                     val reachable = probe.probe(probeTarget, currentProbeTimeoutMs())
                     dispatch(FailoverEvent.ProbeResult(reachable))
                 }
                 dispatch(FailoverEvent.Tick)
-                delay(TICK_INTERVAL_MS)
+                delay(if (screenOn) TICK_INTERVAL_MS else TICK_INTERVAL_STANDBY_MS)
             }
         }
     }
@@ -92,12 +152,46 @@ class FailoverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONNECT_GROUP -> intent.getStringExtra(EXTRA_GROUP_ID)?.let { groupId ->
+                // Ruling 18: 次回 onCreate（プロセス kill 後の復帰）で同じグループへ
+                // 自動的に再接続できるよう、要求された時点で記録する。
+                groupStore.saveActiveGroupId(groupId)
                 dispatch(FailoverEvent.UserConnectGroup(groupId))
             }
 
-            ACTION_DISCONNECT -> dispatch(FailoverEvent.UserDisconnect)
+            ACTION_DISCONNECT -> {
+                groupStore.saveActiveGroupId(null)
+                dispatch(FailoverEvent.UserDisconnect)
+            }
         }
         return START_STICKY
+    }
+
+    /**
+     * Ruling 18: プロセス kill からの復帰。記録されたグループ ID があり、かつ
+     * VPN 許可がまだ有効なら自動的に再接続を試みる。許可が失われていた場合は
+     * 黙って失敗させず、既存の「許可が必要」通知を出す。ID が記録されていなければ
+     * 何もしない（Idle から再起動したサービスは Idle のまま）。
+     */
+    private fun restoreActiveGroupIfAny() {
+        val activeGroupId = groupStore.loadActiveGroupId() ?: return
+        if (VpnService.prepare(this) == null) {
+            dispatch(FailoverEvent.UserConnectGroup(activeGroupId))
+        } else {
+            FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
+        }
+    }
+
+    private fun registerScreenReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(screenReceiver, filter)
+        }
     }
 
     private fun dispatch(event: FailoverEvent) {
@@ -117,7 +211,12 @@ class FailoverService : Service() {
             is FailoverState.FailingOver -> "切り替え中"
             is FailoverState.Exhausted -> "全候補が応答しません。再試行を待機中"
         }
-        startForegroundCompat(text)
+        // Minor fix: 文言が変わらない限り通知を再構築・再投稿しない
+        // （5秒ごとの Tick だけで無駄な repost を繰り返さないため）。
+        if (text != lastForegroundText) {
+            lastForegroundText = text
+            startForegroundCompat(text)
+        }
     }
 
     /**
@@ -156,6 +255,7 @@ class FailoverService : Service() {
 
     override fun onDestroy() {
         bridge.unregister()
+        runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -169,6 +269,9 @@ class FailoverService : Service() {
         const val EXTRA_GROUP_ID = "net.openconnect_vpn.android.failover.GROUP_ID"
 
         private const val TICK_INTERVAL_MS = 5_000L
+
+        /** Ruling 17: 画面消灯中のティック間隔。省電力のため通常の6倍に延ばす。 */
+        private const val TICK_INTERVAL_STANDBY_MS = 30_000L
 
         /** 計画2 の TV UI から呼ぶ入口。 */
         fun connectGroup(context: Context, groupId: String) {

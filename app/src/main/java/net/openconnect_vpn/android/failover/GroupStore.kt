@@ -51,8 +51,24 @@ class GroupStore(private val store: KeyValueStore) {
         store.putString(KEY_PROBE_TARGET, json.encodeToString(target))
     }
 
+    /**
+     * Ruling 18: プロセス kill からの復帰時にどのグループへ再接続すべきかを覚えておく。
+     * ユーザーが切断した場合は null を渡して消す。未保存なら null を返す
+     * （＝サービス再起動時は Idle のまま何もしない）。
+     */
+    fun loadActiveGroupId(): String? = store.getString(KEY_ACTIVE_GROUP_ID)
+
+    fun saveActiveGroupId(id: String?) {
+        if (id == null) {
+            store.remove(KEY_ACTIVE_GROUP_ID)
+        } else {
+            store.putString(KEY_ACTIVE_GROUP_ID, id)
+        }
+    }
+
     private companion object {
         const val KEY_GROUPS = "failover_groups_v1"
         const val KEY_PROBE_TARGET = "failover_probe_target_v1"
+        const val KEY_ACTIVE_GROUP_ID = "failover_active_group_id_v1"
     }
 }

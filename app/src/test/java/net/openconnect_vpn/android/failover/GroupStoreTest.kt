@@ -1,6 +1,7 @@
 package net.openconnect_vpn.android.failover
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,5 +93,28 @@ class GroupStoreTest {
 
         assertEquals("9.9.9.9", target.host)
         assertEquals(853, target.port)
+    }
+
+    @Test
+    fun `未保存のアクティブグループIDは null を返す`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        assertNull(store.loadActiveGroupId())
+    }
+
+    @Test
+    fun `アクティブグループIDを保存して読み戻せる`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        store.saveActiveGroupId("g1")
+
+        assertEquals("g1", store.loadActiveGroupId())
+    }
+
+    @Test
+    fun `アクティブグループIDに null を保存すると消える`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        store.saveActiveGroupId("g1")
+        store.saveActiveGroupId(null)
+
+        assertNull(store.loadActiveGroupId())
     }
 }
