@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <resources>
-  <string name="app">OpenConnect</string>
+  <string name="app">OpenConnect TV</string>
   <string name="cancel">Cancel·la</string>
   <string name="configure_the_vpn">Configura la VPN</string>
   <string name="menu_add_profile">Afegeix un perfil</string>

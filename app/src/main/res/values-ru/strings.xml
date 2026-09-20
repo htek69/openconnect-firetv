@@ -8,7 +8,7 @@
   <string name="advanced">Расширенные</string>
   <string name="allow_vpn_changes">Разрешить изменения профилей VPN</string>
   <string name="allowed_apps">Авторизованные приложения: %s</string>
-  <string name="app">OpenConnect</string>
+  <string name="app">OpenConnect TV</string>
   <string name="authentication">Авторизация</string>
   <string name="batch_mode">Автоматический вход</string>
   <string name="ca_certificate">CA сертификат</string>

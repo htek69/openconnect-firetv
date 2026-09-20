@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <resources>
-  <string name="app">OpenConnect</string>
+  <string name="app">OpenConnect TV</string>
   <string name="cancel">Скасувати</string>
   <string name="vpn_list_title">Профілі</string>
   <string name="configure_the_vpn">Налаштувати VPN</string>
