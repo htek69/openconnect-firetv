@@ -453,17 +453,28 @@ node 総数 40    clickable="true" 15    focusable="true" 7
 9.3 の計測方法をそのまま受け入れ基準に使う。主観的な「操作できた気がする」ではなく、
 次の条件を満たすことを機械的に検証する。
 
-> **本アプリの各画面について、`uiautomator dump` した結果の
-> `clickable="true"` の数と `focusable="true"` の数が一致すること。**
+> **本アプリの各画面について、`clickable="true"` かつ `focusable="false"` である
+> 要素が1つも存在しないこと。**
 
-`clickable` かつ `focusable` でない要素が1つでも残っていれば、それはリモコンから
-永久に到達できない要素であり、不具合として扱う。計測手順:
+数の比較ではなく、**要素ごとの述語**で判定する。合計数の一致は偶然成立しうる
+（到達不能な要素と、clickable でない focusable 要素が同数あれば一致してしまう）ため、
+基準として不十分である。計測手順:
 
 ```bash
 adb shell uiautomator dump /sdcard/ui.xml
 adb shell cat /sdcard/ui.xml > ui.xml
-# clickable と focusable の数が一致することを確認する
+python3 - ui.xml <<'PY'
+import sys, xml.etree.ElementTree as ET
+bad = [n for n in ET.parse(sys.argv[1]).getroot().iter('node')
+       if n.get('clickable') == 'true' and n.get('focusable') != 'true']
+for n in bad:
+    print("UNREACHABLE", n.get('resource-id') or n.get('class'), repr(n.get('text')))
+print("violations:", len(bad))
+PY
 ```
+
+`violations: 0` が合格。1つでも出たら、その `resource-id` の要素はリモコンから
+永久に到達できないため不具合として扱う。
 
 Compose for TV の `Card` や `Button` は既定でフォーカス可能なため、この基準は
 自然に満たされる見込みだが、`Modifier.clickable` を素の `Box` や `Row` に付けた場合は

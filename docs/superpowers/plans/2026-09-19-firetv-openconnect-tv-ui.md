@@ -1986,12 +1986,21 @@ git commit -m "feat(tv): 設定画面と VPN 許可取得、既存 UI への導�
 ADB=/c/Users/htek6/AppData/Local/Android/Sdk/platform-tools/adb.exe
 "$ADB" shell uiautomator dump /sdcard/ui.xml
 MSYS_NO_PATHCONV=1 "$ADB" shell "cat /sdcard/ui.xml" | tr -d '\r' > ui.xml
-echo "clickable: $(grep -o 'clickable="true"' ui.xml | wc -l)"
-echo "focusable: $(grep -o 'focusable="true"' ui.xml | wc -l)"
+python3 - ui.xml <<'PY'
+import sys, xml.etree.ElementTree as ET
+bad = [n for n in ET.parse(sys.argv[1]).getroot().iter('node')
+       if n.get('clickable') == 'true' and n.get('focusable') != 'true']
+for n in bad:
+    print("UNREACHABLE", n.get('resource-id') or n.get('class'), repr(n.get('text')))
+print("violations:", len(bad))
+PY
 ```
 
-**合格条件: すべての画面で clickable の数 <= focusable の数。**
-差分が出た画面は、どの要素が `clickable="true" focusable="false"` かを特定して修正する。
+**合格条件: すべての画面で `violations: 0`。**
+
+数の比較では判定しない。合計数の一致は偶然成立しうるため、要素ごとの述語
+（`clickable="true"` かつ `focusable="false"` が存在しないこと）で判定する。
+違反が出たら、印字された `resource-id` の要素を修正する。
 
 対象画面: ホーム一覧 / 接続先の追加 / 接続先の編集 / グループ作成 / グループ編集 /
 設定 / 削除確認ダイアログ。
