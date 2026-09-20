@@ -90,6 +90,7 @@ class FailoverController(
 
     private fun onUserDisconnect(): FailoverState {
         exhaustionAttempt = 0
+        probeImmediatelyOnNetworkRecovery = false
         expectingDisconnect = true
         vpn.disconnect()
         return FailoverState.Idle
@@ -110,6 +111,7 @@ class FailoverController(
             currentCandidatePassedAuth = false
             expectingDisconnect = false
             currentCandidateUuid = uuid
+            probeImmediatelyOnNetworkRecovery = false
             return when (vpn.connect(uuid)) {
                 ConnectResult.Started -> FailoverState.Connecting(
                     groupId = group.id,

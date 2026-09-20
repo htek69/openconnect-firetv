@@ -182,6 +182,37 @@ class FailoverControllerSafetyTest {
         assertFalse(controller.shouldProbeNow())
     }
 
+    // --- Ruling 15: Recovery flag scoping ---
+
+    @Test
+    fun `復帰フラグは新しい候補が S4 猶予期間を通過するのを阻害しない`() {
+        // 健全な状態から始める
+        toHealthy()
+
+        // ネットが一度落ちて復帰する。フラグが立つ。
+        network.available = false
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = false))
+        network.available = true
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = true))
+        // ここで shouldProbeNow() を呼ばない。フラグは消費されず、新しい候補に漏れる。
+
+        // ユーザーが新しい接続を要求する
+        controller.handle(FailoverEvent.UserDisconnect)
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+
+        // Verifying 状態に到達
+        assertTrue(controller.state is FailoverState.Verifying)
+
+        // 猶予期間より短い時間だけ進める（14秒）
+        val grace = group.config.graceAfterConnectSec * 1_000L
+        clock.advance(grace - 1_000L)
+
+        // 新しい候補は S4 期間中なので shouldProbeNow() は false のはずだが、
+        // 復帰フラグが漏れていると true になってしまう。
+        assertFalse(controller.shouldProbeNow())
+    }
+
     private fun toHealthy() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
