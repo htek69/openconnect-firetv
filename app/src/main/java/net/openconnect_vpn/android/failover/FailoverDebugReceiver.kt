@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import net.openconnect_vpn.android.core.VPNLog
 
 /**
  * Task 13 検証ハーネス。**一時的なコンポーネントであり、このブランチの完了条件として
@@ -69,8 +70,28 @@ class FailoverDebugReceiver : BroadcastReceiver() {
                 FailoverService.setProbeTarget(context, host, port)
             }
 
+            ACTION_DUMP_CORE_LOG -> dumpCoreLog()
+
             else -> Log.w(TAG, "unknown action=${intent?.action}")
         }
+    }
+
+    /**
+     * 既存コアの内部ログ（[VPNLog]）は logcat ではなく `cacheDir/logdata.ser` にしか
+     * 出ないため、候補がなぜ失敗したのかが adb から見えない。[VPNLog] は同一プロセス内の
+     * singleton を静的に公開しているので、ここから読んで logcat に流す。
+     * 既存コアには一切手を入れない。この受信機を削除するときに一緒に消える。
+     */
+    private fun dumpCoreLog() {
+        val dump = VPNLog.dumpLast()
+        if (dump.isBlank()) {
+            Log.d(TAG, "core log is empty (VPNLog instance not created yet)")
+            return
+        }
+        val lines = dump.trim().lines()
+        Log.d(TAG, "core log begin (${lines.size} lines)")
+        lines.forEachIndexed { i, line -> Log.d(TAG, "core[%03d] %s".format(i, line)) }
+        Log.d(TAG, "core log end")
     }
 
     companion object {
@@ -79,6 +100,7 @@ class FailoverDebugReceiver : BroadcastReceiver() {
         const val ACTION_CONNECT = "net.openconnect_vpn.android.failover.debug.CONNECT"
         const val ACTION_DISCONNECT = "net.openconnect_vpn.android.failover.debug.DISCONNECT"
         const val ACTION_SET_PROBE_TARGET = "net.openconnect_vpn.android.failover.debug.SET_PROBE_TARGET"
+        const val ACTION_DUMP_CORE_LOG = "net.openconnect_vpn.android.failover.debug.DUMP_CORE_LOG"
 
         const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_HOST = "host"
