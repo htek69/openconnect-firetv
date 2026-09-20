@@ -30,6 +30,10 @@
         android:name="net.openconnect_vpn.android.Application"
         android:theme="@android:style/Theme.Material">
         <activity
+            android:name=".tv.BuildProbeActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+        <activity
             android:name=".ConnectionEditorActivity" />
         <activity
             android:name=".FragActivity" />
