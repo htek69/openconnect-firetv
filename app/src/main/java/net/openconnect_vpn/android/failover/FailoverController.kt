@@ -58,6 +58,13 @@ class FailoverController(
      * 一方、新しい試行は必ず `runVPN()` の冒頭で `STATE_CONNECTING` を送る
      * （`OpenConnectManagementThread.java:695`）。よって自分の `Connecting` を
      * 観測する前の `Disconnected` は旧スレッドのものと判断して無視できる。
+     *
+     * 裁定37: このガードは `Connecting`/`FailingOver`（＝まだ接続が確立していない、
+     * または確立済みトンネルの切断を待っている）状態にだけ適用する。`Verifying`/
+     * `Healthy`（＝ `Connected` を既に観測した）候補の `Disconnected` は、この
+     * フラグの値に関わらず確実に本人のものであり、捨てると本物の切断イベントに
+     * よる即時切替（仕様書 §8 R5 系統1）が黙って死に、検知がプローブ（系統2）
+     * 任せになる。
      */
     private var sawCoreConnecting = false
 
@@ -95,6 +102,7 @@ class FailoverController(
     fun handle(event: FailoverEvent) {
         state = when (event) {
             is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId)
+            is FailoverEvent.AutoConnectGroup -> onAutoConnect(event.groupId)
             is FailoverEvent.UserDisconnect -> onUserDisconnect()
             is FailoverEvent.VpnStateChanged -> onVpnState(event.state, event.uuid)
             is FailoverEvent.ProbeResult -> onProbeResult(event.reachable)
@@ -131,9 +139,29 @@ class FailoverController(
 
     private fun onUserConnect(groupId: String): FailoverState {
         exhaustionAttempt = 0
+        // 裁定35a: 明示的なユーザー操作は新しいセッションの意思表示である。
+        // S1（_excludedUuids）は「無人リトライでアカウントをロックさせない」ための
+        // ものであり、ユーザー自身がいま接続を指示している以上、その目的とは
+        // 衝突しない。ここでクリアしないと、全候補が除外された後はユーザーが
+        // 何度「接続」を押しても vpn.connect() が一度も呼ばれない（欠陥・M1）。
+        _excludedUuids.clear()
         val group = groupOf(groupId) ?: return FailoverState.Idle
         needsUserConsent = false
         return startCandidateFrom(group, fromIndex = 0, unattended = false)
+    }
+
+    /**
+     * 裁定36: プロセス kill からの自動復帰（Ruling 18）など、人の操作ではない
+     * 接続開始。[onUserConnect] と異なり候補を無人（`unattended = true`）として
+     * 開始するので、裁定30 の「`UserPrompt` から進まなければ除外」が働く。
+     * 除外集合はクリアしない（無人で除外を落とすと、失効した認証情報を無期限に
+     * 再試行してサーバ側のアカウントロックを招く。S1 が存在する理由そのもの）。
+     */
+    private fun onAutoConnect(groupId: String): FailoverState {
+        exhaustionAttempt = 0
+        val group = groupOf(groupId) ?: return FailoverState.Idle
+        needsUserConsent = false
+        return startCandidateFrom(group, fromIndex = 0, unattended = true)
     }
 
     private fun onUserDisconnect(): FailoverState {
@@ -222,11 +250,17 @@ class FailoverController(
         }
 
         return when {
-            // 裁定31: 自分の Connecting を観測する前に届いた Disconnected は
-            // 旧スレッドのものである（UUID は新しい候補のものに書き換わっている）。
-            // FailingOver 中は切断を待っている候補自身が既に Connecting を出して
-            // いるのでこのフラグは true であり、確認の受け取りを妨げない。
-            core == VpnCoreState.Disconnected && !sawCoreConnecting -> s
+            // 裁定31a/37: 自分の Connecting を観測する前に届いた Disconnected は
+            // 旧スレッドのものである。ただしこの門番は「まだ接続が始まっていない」
+            // 状態にだけ適用する。Connected を観測済みの候補（Verifying / Healthy）の
+            // Disconnected は確実にその候補のものであり、捨てると R5 の系統1
+            // （切断イベントによる即時切替）が死んで検知がプローブ任せになる
+            // （仕様書 §8）。FailingOver 中は切断を待っている候補自身が既に
+            // Connecting を出しているのでこのフラグは true であり、確認の受け取りを
+            // 妨げない。
+            core == VpnCoreState.Disconnected &&
+                !sawCoreConnecting &&
+                (s is FailoverState.Connecting || s is FailoverState.FailingOver) -> s
 
             core == VpnCoreState.Connected && s is FailoverState.Connecting ->
                 FailoverState.Verifying(
@@ -489,6 +523,16 @@ class FailoverController(
     private fun onExhaustedRetry(s: FailoverState.Exhausted): FailoverState {
         if (clock.nowMs() < s.retryAtMs) return s
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
+
+        // 裁定35b: グループの全メンバーが除外済みなら再試行しない。除外は認証失敗を
+        // 意味し、無人で再試行してよい相手ではない（S1 が存在する理由そのもの）。
+        // ここで startCandidateFrom を呼んでも1件も vpn.connect() されずに即座に
+        // enterExhausted へ戻るだけなので、exhaustionAttempt を進めず retryAtMs も
+        // 更新せず、Exhausted のまま留まる（接続試行ゼロでバックオフだけが
+        // 無限に回る空回りを断つ）。回復はユーザー操作（onUserConnect）に委ねる。
+        if (group.memberUuids.isNotEmpty() && group.memberUuids.all { it in _excludedUuids }) {
+            return s
+        }
 
         // 再試行時は認証失敗による除外を維持したまま先頭から試す。
         // 次に枯渇したときの attempt を1つ進める。ここでリセットしてはならない

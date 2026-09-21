@@ -44,20 +44,33 @@ class FailoverControllerSafetyTest {
     }
 
     @Test
-    fun `認証失敗した候補はセッション中スキップされる`() {
+    fun `認証失敗した候補は同一セッション中はスキップされるが明示的な再接続でクリアされる`() {
+        // 裁定35a によりこのテストの前提が変わった: 以前は「ユーザーが切断して
+        // 再度接続を指示しても、除外はプロセス生存中ずっと残る」ことを検証して
+        // いたが、それは M1（全候補除外後に二度と接続できなくなる欠陥）の温床
+        // だった。現在は「無人の自動復帰では除外はそのまま保持される」が、
+        // 「ユーザーが明示的に接続をやり直したときは新しいセッションとして
+        // 除外をクリアする」という2段構えの振る舞いを検証する。
+
         // uuid-a を認証失敗させる
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        assertTrue("uuid-a" in controller.excludedUuids)
 
-        // uuid-b で繋がったあと障害 -> uuid-c へ。先頭に戻っても uuid-a は試されない
+        // 無人の自動復帰（裁定36）であれば、同一セッションとして除外は保持され、
+        // 先頭候補 uuid-a はスキップされて uuid-b から始まる
+        controller.handle(FailoverEvent.AutoConnectGroup("g1"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        // ユーザーが明示的に切断してから接続をやり直すと、除外はクリアされ
+        // 先頭候補 uuid-a から試し直す
         controller.handle(FailoverEvent.UserDisconnect)
-        vpn.connectCalls.size.let { /* 記録はそのまま */ }
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
 
-        // 先頭候補 uuid-a は除外済みなので uuid-b から始まる
-        assertEquals("uuid-b", vpn.connectCalls.last())
+        assertTrue(controller.excludedUuids.isEmpty())
+        assertEquals("uuid-a", vpn.connectCalls.last())
     }
 
     @Test
@@ -647,5 +660,124 @@ class FailoverControllerSafetyTest {
         assertEquals(1, (state as FailoverState.Connecting).candidateIndex)
         assertFalse("uuid-b" in controller.excludedUuids)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+    }
+
+    // --- 裁定35（M1）: 全候補除外後に空回りせず、ユーザー操作で復帰できる ---
+
+    @Test
+    fun `ユーザーの接続操作は除外集合をクリアして先頭から試し直す`() {
+        // 明示的なユーザー操作は新しいセッションの意思表示であり、S1（無人リトライで
+        // アカウントをロックさせない）の目的とは衝突しない。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        assertTrue("uuid-a" in controller.excludedUuids)
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+
+        assertTrue(controller.excludedUuids.isEmpty())
+        assertEquals("uuid-a", vpn.connectCalls.last())
+    }
+
+    @Test
+    fun `全候補が除外されたら再試行で空回りせず Exhausted に留まる`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // uuid-a, uuid-b, uuid-c を順に「認証段階に到達したが通過しなかった」で
+        // 全滅させる（Ruling 23 の条件、S1 の本来の除外対象）。
+        repeat(3) {
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        }
+        assertTrue(controller.state is FailoverState.Exhausted)
+        assertEquals(setOf("uuid-a", "uuid-b", "uuid-c"), controller.excludedUuids)
+
+        val exhausted = controller.state as FailoverState.Exhausted
+        val attemptBefore = exhausted.attempt
+        val callsBefore = vpn.connectCalls.size
+
+        // バックオフが明けて Tick が来ても、全候補が除外済みなので再試行しない
+        // （除外は認証失敗を意味し、無人で再試行してよい相手ではない）。
+        clock.advance(Backoff.delayMsForAttempt(exhausted.attempt) + 1_000L)
+        controller.handle(FailoverEvent.Tick)
+
+        assertEquals(callsBefore, vpn.connectCalls.size)
+        val stillExhausted = controller.state as FailoverState.Exhausted
+        assertEquals(attemptBefore, stillExhausted.attempt)
+        assertEquals(exhausted.retryAtMs, stillExhausted.retryAtMs)
+    }
+
+    @Test
+    fun `全候補除外で空回りしたあとも UserConnectGroup で先頭候補へ復帰する`() {
+        // M1 の回帰テスト: 空回りに入った後も、ユーザーが「接続」を押せば
+        // 除外集合がクリアされ、先頭候補から復帰できなければならない
+        // （復帰手段が force-stop しか無いのが欠陥そのものだった）。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        repeat(3) {
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        }
+        assertTrue(controller.state is FailoverState.Exhausted)
+        clock.advance(
+            Backoff.delayMsForAttempt((controller.state as FailoverState.Exhausted).attempt) + 1_000L,
+        )
+        controller.handle(FailoverEvent.Tick)
+        assertTrue(controller.state is FailoverState.Exhausted) // 空回り確認済み（前のテスト）
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(0, (state as FailoverState.Connecting).candidateIndex)
+        assertTrue(controller.excludedUuids.isEmpty())
+    }
+
+    // --- 裁定36（M2）: プロセス kill からの自動復帰は「無人」である ---
+
+    @Test
+    fun `自動復帰で開始した候補は無人として扱われ UserPrompt で止まれば除外される`() {
+        controller.handle(FailoverEvent.AutoConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
+
+        assertTrue("uuid-a" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.FailingOver)
+    }
+
+    @Test
+    fun `自動復帰は除外集合をクリアしない`() {
+        // 先に uuid-a を除外させておく
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        assertTrue("uuid-a" in controller.excludedUuids)
+
+        controller.handle(FailoverEvent.AutoConnectGroup("g1"))
+
+        // 除外は保持されたまま。無人で除外を落とすとアカウントロックの危険がある。
+        assertTrue("uuid-a" in controller.excludedUuids)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+    }
+
+    @Test
+    fun `ユーザー操作での接続は有人として扱われ UserPrompt で止まっても除外されない`() {
+        // 既存の性質の確認（裁定36 で AutoConnectGroup を導入しても、
+        // UserConnectGroup は引き続き有人のままであること）。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+
+        clock.advance(10_000L * 2) // USER_PROMPT_WAIT_MS * 2
+        controller.handle(FailoverEvent.Tick)
+
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
     }
 }

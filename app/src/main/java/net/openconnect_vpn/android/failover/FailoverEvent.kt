@@ -6,6 +6,14 @@ sealed interface FailoverEvent {
     /** ユーザーがグループへの接続を指示した。 */
     data class UserConnectGroup(val groupId: String) : FailoverEvent
 
+    /**
+     * 裁定36: 人の操作ではない接続開始（Ruling 18 のプロセス kill からの自動復帰）。
+     * [UserConnectGroup] と違い候補を無人（unattended）として開始するので、
+     * 裁定30 の「認証ダイアログで止まったら除外して次へ」が働く。
+     * 除外集合もクリアしない（無人で除外を落とすとアカウントロックの危険がある）。
+     */
+    data class AutoConnectGroup(val groupId: String) : FailoverEvent
+
     /** ユーザーが切断を指示した。 */
     data object UserDisconnect : FailoverEvent
 

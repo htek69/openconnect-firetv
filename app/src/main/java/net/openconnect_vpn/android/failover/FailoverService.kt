@@ -214,11 +214,21 @@ class FailoverService : Service() {
      * VPN 許可がまだ有効なら自動的に再接続を試みる。許可が失われていた場合は
      * 黙って失敗させず、既存の「許可が必要」通知を出す。ID が記録されていなければ
      * 何もしない（Idle から再起動したサービスは Idle のまま）。
+     *
+     * 裁定36（M2）: これは Ruling 18 が想定する「TV の前に人がいない」場面の
+     * 典型（低メモリで殺されたサービスが夜中に復帰する、等）である。
+     * [FailoverEvent.UserConnectGroup] を投げると候補が「有人」扱いになり、
+     * 裁定30 の「認証ダイアログで止まったら除外して次へ」が働かないまま
+     * 45秒タイムアウトを無期限に繰り返してアカウントロックへ向かう
+     * （実機で確認された欠陥の再現条件）。[FailoverEvent.AutoConnectGroup] を
+     * 使い、無人として開始する。
      */
     private fun restoreActiveGroupIfAny() {
         val activeGroupId = groupStore.loadActiveGroupId() ?: return
         if (VpnService.prepare(this) == null) {
-            dispatch(FailoverEvent.UserConnectGroup(activeGroupId))
+            // ループ起動前に一度だけ走るため、dispatchExternal の合図（早起こし）は
+            // 不要（Ruling 27b 参照）。
+            dispatch(FailoverEvent.AutoConnectGroup(activeGroupId))
         } else {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
         }
@@ -264,13 +274,31 @@ class FailoverService : Service() {
             is FailoverState.Verifying -> "疎通確認中"
             is FailoverState.Healthy -> "接続済み (候補 ${s.candidateIndex + 1})"
             is FailoverState.FailingOver -> "切り替え中"
-            is FailoverState.Exhausted -> "全候補が応答しません。再試行を待機中"
+            is FailoverState.Exhausted -> exhaustedText(s)
         }
         // Minor fix: 文言が変わらない限り通知を再構築・再投稿しない
         // （5秒ごとの Tick だけで無駄な repost を繰り返さないため）。
         if (text != lastForegroundText) {
             lastForegroundText = text
             startForegroundCompat(text)
+        }
+    }
+
+    /**
+     * 裁定35c（M1）: `Exhausted` の文言を、全メンバーが除外済みかどうかで
+     * 分岐させる。除外済みなら裁定35b により状態機械は二度と自動で再試行しない
+     * ので、「再試行を待機中」と表示し続けるのは嘘になる（再試行は行われない）。
+     * その場合はユーザーに認証情報の確認を促す文言にする。
+     */
+    private fun exhaustedText(s: FailoverState.Exhausted): String {
+        val group = groups.firstOrNull { it.id == s.groupId }
+        val allExcluded = group != null &&
+            group.memberUuids.isNotEmpty() &&
+            group.memberUuids.all { it in controller.excludedUuids }
+        return if (allExcluded) {
+            "認証に失敗しました。アプリを開いて認証情報を確認してください"
+        } else {
+            "全候補が応答しません。再試行を待機中"
         }
     }
 

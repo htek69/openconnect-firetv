@@ -116,8 +116,35 @@ class FailoverControllerHappyPathTest {
         assertEquals(0, (controller.state as FailoverState.Healthy).consecutiveFailures)
     }
 
+    @Test
+    fun `Healthy から予期しない Disconnected が来たら即座に次候補へ切替する`() {
+        // 裁定37（M3）の核心の回帰テスト。レビューが指摘したとおり、
+        // このテストクラスの toHealthy() は（このテストでは意図的に）Connecting を
+        // 送らなくても Connected → ProbeResult(true) だけで Healthy に到達できて
+        // しまう（sawCoreConnecting は false のまま）。ガードを絞る前のコード
+        // （`core == Disconnected && !sawCoreConnecting -> s`、状態を問わない）
+        // では、Healthy かつ sawCoreConnecting == false のこの組合せで
+        // Disconnected が無条件に捨てられ、このテストは確実に落ちる
+        // （state が Healthy のまま、connectCalls が増えない）。
+        // 裁定37 のガード（Connecting/FailingOver のときだけ捨てる）ではこの
+        // Disconnected は捨てられず、次候補へ正しく切替わる。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
+        clock.advance(16_000L)
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        assertTrue(controller.state is FailoverState.Healthy)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+    }
+
     private fun toHealthy() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31/37: 実機では runVPN() の冒頭で必ず STATE_CONNECTING が送られる。
+        // このテストクラスだけ Connecting の送信が漏れていた（レビュー M3 で指摘）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
         controller.handle(FailoverEvent.ProbeResult(reachable = true))
