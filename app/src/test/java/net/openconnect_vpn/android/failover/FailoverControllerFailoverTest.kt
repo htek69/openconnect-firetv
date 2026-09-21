@@ -365,7 +365,26 @@ class FailoverControllerFailoverTest {
     }
 
     @Test
-    fun `FailingOver 中に別候補の UUID で届いた Disconnected は Ruling 13 のガードで捨てられる`() {
+    fun `FailingOver 中に別候補の UUID で届いた Disconnected は前進させない`() {
+        // 裁定34 のレビューで判明した訂正: 旧コメントは「onVpnState 冒頭の
+        // Ruling 13 ガードがここで捨てており、FailingOver 内の awaitingUuid
+        // 照合はそのガードにより到達不能なので、Ruling 13 のガードを外すと
+        // このテストは落ちる」と主張していたが、これは誤りだった。実際に
+        // Ruling 13 の冒頭ガード（uuid != currentCandidateUuid の早期 return）
+        // を外して手元でトレースすると、sawCoreConnecting は既に true
+        // （toHealthy() で uuid-a の Connecting を観測済み）なので上のガードには
+        // 掛からず、`core == Disconnected && s is FailingOver` の分岐まで進む。
+        // そこで awaitingUuid（= uuid-a）と uuid-c が一致しないため、
+        // このテスト自身の awaitingUuid 照合が**独立に**捨てている。
+        // つまりこのテストが検証しているのは「Ruling 13 のガード」ではなく
+        // 「FailingOver は awaitingUuid と一致しない Disconnected では
+        // 前進しない」という、FailingOver 自身が持つ不変条件である
+        // （Ruling 13 のガードは通常経路ではこれより先に働くので二重の
+        // 安全策ではあるが、このテストの合否はそちらには依存しない）。
+        // Ruling 13 の冒頭ガード単体を検証する回帰テストは
+        // FailoverControllerSafetyTest.kt の
+        // `切替前の古い Disconnected は新しい候補を除外しない`
+        // （FailingOver を経由しない状態で検証する）が担っている。
         toHealthy()
         repeat(group.config.failureThreshold) {
             clock.advance(31_000L)
@@ -375,10 +394,6 @@ class FailoverControllerFailoverTest {
         val callsBefore = vpn.connectCalls.size
 
         // 無関係な候補（uuid-c）の Disconnected が届く。
-        // onVpnState 冒頭の Ruling 13 ガード（uuid != currentCandidateUuid）で
-        // ここまで来ずに捨てられる。FailingOver 内の awaitingUuid 照合は
-        // このガードにより実際には到達不能であり、このテストはそのガードを
-        // 外すと落ちる（awaitingUuid 照合だけでは検出できない）。
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
 
         assertTrue(controller.state is FailoverState.FailingOver)

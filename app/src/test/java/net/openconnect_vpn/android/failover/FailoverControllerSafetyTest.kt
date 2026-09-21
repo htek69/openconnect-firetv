@@ -156,6 +156,12 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
         assertTrue(controller.state is FailoverState.Connecting)
         assertEquals("uuid-b", vpn.connectCalls.last())
+        // D1（裁定34 レビュー）: uuid-b 自身の Connecting を観測しておく。
+        // これが無いと、下の「古い Disconnected」が裁定31a の sawCoreConnecting
+        // ガードに先に捕まってしまい、このテストが検証したい Ruling 13 の
+        // UUID 照合ガードまで実行が到達しなくなる（= Ruling 13 のガードを
+        // 削除してもこのテストが落ちなくなる、という見かけ上の緑）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
         val callsBefore = vpn.connectCalls.size
 
         // uuid-a の Disconnected がもう一度、遅れて重複して届く（旧候補の古い通知）。

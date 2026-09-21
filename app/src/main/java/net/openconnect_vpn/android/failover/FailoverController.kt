@@ -448,10 +448,18 @@ class FailoverController(
 
     /**
      * 裁定33: 実際に使う `UserPrompt` の待ち時間。除外を伴うこの判定は、除外を伴わない
-     * 接続タイムアウト（Ruling 22）より必ず先に発火しなければならない。後になると
-     * 認証情報が間違っている候補が除外されずに切り替わり、次の巡回でまた試されて
-     * サーバ側のアカウントロックを招く（S1 が存在する理由）。`connectTimeoutSec` は
-     * 利用者が変更できるので、コメントでの約束ではなく実装で順序を保証する。
+     * 接続タイムアウト（Ruling 22）より先に発火してほしい。後になると認証情報が
+     * 間違っている候補が除外されずに切り替わり、次の巡回でまた試されてサーバ側の
+     * アカウントロックを招く（S1 が存在する理由）。`connectTimeoutSec` は利用者が
+     * 変更できるので、コメントでの約束ではなく実装で上限を絞る。
+     *
+     * ただし2つの期限は起点が違うため、この関係は**無条件には**成り立たない:
+     * `onConnectTimeout` の期限は候補の `Connecting.startedAtMs`（候補が接続を
+     * 開始した瞬間）を起点とするのに対し、この関数が返す待ち時間は
+     * `userPromptSinceMs`（`UserPrompt` が実際に届いた瞬間）を起点とする。
+     * 順序が保証されるのは **`UserPrompt` が候補開始から `connectTimeoutSec / 2`
+     * 以内に届いた場合**だけである。実際の認証フォームは接続直後（TLS 接続確立
+     * 直後）に届くため実務上はほぼ常に成立するが、無条件の保証ではない。
      */
     private fun userPromptWaitMs(groupId: String): Long =
         minOf(USER_PROMPT_WAIT_MS, configOf(groupId).connectTimeoutSec * 1_000L / 2)
@@ -548,8 +556,11 @@ class FailoverController(
          * なのでミリ秒で `Authenticating` へ進む。
          *
          * 裁定33: 実際に使う値は [userPromptWaitMs] であり、`connectTimeoutSec`
-         * （利用者が変更できる）より必ず小さくなるよう実装で上から抑える。
-         * 接続タイムアウトが先に発火すると、候補が除外されずに（Ruling 22 の
+         * （利用者が変更できる）の半分より必ず小さくなるよう実装で上から抑える。
+         * これにより、`UserPrompt` が候補開始から `connectTimeoutSec / 2` 以内に
+         * 届く通常のケースでは、除外を伴うこの判定が除外を伴わない接続タイムアウト
+         * より先に発火する（詳細と条件付きである理由は [userPromptWaitMs] 参照）。
+         * 逆に接続タイムアウトが先に発火すると、候補が除外されずに（Ruling 22 の
          * 意味論で）切り替わってしまい、認証情報が間違っている候補を何度も
          * 試してアカウントロックを招く。
          */

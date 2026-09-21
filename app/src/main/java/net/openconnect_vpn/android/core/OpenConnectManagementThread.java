@@ -288,7 +288,10 @@ public class OpenConnectManagementThread implements Runnable, OpenVPNManagement 
 	}
 
 	private synchronized void setState(int state) {
-		mOpenVPNService.setConnectionState(state);
+		// 裁定34: サービスの現在の mUUID ではなく、このスレッドが担当している
+		// プロファイルの UUID を渡す。切替の最中に旧スレッドが状態を出しても、
+		// フェイルオーバー層が新候補の通知と誤認しないようにするため。
+		mOpenVPNService.setConnectionState(state, mProfile.getUUIDString());
 	}
 
 	/* if the wrapper script starts with "#!/path/to/nonexistent/file", use /system/bin/sh instead */

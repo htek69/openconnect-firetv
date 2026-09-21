@@ -406,25 +406,30 @@ UUID 照合はこの一例だけでなく、「切替前の古い通知」とい
 `uuid` が null のイベントは照合せず受理するが、これはテスト専用の経路であり、
 本番の `VpnStatusBridge` は常に値を入れる。
 
-**既知の限界（Ruling 29、裁定31 でほぼ塞がれた）**: UUID 照合は候補の「世代」までは
-区別しない。ある候補がタイムアウトで放棄され（除外はされない）、`Exhausted` を
-経てバックオフ満了後に**同じ候補**へ再試行したとする。そこへ、放棄した旧い試行の
-`Disconnected` が遅れて届くと、UUID は一致するため新しい試行の通知として
-受理されてしまう。このとき偶然 Ruling 23 の条件（認証段階まで到達していながら
-通過しなかった）が満たされていると、S1 が新しい試行を誤って認証失敗として除外する。
+**既知の限界（Ruling 29、裁定34 で範囲が縮んだ）**: 欠陥15（実機で確定）により、
+UUID 照合単体では「切替中に旧スレッドの通知が新候補の UUID を載せて届く」事故を
+防げないことが判明した。原因は既存コアの `wakeUpActivity()` が**サービスの現在の
+`mUUID`**をブロードキャストに載せていたことである。裁定34 で、状態通知は
+「その状態を生成したスレッドのプロファイル UUID」（`OpenVpnService.mStateUUID` /
+`OpenConnectManagementThread.setState` が渡す `mProfile.getUUIDString()`）を
+状態と対で運ぶように変更した。これにより既存コアは**状態と対の UUID を運ぶ**ので、
+切替中に別候補の通知だと取り違える事故そのものは起きなくなった
+（`FailoverController.sawCoreConnecting`（裁定31a）は、この修正が入る前の実機で
+実際に踏んだ欠陥15の症状を止める状態機械側のガードとして今も有効に働く。
+詳細は 7.1.2 参照）。
 
-当初は「30秒以上遅れたブロードキャストが必要な、疑わしいが稀なリスク」として
-保留していたが、実機検証（欠陥15）で**通常のタイムアウト経路で起きる**ことが
-判明し、`FailoverController.sawCoreConnecting`（裁定31a）を導入した。これにより、
-**遅れた `Disconnected` が新しい試行の `Connecting` より先に届く限り**、UUID が
-一致していても無視されるようになり、Ruling 29 が懸念していたケースの大半は
-塞がれた。残るのは、遅れた `Disconnected` が新しい試行の `Connecting` より**後**に
-届く場合である。この場合は `sawCoreConnecting` が既に true になっているため
-区別できず、S1 の誤除外リスクは理論上残る。これは 7.1.2 の裁定31c と同じ性質の
-限界であり、根本解決には既存コアが状態と対になる UUID をブロードキャストする
-必要がある。発火条件（遅延ブロードキャストが新しい `Connecting` の後に届く）は
-欠陥15 が実際に踏んだケースよりさらに狭いと考えられるが、実機検証で頻発するなら
-再検討する。
+ただし `EXTRA_UUID` は依然として**候補（プロファイル）の UUID**であって、
+**接続試行ごとの識別子**ではない。したがって、ある候補がタイムアウトで放棄され
+（除外はされない）、`Exhausted` を経てバックオフ満了後に**同じ候補**へ再試行した
+場合、そこへ放棄した旧い試行の通知が遅れて届くと、UUID は（同じ候補なので）
+一致するため新しい試行の通知として受理されてしまう。このとき偶然 Ruling 23 の
+条件（認証段階まで到達していながら通過しなかった）が満たされていると、S1 が
+新しい試行を誤って認証失敗として除外する。これは裁定34 の対象外であり
+（同一候補の再試行を区別するには接続試行ごとの世代番号のような、既存コアが
+持たない情報が必要になる）、当初の Ruling 29 が懸念していたリスクとして
+そのまま残る。発火条件は「同一候補への再試行後に旧い試行の通知が遅れて届く」
+という狭いケースであり、影響もグループ全体の停止ではなく「1候補がセッション中
+除外される」に留まる。実機検証で実際に発生したら再検討する。
 
 ### 7.1.2 `FailingOver` は必須の中間状態である（Ruling 25）
 
@@ -456,37 +461,58 @@ Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は
 例外は、切替の契機が `Disconnected` 自身だった場合である。このときトンネルは既に
 落ちているので待つ対象が無く、`FailingOver` を経ずに次候補へ進む。
 
-Ruling 31（欠陥15・実機で確定）: 上記の UUID 照合（7.1.1）は「サービスの現在の
-`mUUID`」を信頼する前提に立っているが、既存コアの `OpenVpnService.onStartCommand`
-は **`mUUID` を新しい候補のものへ書き換えてから**古いスレッドを止めていた
-（join は最大1秒）。したがって1秒で終わらなかった旧スレッドが後から
-`STATE_DISCONNECTED` を出すと、そのブロードキャストには**新しい候補の UUID**が
-付き、UUID 照合では区別できない。実機で観測: v-server の切断を要求して
-`FailingOver` に入り、3秒のタイムアウトで myvpn へ進んだところ、myvpn は起動した
-同じ秒に `Exhausted` へ落とされた（myvpn の HTTPS 200 応答はその1秒後に届いていた
-——myvpn 自身は何も失敗していなかった）。対処は2つを組み合わせる。
+Ruling 31（欠陥15・実機で確定）: 上記の UUID 照合（7.1.1）は「ブロードキャストに
+載る UUID がその状態を生成したスレッドのものである」ことを前提にしているが、
+当初の既存コアの `wakeUpActivity()` は**サービスの現在の `mUUID`**をそのまま
+載せていた。`OpenVpnService.onStartCommand` は新候補の起動時に `mUUID` を
+書き換えて旧スレッドを止める（join は最大1秒）ため、1秒で終わらなかった旧スレッドが
+後から `STATE_DISCONNECTED` を出すと、そのブロードキャストには**新しい候補の
+UUID**が付き、UUID 照合では区別できなかった。実機で観測: v-server の切断を
+要求して `FailingOver` に入り、3秒のタイムアウトで myvpn へ進んだところ、myvpn は
+起動した同じ秒に `Exhausted` へ落とされた（myvpn の HTTPS 200 応答はその1秒後に
+届いていた——myvpn 自身は何も失敗していなかった）。
 
-- **裁定31a（`FailoverController.kt`）**: 新しい試行は必ず `runVPN()` の冒頭で
-  `STATE_CONNECTING` を送る。したがって自分の `Connecting` を観測する前に届いた
-  `Disconnected` は旧スレッドのものと判断して無視する
-  （`sawCoreConnecting` フラグ）。`FailingOver` 中は切断を待っている候補自身が
-  既に `Connecting` を出しているので、このフラグは確認の受け取りを妨げない。
-- **裁定31b（`OpenVpnService.java`、既存コアへの唯一の変更）**: `mUUID` への
-  代入を `killVPNThread(true)` の**後**に移した（それまでは局所変数
-  `newUUID` を使う）。挙動は変えず、代入の順序だけを変える。これにより、
-  `killVPNThread(true)` の同期的な join（最大1秒）の間に旧スレッドがまだ
-  `mUUID` を参照する状態通知を出しても、それは正しく旧候補の UUID を持つ。
+- **裁定31a（`FailoverController.kt`、実際に欠陥15を止めているのはこれだけ）**:
+  新しい試行は必ず `runVPN()` の冒頭で `STATE_CONNECTING` を送る。したがって
+  自分の `Connecting` を観測する前に届いた `Disconnected` は旧スレッドのものと
+  判断して無視する（`sawCoreConnecting` フラグ）。`FailingOver` 中は切断を待って
+  いる候補自身が既に `Connecting` を出しているので、このフラグは確認の受け取りを
+  妨げない。両方のブロードキャストが同じメインルーパーのキューを通るため、
+  join 中に post された旧スレッドの `Disconnected` は、新スレッドの `Connecting`
+  （`onStartCommand` の return 後にしか post されない）より必ず先に配送される。
+  よってこのガードはこのケースを構造的に確実に捕まえる。
+- **裁定31b（`OpenVpnService.java`）**: `mUUID` への代入を `killVPNThread(true)`
+  の後、かつ `mVPNThread.start()` の前に移した（それまでは局所変数 `newUUID`
+  を使う）。**これ自体はブロードキャストに載る UUID を変えない**——
+  `wakeUpActivity()` は `mHandler.post()` したランナブルの中で `mUUID` を読み、
+  `onStartCommand` はそのランナブルと同じメインスレッドで走るため、ランナブルが
+  実行されるのは `onStartCommand` が return した**後**であり、その時点では
+  `mUUID` はどのみち新候補の値になっている。代入順序をどう変えても防げない
+  （裁定34 のレビューで判明）。ロールバックしなかったのは、`profile == null` の
+  早期 return 経路で `mUUID`/`service_mUUID` が古い値を保つという副次的な改善が
+  あり、かつ裁定34（後述）と組み合わせたときの順序として自然だからである。
+  代わりに必ず守るべき不変条件がある: `mUUID = newUUID` は `killVPNThread(true)`
+  の後、かつ `mVPNThread.start()` の前でなければならない。後者が破れると新
+  スレッドの `STATE_CONNECTING` が旧 UUID を載せてしまい、Ruling 13 の UUID
+  照合で捨てられて `sawCoreConnecting` が永久に立たなくなる。
 
-**裁定31c（残る限界）**: `killVPNThread(true)` の join は最大1秒である。旧スレッドが
-それを超えてブロックしていると、`onStartCommand` の実行そのものは既に終わって
-`mUUID` は新しい候補のものへ書き換わっているため、裁定31b の並べ替えは効かず、
-裁定31a も**旧スレッドが後から `Connected` を出す場合は捕まえられない**
-（新候補も既に `Connecting` を出しているため区別できない）。この場合「別の
-サーバに繋がっているのに、選んだ候補が Healthy だと表示される」ことになる。
-根本解決には既存コアが「サービスの現在の `mUUID`」ではなく「その状態を生成した
-スレッド自身の UUID」をブロードキャストする必要がある（`OpenVpnService.
-setConnectionState` / `wakeUpActivity` に状態と対になる UUID を持たせる）。
-今回はそこまで踏み込まない。
+**裁定34（根本原因の修正）**: 欠陥15 の根本原因は、状態のブロードキャストが
+「サービスの現在の `mUUID`」という、状態を生成したスレッドとは無関係の値を
+運んでいたことである。`OpenVpnService` に `mStateUUID`（`mConnectionState` を
+生成したスレッドのプロファイル UUID）を追加し、`setConnectionState(int state,
+String uuid)` で状態と UUID を対で受け取って保存するようにした。
+`OpenConnectManagementThread.setState()` は自分が担当する `mProfile.
+getUUIDString()` を渡す。`wakeUpActivity()` は `mUUID` ではなく `mStateUUID`
+（無ければ `mUUID` にフォールバック）をブロードキャストに載せる。既存の
+`setConnectionState(int)` は `setConnectionState(state, mUUID)` へ委譲する
+オーバーロードとして残し、`setStats` など状態を伴わずに `wakeUpActivity()` を
+呼ぶ箇所は変更しない（現在の状態を再アナウンスするだけなので、その状態と対の
+`mStateUUID` が載るのが正しい）。これにより「切替中に旧スレッドの通知が新候補の
+UUID を載せる」事故はブロードキャストの時点で起きなくなる。裁定31a の
+`sawCoreConnecting` は、この修正が入る前の実機で実際に踏んだ欠陥15の症状を
+止める状態機械側のガードとして、引き続き有効に保つ（多層防御であり、
+どちらか一方に依存しない）。裁定34 が対処しないケースは 7.1.1 の Ruling 29 を
+参照。
 
 Ruling 26（裁定30 で分岐自体は無くなった）: 当初は `FailingOver` 中に届いた
 `UserPrompt` で `onUnattendedUserPrompt` に再入し、2度目の `disconnect()` と
@@ -648,6 +674,18 @@ Error obtaining cookie
 `AuthFormHandler` のコンストラクタ（99-105行）が `formPfx.equals(lastFormDigest)` で
 `BATCH_MODE_EMPTY_ONLY` を `BATCH_MODE_DISABLED` に落とすため、ダイアログが出て
 進展が止まり、タイムアウトが正しく発火する。
+
+**裁定33**: `USER_PROMPT_WAIT_MS` は `connectTimeoutSec`（Ruling 22、利用者が変更
+できる）の半分を上回らないよう `FailoverController.userPromptWaitMs()` で実装上
+クランプする。除外を伴う `UserPrompt` のタイムアウト判定は、除外を伴わない接続
+タイムアウトより先に発火してほしい。後になると認証情報が間違っている候補が
+除外されずに切り替わり、次の巡回でまた試されてサーバ側のアカウントロックを招く
+（S1 が存在する理由）。ただし2つの期限は起点が違うため、この順序は**無条件には**
+成り立たない: 接続タイムアウトは候補が接続を開始した瞬間を起点とするのに対し、
+`UserPrompt` の待ち時間は `UserPrompt` が実際に届いた瞬間を起点とする。順序が
+保証されるのは `UserPrompt` が候補開始から `connectTimeoutSec / 2` 以内に届いた
+場合だけである。実際の認証フォームは接続直後に届くため実務上はほぼ常に成立するが、
+無条件の保証ではない。
 
 ### 9.3 既存 UI が D-pad で操作できない原因（実機で計測）
 

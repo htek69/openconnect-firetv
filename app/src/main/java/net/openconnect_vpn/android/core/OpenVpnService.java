@@ -97,6 +97,17 @@ public class OpenVpnService extends VpnService {
 	private String mConnectionStateNames[];
 	private VPNStats mStats = new VPNStats();
 
+	/**
+	 * 裁定34: mConnectionState を生成したスレッドのプロファイル UUID。
+	 *
+	 * ブロードキャストは wakeUpActivity() が mHandler.post した Runnable の中で読むため、
+	 * サービスの現在の mUUID を載せると「旧スレッドが出した状態通知に新候補の UUID が付く」
+	 * ことが起きる（onStartCommand がメインスレッドで mUUID を差し替えた後に Runnable が
+	 * 走るため、代入順序をどう変えても防げない）。フェイルオーバー層はこの UUID で
+	 * 「どの接続試行の通知か」を照合するので、状態と UUID は必ず対で運ぶ。
+	 */
+	private String mStateUUID;
+
 	private VPNLog mVPNLog = new VPNLog();
 	private Handler mHandler = new Handler();
 
@@ -269,10 +280,18 @@ public class OpenVpnService extends VpnService {
 			return START_NOT_STICKY;
 		}
 
-		// 裁定31b: mUUID の差し替えは旧スレッドを止めた後に行う。
-		// 状態のブロードキャストはサービスの現在の mUUID を載せるため、先に差し替えると
-		// 旧スレッドの終了で出る STATE_DISCONNECTED に新しい候補の UUID が付いてしまう
-		// （フェイルオーバー層がそれを新候補の障害と誤認する。実機で観測）。
+		// 裁定31b: mUUID の差し替えは旧スレッドを止めた後、かつ新スレッドを
+		// start() する前に行う（前半の順序自体はブロードキャストの UUID を
+		// 変えない。wakeUpActivity() は mHandler.post() したランナブルの中で
+		// 読むため、post が実行されるのは onStartCommand が return した後であり、
+		// その時点では mUUID は既にどのみち新候補の値になっている。ブロード
+		// キャストの UUID の正しさを保証しているのは裁定34（状態と対の
+		// mStateUUID を運ぶ）である。欠陥15 を実際に捕まえているのは状態機械側の
+		// 裁定31a の sawCoreConnecting である）。この代入順序を保つ理由は別にある:
+		// mUUID = newUUID は killVPNThread(true) の後、かつ mVPNThread.start() の
+		// 前でなければならない。後者が破れると新スレッドの STATE_CONNECTING が
+		// 旧 UUID を載せてしまい、Ruling 13 の UUID 照合で捨てられて
+		// sawCoreConnecting が永久に立たなくなる。
 		killVPNThread(true);
 
 		mUUID = newUUID;
@@ -386,7 +405,8 @@ public class OpenVpnService extends VpnService {
 			public void run() {
 				Intent vpnstatus = new Intent(ACTION_VPN_STATUS);
 				vpnstatus.putExtra(EXTRA_CONNECTION_STATE, mConnectionState);
-				vpnstatus.putExtra(EXTRA_UUID, mUUID);
+				// 裁定34: 現在の mUUID ではなく、この状態を生成したスレッドの UUID を載せる。
+				vpnstatus.putExtra(EXTRA_UUID, mStateUUID != null ? mStateUUID : mUUID);
 				sendBroadcast(vpnstatus, permission.ACCESS_NETWORK_STATE);
 
 				updateNotification();
@@ -441,11 +461,16 @@ public class OpenVpnService extends VpnService {
 	}
 
 	public synchronized void setConnectionState(int state) {
+		setConnectionState(state, mUUID);
+	}
+
+	public synchronized void setConnectionState(int state, String uuid) {
 		if (state == OpenConnectManagementThread.STATE_CONNECTED &&
 				mConnectionState != OpenConnectManagementThread.STATE_CONNECTED) {
 			startTime = new Date();
 		}
 		mConnectionState = state;
+		mStateUUID = uuid;
 		wakeUpActivity();
 	}
 
