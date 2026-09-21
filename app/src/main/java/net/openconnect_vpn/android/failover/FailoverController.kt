@@ -579,17 +579,22 @@ class FailoverController(
          * `Disconnected` が届く。届かないまま待ち続けて機能停止するよりは、
          * 諦めて次候補へ進むほうがマシである。
          *
-         * Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は `stopService`
-         * であり、それを受けてサービスが実際に破棄されるかどうかはタイミング依存
-         * である。破棄されていれば後の `startService` は別インスタンスを作るので
-         * `mVPN` は null であり、2度目の `killVPNThread` は起きない。しかし実機の
-         * ログには `not stopping service due to startId mismatch` が出ることもあり、
-         * その場合サービスは生き残り、`onStartCommand` の `killVPNThread(true)` は
-         * 旧スレッドに対して実際に走る。**どちらになるかはタイミング依存であり、
-         * どちらの前提にも依存できない。** いずれにせよ、確認が来なかった場合に
-         * アプリ層で打てる追加の手は無く、既存コアに 1000ms ではなく 3000ms を
-         * 与えた分だけ成功率が上がるだけで、放棄した候補が後からトンネルを張る
-         * 可能性そのものは残る。
+         * Ruling 28（裁定39 で訂正）: 当初は「`disconnect()` は `stopService` であり、
+         * `BIND_AUTO_CREATE` の bind が残っている間サービスが破棄されずアプリ層で
+         * 打てる追加の手が無い」と書いていたが、**打てる手はあった。** 裁定39 で
+         * `vpn.disconnect()`（`OpenConnectVpnController`）は `stopService` をやめ、
+         * `OpenVpnService.ACTION_STOP_VPN` を `startService` で送るようにした。
+         * この経路はサービスが破棄されるかどうかに依存せず、bind の有無に関係なく
+         * `onStartCommand` を経由して確実に `stopVPN()` を呼ぶ。
+         *
+         * それでも救えない経路が一つ残る（follow-up F4、今回は対象外）:
+         * 認証ダイアログで `UserDialog.waitForResponse()` にブロックしたスレッドは
+         * `stopVPN()`（`mOC.cancel()` と `mMainloopLock.notify()` だけ）では
+         * 解放されない。したがって、この待ち時間の上限で諦めた場合、確認が
+         * 来なかった原因がダイアログ待ちのブロックであれば、それ以上アプリ層で
+         * 打てる手は無く、既存コアに 1000ms ではなく 3000ms を与えた分だけ
+         * 成功率が上がるだけで、放棄した候補が後からトンネルを張る可能性
+         * そのものは残る。
          */
         const val DISCONNECT_WAIT_MS = 3_000L
 

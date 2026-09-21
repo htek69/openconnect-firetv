@@ -26,7 +26,6 @@
 
 package net.openconnect_vpn.android.core;
 
-import android.Manifest.permission;
 import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationManager;
@@ -62,9 +61,27 @@ public class OpenVpnService extends VpnService {
 	public static final String START_SERVICE_STICKY = "net.openconnect_vpn.android.START_SERVICE_STICKY";
 	public static final String ALWAYS_SHOW_NOTIFICATION = "net.openconnect_vpn.android.NOTIFICATION_ALWAYS_VISIBLE";
 
+	/**
+	 * 裁定39: bind の有無に依存しない明示的な停止アクション。`stopService` は
+	 * `BIND_AUTO_CREATE` の bind が残っている間サービスを破棄しないため、
+	 * 既存 UI（`VPNConnector` 経由で bind する）が前面にある間は `stopService` に
+	 * よる切断が完全に no-op になる。このアクションは `startService` で送るので
+	 * bind の有無に関係なく `onStartCommand` が呼ばれ、確実に `stopVPN()` が走る。
+	 */
+	public static final String ACTION_STOP_VPN = "net.openconnect_vpn.android.STOP_VPN";
+
 	public static final String ACTION_VPN_STATUS = "net.openconnect_vpn.android.VPN_STATUS";
 	public static final String EXTRA_CONNECTION_STATE = "net.openconnect_vpn.android.connectionState";
 	public static final String EXTRA_UUID = "net.openconnect_vpn.android.UUID";
+
+	/**
+	 * 裁定40（M7・セキュリティ）: `ACTION_VPN_STATUS` を守る自社 signature permission
+	 * のサフィックス。実際の permission 名は `getPackageName() + PERMISSION_VPN_STATUS_SUFFIX`
+	 * （`AndroidManifest.xml` で `${applicationId}.permission.VPN_STATUS` として宣言・
+	 * 取得している）。ハードコードしないのは、`applicationIdSuffix` で既存アプリと
+	 * 共存するため（Ruling 10 と同じ理由）。
+	 */
+	public static final String PERMISSION_VPN_STATUS_SUFFIX = ".permission.VPN_STATUS";
 
 	// These are valid in the CONNECTED state
 	public VpnProfile profile;
@@ -265,6 +282,12 @@ public class OpenVpnService extends VpnService {
 			return START_NOT_STICKY;
 		} else if (START_SERVICE_STICKY.equals(action)) {
 			return START_REDELIVER_INTENT;
+		} else if (ACTION_STOP_VPN.equals(action)) {
+			// 裁定39: bind の有無に依存しない明示的な停止経路。stopService は
+			// BIND_AUTO_CREATE の bind がある間サービスを破棄しないため、既存 UI が
+			// 前面にある間は切断要求が失われる。
+			stopVPN();
+			return START_NOT_STICKY;
 		}
 
 		// Extract information from the intent.
@@ -400,18 +423,37 @@ public class OpenVpnService extends VpnService {
 	}
 
 	private void wakeUpActivity() {
+		// 裁定38（M3b）: 状態と UUID は post の前にスナップショットを取る。裁定34 は
+		// 書き込み側（setConnectionState）を対にしたが、読み取り側は post した
+		// Runnable の中で同期せず実行時に読んでいたため対ではなかった。
+		// 1回のメインループターンに複数の setConnectionState が入ると、キューの
+		// 複数の Runnable がどれも最後の書き込み値を読んでしまい、片方のイベントが
+		// 配送されない（欠陥15 のシナリオで新候補の STATE_CONNECTING が消え、
+		// sawCoreConnecting が永久に false になりうる）。読み取り①と②の間に
+		// 別スレッドの書き込みが挟まれば状態と UUID が食い違うこともある。
+		// setConnectionState / setStats は既に synchronized（this）であり、
+		// promptUser はそこから既に setState 済みの状態を再アナウンスするだけ
+		// なので、ここでの再入は安全（Java のモニタは再入可能）。
+		final int state;
+		final String uuid;
+		synchronized (this) {
+			state = mConnectionState;
+			uuid = mStateUUID != null ? mStateUUID : mUUID;
+		}
 		mHandler.post(new Runnable() {
 			@Override
 			public void run() {
 				Intent vpnstatus = new Intent(ACTION_VPN_STATUS);
-				vpnstatus.putExtra(EXTRA_CONNECTION_STATE, mConnectionState);
-				// 裁定34: 現在の mUUID ではなく、この状態を生成したスレッドの UUID を載せる。
-				vpnstatus.putExtra(EXTRA_UUID, mStateUUID != null ? mStateUUID : mUUID);
-				sendBroadcast(vpnstatus, permission.ACCESS_NETWORK_STATE);
+				vpnstatus.putExtra(EXTRA_CONNECTION_STATE, state);
+				vpnstatus.putExtra(EXTRA_UUID, uuid);
+				// 裁定40（M7）: ACCESS_NETWORK_STATE は normal permission（自動付与）
+				// なので、第三者アプリが本物のブロードキャストを受信して現候補の
+				// UUID を学習できてしまう。自社の signature permission に差し替える。
+				sendBroadcast(vpnstatus, getPackageName() + PERMISSION_VPN_STATUS_SUFFIX);
 
 				updateNotification();
 
-				if (mConnectionState == OpenConnectManagementThread.STATE_CONNECTED &&
+				if (state == OpenConnectManagementThread.STATE_CONNECTED &&
 						mKeepAlive == null) {
 					registerKeepAlive();
 					FeedbackFragment.recordUse(getApplicationContext(), true);

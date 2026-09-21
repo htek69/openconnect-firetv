@@ -39,9 +39,21 @@ class OpenConnectVpnController(private val context: Context) : VpnController {
     }
 
     override fun disconnect() {
-        // OpenVpnService は START_SERVICE アクションで bind されている前提ではなく、
-        // 停止要求として stopService を使う。サービス側の onDestroy が stopVPN を呼ぶ。
-        context.stopService(Intent(context, OpenVpnService::class.java))
+        // 裁定39（M4）: stopService は BIND_AUTO_CREATE の bind がある間サービスを
+        // 破棄しない。既存 UI（MainActivity / StatusFragment / LogFragment /
+        // VPNProfileList）は VPNConnector 経由で bind するため、legacy UI が
+        // 前面にある間（＝ VPN 許可の付与や認証ダイアログへの応答が必要な、
+        // 状態機械が最も忙しい場面と重なる）は stopService が完全な no-op になり、
+        // ユーザーの「切断」が切断しない事故が起きていた。
+        // 明示的な停止アクションを startService で送る（bind の有無に依存しない）。
+        val intent = Intent(context, OpenVpnService::class.java).apply {
+            action = OpenVpnService.ACTION_STOP_VPN
+        }
+        try {
+            context.startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startService(ACTION_STOP_VPN) failed", e)
+        }
     }
 
     private companion object {

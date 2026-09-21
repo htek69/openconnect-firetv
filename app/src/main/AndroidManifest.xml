@@ -15,6 +15,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 裁定40（M7・セキュリティ）: ACTION_VPN_STATUS を守る自社 signature permission。
+         VpnStatusBridge を RECEIVER_EXPORTED で登録しているため（実機 API 25 では
+         RECEIVER_NOT_EXPORTED が効かない）、ACCESS_NETWORK_STATE のような normal
+         permission だけでは第三者アプリが偽の状態遷移を注入できてしまう。
+         ${applicationId} を使うのは、applicationIdSuffix で既存アプリと共存するため
+         （Ruling 10 と同じ理由）。同一アプリ内の受信機は自動的にこの permission を
+         満たすので、既存 UI（VPNConnector）の受信機にも影響しない。 -->
+    <permission
+        android:name="${applicationId}.permission.VPN_STATUS"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.VPN_STATUS" />
+
     <!-- Copy the <permission> block to your app when using the REMOTE API. Otherwise OpenConnect
         needs to be installed first -->
 <!--    <permission-->

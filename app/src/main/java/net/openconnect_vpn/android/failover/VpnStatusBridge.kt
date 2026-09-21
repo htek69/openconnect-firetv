@@ -33,7 +33,12 @@ class VpnStatusBridge(
     fun register() {
         val filter = IntentFilter(OpenVpnService.ACTION_VPN_STATUS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            // 裁定40（M7・多層防御）: 本質的な守りは送信側の signature permission
+            // （OpenVpnService.PERMISSION_VPN_STATUS_SUFFIX）だが、API 33+ では
+            // 追加でこちらも RECEIVER_NOT_EXPORTED にする。正当な送信者は同一アプリの
+            // OpenVpnService だけであり、同一アプリからのブロードキャストは
+            // NOT_EXPORTED の受信機にも届くのでこれで壊れない。
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             context.registerReceiver(receiver, filter)
