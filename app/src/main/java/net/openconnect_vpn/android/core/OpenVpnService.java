@@ -286,6 +286,14 @@ public class OpenVpnService extends VpnService {
 			// 裁定39: bind の有無に依存しない明示的な停止経路。stopService は
 			// BIND_AUTO_CREATE の bind がある間サービスを破棄しないため、既存 UI が
 			// 前面にある間は切断要求が失われる。
+			//
+			// mStartId の更新は必須である。threadDone() は
+			// stopSelfResult(mStartId) でサービスを止めるが、これは「最も新しい
+			// startId」でなければ成功しない。この停止要求も startService 経由なので
+			// startId を1つ消費しており、更新しないと以後 stopSelfResult は常に
+			// 失敗する。結果、トンネルは止まるのにサービスだけが
+			// DeviceStateReceiver と KeepAlive アラームを抱えたまま残り続ける。
+			mStartId = startId;
 			stopVPN();
 			return START_NOT_STICKY;
 		}

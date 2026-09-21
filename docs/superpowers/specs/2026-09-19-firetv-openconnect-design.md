@@ -447,16 +447,23 @@ join を 1000ms で打ち切るため、接続処理の途中でブロックし�
 生きたスレッドがそもそも無い）。したがって待ち時間には上限を設ける
 （`FailoverController.DISCONNECT_WAIT_MS` = 3000ms）。
 
-Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は `stopService` であり、
-それを受けてサービスが実際に破棄されるかどうかはタイミング依存である。破棄されて
-いれば後の `startService` は別インスタンスを作るので `mVPN` は null であり、2度目の
-`killVPNThread` は起きない。しかし実機のログには
-`not stopping service due to startId mismatch` が出ることもあり、その場合サービスは
-生き残り、`onStartCommand` の `killVPNThread(true)` は旧スレッドに対して実際に走る。
-**どちらになるかはタイミング依存であり、どちらの前提にも依存できない。** いずれに
-せよ、確認が来なかった場合にアプリ層で打てる追加の手は無く、既存コアに 1000ms
-ではなく 3000ms を与えた分だけ成功率が上がるだけで、放棄した候補が後からトンネルを
-張る可能性そのものは残る。
+Ruling 28（裁定39 で改訂）: `disconnect()` は `stopService` を**使わない**。
+`stopService` は `BIND_AUTO_CREATE` の bind が残っている間サービスを破棄せず、既存 UI
+（`MainActivity` / `StatusFragment` / `LogFragment` / `VPNProfileList`）が `VPNConnector`
+経由で bind するため、legacy UI が前面にある間は切断要求が**完全に失われていた**。
+VPN 許可の付与と認証ダイアログへの回答は legacy UI を開かないとできないので、
+状態機械が最も忙しい場面と bind が存在する場面はむしろ重なる。
+
+裁定39 により `disconnect()` は `OpenVpnService.ACTION_STOP_VPN` を `startService` で
+送る。これは bind の有無に依存せず `onStartCommand` に届き、`stopVPN()` が実行される。
+以前ここに「アプリ層で打てる追加の手は無い」と書いていたのは**誤りだった**
+（既存 UI 自身が `service.stopVPN()` を直接呼んで切断していた）。
+
+ただし切断要求が届くことと、スレッドが実際に終わることは別である。認証ダイアログで
+`UserDialog.waitForResponse()` にブロックしたスレッドは `stopVPN()`（`mOC.cancel()`）
+では解放されない。したがって `DISCONNECT_WAIT_MS` の上限で諦める経路は残り、その場合は
+放棄した候補が後からトンネルを張る可能性も残る。これは既存コアのダイアログ機構に
+起因する制約であり、フォローアップ課題として記録している。
 
 例外は、切替の契機が `Disconnected` 自身だった場合である。このときトンネルは既に
 落ちているので待つ対象が無く、`FailingOver` を経ずに次候補へ進む。
