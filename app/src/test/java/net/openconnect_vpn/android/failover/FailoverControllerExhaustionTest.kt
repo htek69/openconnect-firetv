@@ -35,9 +35,13 @@ class FailoverControllerExhaustionTest {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
 
         // uuid-a: 認証通過後に切断（除外されない）
+        // 裁定31: 実機同様、自分の Connecting を観測してから Disconnected を送る
+        // （観測前の Disconnected は旧スレッドのものとして無視されるため）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticated))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
         // uuid-b: 同様に失敗
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticated))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
 
@@ -112,6 +116,7 @@ class FailoverControllerExhaustionTest {
     fun `自動切替 OFF なら予期しない切断でも次候補へ行かない`() {
         val controller = controllerFor(group(auto = false))
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
 
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
@@ -125,8 +130,14 @@ class FailoverControllerExhaustionTest {
         failAllCandidates(controller)
     }
 
+    /**
+     * 裁定31: 実機では runVPN() の冒頭で必ず STATE_CONNECTING が送られる。
+     * これを観測する前に届いた Disconnected は無視されるようになったので、
+     * 候補ごとに Connecting を送ってから Disconnected を送る。
+     */
     private fun failAllCandidates(controller: FailoverController) {
         repeat(2) {
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
             controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticated))
             controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
         }

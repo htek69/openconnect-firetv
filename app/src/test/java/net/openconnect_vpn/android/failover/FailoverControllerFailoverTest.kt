@@ -110,6 +110,8 @@ class FailoverControllerFailoverTest {
     @Test
     fun `接続中のまま切断されたら次候補へ進む`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31: runVPN() 冒頭の STATE_CONNECTING は Connected に至らない場合も送られる。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
 
         // Connected に至らず Disconnected が来た（接続失敗）
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
@@ -126,6 +128,8 @@ class FailoverControllerFailoverTest {
     @Test
     fun `接続タイムアウトで次候補へ切替する`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31: runVPN() 冒頭の STATE_CONNECTING はタイムアウトする場合も送られる。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         assertEquals(listOf("uuid-a"), vpn.connectCalls)
 
         // connectTimeoutSec を超えて Tick が来る
@@ -164,6 +168,7 @@ class FailoverControllerFailoverTest {
     @Test
     fun `猶予期間後のプローブ失敗が閾値に達したら切替する`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
 
         // 猶予期間を過ぎてから閾値回数だけ失敗する
@@ -240,6 +245,7 @@ class FailoverControllerFailoverTest {
         )
         val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
         soloController.handle(FailoverEvent.UserConnectGroup("g1"))
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
         soloController.handle(FailoverEvent.ProbeResult(reachable = true))
@@ -307,6 +313,8 @@ class FailoverControllerFailoverTest {
         assertEquals("uuid-b", vpn.connectCalls.last())
 
         // 候補2(uuid-b)が繋がって健全になる
+        // 裁定31: 実機同様、uuid-b 自身の Connecting を観測してから先へ進む。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-b"))
         clock.advance(16_000L)
         controller.handle(FailoverEvent.ProbeResult(reachable = true))
@@ -480,6 +488,7 @@ class FailoverControllerFailoverTest {
         )
         val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
         soloController.handle(FailoverEvent.UserConnectGroup("g1"))
+        soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
         soloController.handle(FailoverEvent.ProbeResult(reachable = true))
@@ -517,45 +526,80 @@ class FailoverControllerFailoverTest {
 
     @Test
     fun `FailingOver 中に UserPrompt が来ても待ち時間はリセットされず除外もされない`() {
-        // Ruling 26 が守っていた性質（FailingOver 中の UserPrompt 再入を止める）を
-        // 裁定30 の形（onTick が FailingOver に onFailingOverTimeout しか適用せず、
-        // onUnattendedPromptTimeout は呼ばれない）で保てているかの確認。
-        toHealthy()
+        // 裁定32（レビュー指摘1・空虚なテストの修正）: 旧版はここで候補0
+        // （toHealthy = UserConnectGroup 起動、unattended = false）のまま
+        // FailingOver に入っていた。unattended が false だと
+        // userPromptSinceMs は一度も武装されないので、failOver の
+        // `userPromptSinceMs = null` を消しても、onTick の FailingOver 分岐に
+        // onUnattendedPromptTimeout を足しても、このテストは常に緑のまま
+        // 通ってしまっていた（何も検証していないのと同じ）。
+        //
+        // 無人運用の候補（unattended = true）自身の UserPrompt タイムアウトが
+        // 原因で FailingOver に入る筋に作り直す: 候補0(uuid-a) を自動切替
+        // （failOver）経由で候補1(uuid-b, unattended = true) へ進め、
+        // 候補1 の UserPrompt が USER_PROMPT_WAIT_MS 進んでも進展しないことで
+        // FailingOver に入らせる。
+        toHealthy() // 候補0(uuid-a, unattended = false) を Healthy にする
+
+        // 候補0をプローブ失敗で切替え、候補1(uuid-b, unattended = true) へ進める
         repeat(group.config.failureThreshold) {
             clock.advance(31_000L)
             controller.handle(FailoverEvent.ProbeResult(reachable = false))
         }
+        assertTrue(controller.state is FailoverState.FailingOver)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
+
+        // 候補1(uuid-b)が認証ダイアログで止まる（無人運用なので誰も答えられない）。
+        // USER_PROMPT_WAIT_MS 経過で除外され FailingOver に入る（1回目の切断要求）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(10_000L) // USER_PROMPT_WAIT_MS
+        controller.handle(FailoverEvent.Tick)
+
         val firstFailingOver = controller.state
         assertTrue(firstFailingOver is FailoverState.FailingOver)
-        val startedAtMsBefore = (firstFailingOver as FailoverState.FailingOver).startedAtMs
-        val disconnectCallsBefore = vpn.disconnectCalls
-        val excludedBefore = controller.excludedUuids.size
+        assertTrue("uuid-b" in controller.excludedUuids)
+        val disconnectCallsAfterEntry = vpn.disconnectCalls
+        val startedAtMsAfterEntry = (firstFailingOver as FailoverState.FailingOver).startedAtMs
 
-        // FailingOver 中に UserPrompt が届いても、待ち時間はリセットされず
-        // （FailingOver 突入時に userPromptSinceMs を null にしているうえ、
-        // onTick は FailingOver に onUnattendedPromptTimeout を適用しない）、
-        // 切断の再要求も除外も起きない。
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-a"))
+        // (a) 突入直後、ごく短い時間だけ進めて Tick する。もし failOver が
+        // userPromptSinceMs を null にしていなければ、突入の原因になった
+        // 「既に期限切れの」タイムスタンプがそのまま残る。もし同時に onTick が
+        // FailingOver にも onUnattendedPromptTimeout を適用していれば、
+        // ここで即座に2度目の除外・切断が起きてしまう
+        // （= 裁定32 が挙げた2つの変更を両方戻すと、このアサーションで落ちる）。
+        clock.advance(1L)
+        controller.handle(FailoverEvent.Tick)
+        assertEquals(disconnectCallsAfterEntry, vpn.disconnectCalls)
+        assertEquals(
+            startedAtMsAfterEntry,
+            (controller.state as FailoverState.FailingOver).startedAtMs,
+        )
 
-        val stateAfterPrompt = controller.state
-        assertTrue(stateAfterPrompt is FailoverState.FailingOver)
-        assertEquals(startedAtMsBefore, (stateAfterPrompt as FailoverState.FailingOver).startedAtMs)
-        assertEquals(disconnectCallsBefore, vpn.disconnectCalls)
-        assertEquals(excludedBefore, controller.excludedUuids.size)
-
-        // USER_PROMPT_WAIT_MS（10秒）は DISCONNECT_WAIT_MS（3秒）を超えるので、
-        // ここで Tick すると確認を諦めて次候補へ進む（別の理由による正しい前進）。
-        // 除外は増えておらず、2度目の disconnect() も起きていないことを確認する。
+        // (b) 既存コアの二重ブロードキャストを模して、FailingOver 中に同じ
+        // uuid-b の UserPrompt がもう一度届く（currentCandidateUnattended は
+        // まだ true）。USER_PROMPT_WAIT_MS だけ進めて Tick する。onTick の
+        // FailingOver 分岐が onFailingOverTimeout しか呼ばない限り、この
+        // 再武装は一切読まれず、2度目の disconnect() は起きない
+        // （DISCONNECT_WAIT_MS より長く進めているので、確認を諦めて次候補へ
+        // 進むこと自体は正しい前進である。これは onTick の FailingOver 分岐に
+        // onUnattendedPromptTimeout を足すと単独でも落ちる）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
         clock.advance(10_000L) // USER_PROMPT_WAIT_MS
         controller.handle(FailoverEvent.Tick)
 
         assertTrue(controller.state is FailoverState.Connecting)
-        assertEquals(disconnectCallsBefore, vpn.disconnectCalls)
-        assertEquals(excludedBefore, controller.excludedUuids.size)
+        assertEquals(disconnectCallsAfterEntry, vpn.disconnectCalls)
     }
 
     private fun toHealthy() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31: 実機では runVPN() の冒頭で必ず STATE_CONNECTING が送られる。
+        // これを観測する前に届いた Disconnected は無視されるようになったので、
+        // テストでも実機同様に Connecting を送ってから先へ進む。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
         controller.handle(FailoverEvent.ProbeResult(reachable = true))

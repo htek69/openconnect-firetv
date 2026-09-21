@@ -46,6 +46,22 @@ class FailoverController(
     private var currentCandidateUuid: String? = null
 
     /**
+     * 裁定31: 現在の候補の接続試行が既存コア側で始まったことを観測したか
+     * （core の `STATE_CONNECTING`）。
+     *
+     * 既存コアの `OpenVpnService.onStartCommand` は `mUUID` を新しい候補のものへ
+     * 書き換えてから古いスレッドを停止し（:259-274、join は最大1秒）、状態の
+     * ブロードキャストはサービスの現在の `mUUID` を載せる（:378-385）。そのため
+     * **1秒で終わらなかった旧スレッドの `Disconnected` に新しい候補の UUID が付く。**
+     * Ruling 13 の UUID 照合では区別できない（実機で観測: 欠陥15）。
+     *
+     * 一方、新しい試行は必ず `runVPN()` の冒頭で `STATE_CONNECTING` を送る
+     * （`OpenConnectManagementThread.java:695`）。よって自分の `Connecting` を
+     * 観測する前の `Disconnected` は旧スレッドのものと判断して無視できる。
+     */
+    private var sawCoreConnecting = false
+
+    /**
      * Ruling 21: 現在の候補を人が見ている保証が無いか。
      * onUserConnect（ユーザーが画面の前で接続操作をした）から開始した候補は false、
      * failOver（自動切替）や onTick の再試行から開始した候補は true になる。
@@ -144,6 +160,7 @@ class FailoverController(
             currentCandidateReachedAuth = false
             currentCandidateUnattended = unattended
             userPromptSinceMs = null
+            sawCoreConnecting = false
             expectingDisconnect = false
             currentCandidateUuid = uuid
             probeImmediatelyOnNetworkRecovery = false
@@ -188,6 +205,10 @@ class FailoverController(
             currentCandidateReachedAuth = true
         }
 
+        // 裁定31: 自分の接続試行が既存コア側で始まったことを覚えておく
+        // （sawCoreConnecting の説明を参照）。
+        if (core == VpnCoreState.Connecting) sawCoreConnecting = true
+
         // 裁定30: `UserPrompt` に入った時刻を覚え、次の状態へ進んだら解除する。
         // 進展の有無だけがダイアログの有無を見分ける唯一の手段である（詳細は
         // userPromptSinceMs の説明）。無人運用の候補だけが対象で、ユーザー自身が
@@ -201,6 +222,12 @@ class FailoverController(
         }
 
         return when {
+            // 裁定31: 自分の Connecting を観測する前に届いた Disconnected は
+            // 旧スレッドのものである（UUID は新しい候補のものに書き換わっている）。
+            // FailingOver 中は切断を待っている候補自身が既に Connecting を出して
+            // いるのでこのフラグは true であり、確認の受け取りを妨げない。
+            core == VpnCoreState.Disconnected && !sawCoreConnecting -> s
+
             core == VpnCoreState.Connected && s is FailoverState.Connecting ->
                 FailoverState.Verifying(
                     groupId = s.groupId,
@@ -352,8 +379,14 @@ class FailoverController(
         // S3 で捨てるのではなく、次候補へ進む合図として観測する必要がある。
         val awaiting = currentCandidateUuid
         vpn.disconnect()
-        // 裁定30: FailingOver 中は UserPrompt の判定を走らせない
-        // （Ruling 26 が守っていた性質。この候補は既に除外・切断要求済みである）。
+        // 裁定30: Ruling 26 が守っていた性質（FailingOver 中は UserPrompt 由来の
+        // 除外判定を走らせない）は、次の2つが揃って保たれている。
+        // (1) onTick の `FailingOver` 分岐は onFailingOverTimeout しか呼ばず、
+        //     onUnattendedPromptTimeout を経由しない（今この瞬間の主たる理由）。
+        // (2) ここで userPromptSinceMs を null にし、古いタイムスタンプを
+        //     FailingOver へ持ち越さない（(1) の判定経路が将来変わっても、
+        //     突入直後に古い値で即座に誤判定しないための保険）。
+        // どちらか一方だけでは説明として不十分なので、変更するときは両方を見ること。
         userPromptSinceMs = null
         return FailoverState.FailingOver(
             groupId = groupId,
@@ -401,16 +434,27 @@ class FailoverController(
     }
 
     /**
-     * 裁定30: 無人運用の候補が `UserPrompt` から [USER_PROMPT_WAIT_MS] 経っても
+     * 裁定30: 無人運用の候補が `UserPrompt` から [userPromptWaitMs] 経っても
      * 進まない＝ダイアログが出て人の入力を待っている。誰も答えられないので
      * 認証失敗と同じ扱いにする（除外して次候補へ）。
      * 該当しなければ null を返し、呼び出し側の判定を続けさせる。
      */
     private fun onUnattendedPromptTimeout(s: FailoverState): FailoverState? {
         val since = userPromptSinceMs ?: return null
-        if (clock.nowMs() - since < USER_PROMPT_WAIT_MS) return null
+        val waitMs = groupIdOf(s)?.let { userPromptWaitMs(it) } ?: USER_PROMPT_WAIT_MS
+        if (clock.nowMs() - since < waitMs) return null
         return onUnattendedUserPrompt(s)
     }
+
+    /**
+     * 裁定33: 実際に使う `UserPrompt` の待ち時間。除外を伴うこの判定は、除外を伴わない
+     * 接続タイムアウト（Ruling 22）より必ず先に発火しなければならない。後になると
+     * 認証情報が間違っている候補が除外されずに切り替わり、次の巡回でまた試されて
+     * サーバ側のアカウントロックを招く（S1 が存在する理由）。`connectTimeoutSec` は
+     * 利用者が変更できるので、コメントでの約束ではなく実装で順序を保証する。
+     */
+    private fun userPromptWaitMs(groupId: String): Long =
+        minOf(USER_PROMPT_WAIT_MS, configOf(groupId).connectTimeoutSec * 1_000L / 2)
 
     /** Ruling 25: 切断完了の確認が来ないまま [DISCONNECT_WAIT_MS] を過ぎたら先へ進む。 */
     private fun onFailingOverTimeout(s: FailoverState.FailingOver): FailoverState {
@@ -484,21 +528,30 @@ class FailoverController(
          * 諦めて次候補へ進むほうがマシである。
          *
          * Ruling 28: 上限で諦めた場合の代替手段は無い。`disconnect()` は `stopService`
-         * であり、その時点で `OpenVpnService` インスタンスは破棄される。後の
-         * `startService` は別インスタンスを作るので `mVPN` は null であり、2度目の
-         * `killVPNThread` は起きない。したがって確認が来なかった場合は、既存コアに
-         * 1000ms ではなく 3000ms を与えた分だけ成功率が上がるだけで、放棄した候補が
-         * 後からトンネルを張る可能性そのものは残る（アプリ層で打てる手が無い）。
+         * であり、それを受けてサービスが実際に破棄されるかどうかはタイミング依存
+         * である。破棄されていれば後の `startService` は別インスタンスを作るので
+         * `mVPN` は null であり、2度目の `killVPNThread` は起きない。しかし実機の
+         * ログには `not stopping service due to startId mismatch` が出ることもあり、
+         * その場合サービスは生き残り、`onStartCommand` の `killVPNThread(true)` は
+         * 旧スレッドに対して実際に走る。**どちらになるかはタイミング依存であり、
+         * どちらの前提にも依存できない。** いずれにせよ、確認が来なかった場合に
+         * アプリ層で打てる追加の手は無く、既存コアに 1000ms ではなく 3000ms を
+         * 与えた分だけ成功率が上がるだけで、放棄した候補が後からトンネルを張る
+         * 可能性そのものは残る。
          */
         const val DISCONNECT_WAIT_MS = 3_000L
 
         /**
-         * 裁定30: `UserPrompt` から次の状態へ進むのを待つ上限。これを超えたら
-         * ダイアログが出て人の入力を待っているとみなす（無人運用では誰も答えられない）。
-         * 自動入力の経路はローカル処理だけなのでミリ秒で `Authenticating` へ進む。
-         * `connectTimeoutSec`（既定 45 秒）より十分小さくしておくこと。接続タイムアウトが
-         * 先に発火すると、候補が除外されずに（Ruling 22 の意味論で）切り替わってしまい、
-         * 認証情報が間違っている候補を何度も試してアカウントロックを招く。
+         * 裁定30: `UserPrompt` から次の状態へ進むのを待つ上限の既定値。
+         * これを超えたらダイアログが出て人の入力を待っているとみなす
+         * （無人運用では誰も答えられない）。自動入力の経路はローカル処理だけ
+         * なのでミリ秒で `Authenticating` へ進む。
+         *
+         * 裁定33: 実際に使う値は [userPromptWaitMs] であり、`connectTimeoutSec`
+         * （利用者が変更できる）より必ず小さくなるよう実装で上から抑える。
+         * 接続タイムアウトが先に発火すると、候補が除外されずに（Ruling 22 の
+         * 意味論で）切り替わってしまい、認証情報が間違っている候補を何度も
+         * 試してアカウントロックを招く。
          */
         const val USER_PROMPT_WAIT_MS = 10_000L
     }

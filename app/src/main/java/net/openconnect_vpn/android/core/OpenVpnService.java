@@ -258,20 +258,25 @@ public class OpenVpnService extends VpnService {
 
 		// Extract information from the intent.
 		String intentUUID = intent.getStringExtra(EXTRA_UUID);
-		if (intentUUID != null)
-			mUUID = intentUUID;
+		String newUUID = intentUUID != null ? intentUUID : mUUID;
 
-		if (mUUID == null) {
+		if (newUUID == null) {
 			return START_NOT_STICKY;
 		}
-		mPrefs.edit().putString("service_mUUID", mUUID).apply();
 
-		profile = ProfileManager.get(mUUID);
+		profile = ProfileManager.get(newUUID);
 		if (profile == null) {
 			return START_NOT_STICKY;
 		}
 
+		// 裁定31b: mUUID の差し替えは旧スレッドを止めた後に行う。
+		// 状態のブロードキャストはサービスの現在の mUUID を載せるため、先に差し替えると
+		// 旧スレッドの終了で出る STATE_DISCONNECTED に新しい候補の UUID が付いてしまう
+		// （フェイルオーバー層がそれを新候補の障害と誤認する。実機で観測）。
 		killVPNThread(true);
+
+		mUUID = newUUID;
+		mPrefs.edit().putString("service_mUUID", mUUID).apply();
 
 		// stopSelfResult(most_recent_startId) will kill the service
 		// stopSelfResult(previous_startId) will not

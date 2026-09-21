@@ -34,6 +34,8 @@ class FailoverControllerSafetyTest {
     @Test
     fun `認証中に切断された候補は除外され次候補へ進む`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31: 実機同様、自分の Connecting を観測してから Disconnected を送る。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
 
@@ -45,6 +47,7 @@ class FailoverControllerSafetyTest {
     fun `認証失敗した候補はセッション中スキップされる`() {
         // uuid-a を認証失敗させる
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
 
@@ -60,6 +63,7 @@ class FailoverControllerSafetyTest {
     @Test
     fun `認証を通過した候補は除外されない`() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticated))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
@@ -222,6 +226,10 @@ class FailoverControllerSafetyTest {
 
     private fun toHealthy() {
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        // 裁定31: 実機では runVPN() の冒頭で必ず STATE_CONNECTING が送られる。
+        // これを観測する前に届いた Disconnected は無視されるようになったので、
+        // テストでも実機同様に Connecting を送ってから先へ進む。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
         controller.handle(FailoverEvent.ProbeResult(reachable = true))
@@ -254,6 +262,9 @@ class FailoverControllerSafetyTest {
 
         assertTrue(controller.state is FailoverState.Connecting)
         assertEquals("uuid-b", vpn.connectCalls.last())
+        // 裁定31: uuid-b 自身の Connecting を観測しておく
+        // （後の Disconnected 確認が届くために必要）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
 
         // uuid-b が認証ダイアログで止まる（人はいない）。
         // 裁定30: UserPrompt 自体は「人の入力が必要」を意味しない
@@ -287,6 +298,8 @@ class FailoverControllerSafetyTest {
         assertTrue(controller.state is FailoverState.FailingOver)
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
         assertEquals("uuid-b", vpn.connectCalls.last())
+        // 裁定31: 各候補ごとに自分の Connecting を観測してから先へ進む。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
 
         // uuid-b: 認証段階まで到達してから切断 -> Ruling 23 により S1 で除外
         // （Ruling 23 前は認証段階に到達したかどうかを見ていなかったため、
@@ -298,6 +311,7 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-b"))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
         assertEquals("uuid-c", vpn.connectCalls.last())
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-c"))
 
         // uuid-c も同様に認証段階まで到達してから切断 -> 除外。候補が尽きて Exhausted へ
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-c"))
@@ -312,6 +326,7 @@ class FailoverControllerSafetyTest {
         clock.advance(Backoff.delayMsForAttempt(exhausted.attempt) + 1_000L)
         controller.handle(FailoverEvent.Tick)
         assertEquals("uuid-a", vpn.connectCalls.last())
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
 
         // uuid-a が認証ダイアログで止まる。自動再試行なので人はいない。
         // 裁定30: USER_PROMPT_WAIT_MS を過ぎても次の状態へ進まなければ除外して進める。
@@ -446,12 +461,81 @@ class FailoverControllerSafetyTest {
         assertTrue(controller.state is FailoverState.Connecting)
     }
 
+    @Test
+    fun `再武装ガード 進展の無い2度目の UserPrompt では時刻を更新しない`() {
+        // レビュー指摘4（LOW）: userPromptSinceMs == null の条件（既に武装済みなら
+        // 時刻を更新しない）を固定するテストが無かった。これを外して毎回時刻を
+        // 更新する実装にすると、既存コアが1つのフォームで USER_PROMPT を2回送る
+        // ため待ち時間が延び続ける（Ruling 26 と同種の問題）。
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(9_999L) // USER_PROMPT_WAIT_MS - 1
+
+        // 進展の無いまま同じ UserPrompt がもう一度届く（既存コアの二重
+        // ブロードキャストなど）。userPromptSinceMs は既に武装済みなので、
+        // ここで時刻を更新してはならない。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+        clock.advance(1L)
+        controller.handle(FailoverEvent.Tick)
+
+        // 時刻が更新されていれば合計 10000ms 未満のためまだ除外されないはずだが、
+        // 最初の武装から数えると USER_PROMPT_WAIT_MS ちょうどなので除外される。
+        assertTrue("uuid-b" in controller.excludedUuids)
+    }
+
+    @Test
+    fun `裁定33 connectTimeoutSec が短いグループでは UserPrompt の待ち時間もそれに応じて縮む`() {
+        // レビュー指摘3（LOW latent）: USER_PROMPT_WAIT_MS(10秒) が
+        // connectTimeoutSec*1000（既定45秒）より小さいことはコメントでしか
+        // 保証されていなかった。connectTimeoutSec を短く設定した場合に
+        // 接続タイムアウトが先に発火すると、候補が除外されないまま切り替わり、
+        // 認証情報が間違っている候補を何度も試してアカウントロックを招く。
+        val shortTimeoutGroup = FailoverGroup(
+            id = "g1",
+            name = "短いタイムアウト",
+            memberUuids = listOf("uuid-a", "uuid-b"),
+            autoFailoverEnabled = true,
+            config = FailoverConfig(connectTimeoutSec = 8),
+        )
+        val shortController = FailoverController(listOf(shortTimeoutGroup), clock, vpn, network)
+
+        // UserConnectGroup は unattended = false になり、UserPrompt タイムアウトの
+        // 対象外になってしまう（画面の前にいるので待たせてよい）ので、uuid-a を
+        // 認証前に切断させて uuid-b（自動切替経由 = unattended = true）へ進め、
+        // uuid-b で検証する。
+        shortController.handle(FailoverEvent.UserConnectGroup("g1"))
+        shortController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        shortController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
+
+        shortController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
+        shortController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.UserPrompt, uuid = "uuid-b"))
+
+        // userPromptWaitMs = min(10000, 8000/2) = 4000ms。connectTimeoutSec
+        // （8000ms）より先に発火し、除外を伴って切り替わる
+        // （除外を伴わない接続タイムアウトより先に発火してはならない）。
+        clock.advance(4_000L)
+        shortController.handle(FailoverEvent.Tick)
+
+        assertTrue("uuid-b" in shortController.excludedUuids)
+        assertTrue(shortController.state is FailoverState.FailingOver)
+    }
+
     // --- Ruling 23: 認証段階に到達したかどうかで S1 の除外判定を分ける ---
 
     @Test
     fun `認証段階に到達してから切断された候補は除外され次候補へ進む`() {
         // S1 の本来の対象ケース。Ruling 23 の前後どちらでも除外されなければならない。
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
 
@@ -464,7 +548,10 @@ class FailoverControllerSafetyTest {
         // 実機で確認された不具合そのもの。10_255_255_1 のような到達不能ホストは
         // TLS 接続すら成立せず Authenticating に届かないまま Disconnected が来る。
         // これはネットワーク障害であり認証失敗ではないので除外してはならない。
+        // 裁定31: それでも runVPN() 冒頭の STATE_CONNECTING 自体は送られる
+        // （TLS 接続を試みる前の、スレッド開始そのものの合図であるため）。
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
 
         assertFalse("uuid-a" in controller.excludedUuids)
@@ -478,6 +565,8 @@ class FailoverControllerSafetyTest {
         // 10分の上限へ張り付いた。グループが恒久的に死ぬ不具合そのもの。
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
         repeat(3) {
+            // 裁定31: 候補ごとに自分の Connecting を観測してから Disconnected を送る。
+            controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
             controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
         }
 
@@ -491,5 +580,66 @@ class FailoverControllerSafetyTest {
 
         assertEquals("uuid-a", vpn.connectCalls.last())
         assertTrue(controller.excludedUuids.isEmpty())
+    }
+
+    // --- 裁定31（欠陥15・実機で観測）: 旧スレッドの Disconnected が新候補の UUID で届く問題を塞ぐ ---
+
+    @Test
+    fun `自分の Connecting を観測する前の Disconnected は無視する`() {
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        assertTrue(controller.state is FailoverState.Connecting)
+
+        // Connecting を送らずに Disconnected が届く（旧スレッドのものと想定）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(0, (state as FailoverState.Connecting).candidateIndex)
+        assertFalse("uuid-a" in controller.excludedUuids)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `自分の Connecting を観測した後の Disconnected は障害として扱う`() {
+        // 上のテストと対になる。フラグが「Disconnected を単に全部無視する」もの
+        // になっていないことを示す。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(1, (state as FailoverState.Connecting).candidateIndex)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+    }
+
+    @Test
+    fun `欠陥15の回帰 切替直後に旧スレッドの Disconnected が新候補の UUID で届いても新候補は落とされない`() {
+        // 実機のシナリオ②そのもの: v-server(uuid-a) を切断要求して FailingOver に
+        // 入り、確認できて myvpn(uuid-b) へ進んだ直後、v-server のスレッドが
+        // ようやく終了して STATE_DISCONNECTED を出す。既存コアはこの時点で
+        // 既に mUUID を myvpn(uuid-b) のものへ書き換えているため、この
+        // Disconnected には uuid-b が付く。myvpn 自身の Connecting はまだ
+        // 一度も観測していない。
+        toHealthy()
+        repeat(group.config.failureThreshold) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals(1, (controller.state as FailoverState.Connecting).candidateIndex)
+
+        // 欠陥15: 旧スレッド（uuid-a）の Disconnected が、新候補（uuid-b）の
+        // UUID で遅れて届く。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(1, (state as FailoverState.Connecting).candidateIndex)
+        assertFalse("uuid-b" in controller.excludedUuids)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
     }
 }
