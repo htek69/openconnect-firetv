@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.util.Log
 import net.openconnect_vpn.android.core.OpenVpnService
 
 /**
@@ -26,7 +27,21 @@ class VpnStatusBridge(
         override fun onReceive(context: Context?, intent: Intent?) {
             val raw = intent?.getIntExtra(OpenVpnService.EXTRA_CONNECTION_STATE, -1) ?: -1
             val uuid = intent?.getStringExtra(OpenVpnService.EXTRA_UUID)
-            VpnCoreState.fromCoreInt(raw)?.let { onEvent(FailoverEvent.VpnStateChanged(it, uuid)) }
+            val core = VpnCoreState.fromCoreInt(raw) ?: return
+
+            // この1行が Ruling 13 / 裁定31a / 裁定34 の共通の前提である。uuid を
+            // 落とすと FailoverController の照合ガードが恒真になって3つの裁定が
+            // 同時に無効化されるが、単体テストは uuid を明示的に渡すので1件も
+            // 落ちない（最終レビュー F10-2）。そこで uuid が無いイベントは
+            // 通さずに捨てる。既存コアは必ず EXTRA_UUID を載せる
+            // （OpenVpnService.wakeUpActivity）ので、無いということは
+            // 前提が壊れたということであり、照合できないイベントを流して
+            // 候補を取り違えるより、流さずに接続タイムアウトへ委ねるほうが安全である。
+            if (uuid == null) {
+                Log.w(TAG, "EXTRA_UUID の無い状態通知を無視した state=$core")
+                return
+            }
+            onEvent(FailoverEvent.VpnStateChanged(core, uuid))
         }
     }
 
@@ -61,5 +76,9 @@ class VpnStatusBridge(
 
     fun unregister() {
         runCatching { context.unregisterReceiver(receiver) }
+    }
+
+    private companion object {
+        const val TAG = "VpnStatusBridge"
     }
 }
