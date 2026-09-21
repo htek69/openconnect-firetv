@@ -70,6 +70,15 @@ class FailoverService : Service() {
     /** Minor fix: 直前に実際に反映した通知文言。同じ文言では再投稿しない。 */
     private var lastForegroundText: String? = null
 
+    /**
+     * 裁定41（M5）: 直前に反映した [FailoverController.needsUserConsent] の値。
+     * `dispatch` は Tick のたびに呼ばれる（画面点灯時5秒ごと）ため、この値を
+     * 見ずに毎回 `alert` すると同一 ID の通知が永久に再投稿され、ユーザーが
+     * 消しても5秒後に復活して実質消せなくなる。`false → true` の立ち上がり
+     * エッジでだけ投稿し、`true → false` になったら取り下げる。
+     */
+    private var lastNeedsUserConsent = false
+
     /** Ruling 17: 画面が点いているか。消灯中はティック間隔を延ばす。 */
     private var screenOn = true
 
@@ -250,8 +259,15 @@ class FailoverService : Service() {
     private fun dispatch(event: FailoverEvent) {
         controller.handle(event)
         updateForegroundText()
-        if (controller.needsUserConsent) {
-            FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
+        // 裁定41（M5）: lastNeedsUserConsent の説明を参照。
+        val needsConsent = controller.needsUserConsent
+        if (needsConsent != lastNeedsUserConsent) {
+            lastNeedsUserConsent = needsConsent
+            if (needsConsent) {
+                FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
+            } else {
+                FailoverNotifications.cancelAlert(this)
+            }
         }
         // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの行も削除すること。
         logHarnessState()

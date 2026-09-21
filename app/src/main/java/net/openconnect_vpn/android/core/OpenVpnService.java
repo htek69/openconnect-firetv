@@ -303,18 +303,25 @@ public class OpenVpnService extends VpnService {
 			return START_NOT_STICKY;
 		}
 
-		// 裁定31b: mUUID の差し替えは旧スレッドを止めた後、かつ新スレッドを
-		// start() する前に行う（前半の順序自体はブロードキャストの UUID を
-		// 変えない。wakeUpActivity() は mHandler.post() したランナブルの中で
+		// 裁定31b: mUUID の差し替えは旧スレッドを止めた後に行う（それまでは
+		// 局所変数 newUUID を使う）。この順序自体はブロードキャストに載る UUID を
+		// 変えない——wakeUpActivity() は mHandler.post() したランナブルの中で
 		// 読むため、post が実行されるのは onStartCommand が return した後であり、
 		// その時点では mUUID は既にどのみち新候補の値になっている。ブロード
 		// キャストの UUID の正しさを保証しているのは裁定34（状態と対の
-		// mStateUUID を運ぶ）である。欠陥15 を実際に捕まえているのは状態機械側の
-		// 裁定31a の sawCoreConnecting である）。この代入順序を保つ理由は別にある:
-		// mUUID = newUUID は killVPNThread(true) の後、かつ mVPNThread.start() の
-		// 前でなければならない。後者が破れると新スレッドの STATE_CONNECTING が
-		// 旧 UUID を載せてしまい、Ruling 13 の UUID 照合で捨てられて
-		// sawCoreConnecting が永久に立たなくなる。
+		// mStateUUID を運ぶ）であり、欠陥15 を実際に捕まえているのは状態機械側の
+		// 裁定31a の sawCoreConnecting である。
+		//
+		// 裁定42a（M8）: 以前ここには「mUUID = newUUID は killVPNThread(true) の後、
+		// かつ mVPNThread.start() の前でなければならない不変条件」と書かれていたが、
+		// 裁定34 以降これは誤りである。新スレッドの STATE_CONNECTING は
+		// OpenConnectManagementThread.setState() が mProfile.getUUIDString()
+		// （このスレッド自身が担当するプロファイルの UUID）を渡すので、mUUID の
+		// 値にも代入順序にも依存しない。killVPNThread → doStopVPN →
+		// mVPN.stopVPN() も mUUID を一切読まない。したがってこの代入順序に
+		// 機能的な要件は無い。残しているのは副次的な改善のためである:
+		// profile == null の早期 return 経路（302-304行）で、mUUID と
+		// service_mUUID が新候補の値で汚染されず古い値を保つ。
 		killVPNThread(true);
 
 		mUUID = newUUID;

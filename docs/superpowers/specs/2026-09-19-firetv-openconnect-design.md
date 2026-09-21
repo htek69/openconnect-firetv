@@ -482,19 +482,25 @@ UUID**が付き、UUID 照合では区別できなかった。実機で観測: v
   （`onStartCommand` の return 後にしか post されない）より必ず先に配送される。
   よってこのガードはこのケースを構造的に確実に捕まえる。
 - **裁定31b（`OpenVpnService.java`）**: `mUUID` への代入を `killVPNThread(true)`
-  の後、かつ `mVPNThread.start()` の前に移した（それまでは局所変数 `newUUID`
-  を使う）。**これ自体はブロードキャストに載る UUID を変えない**——
-  `wakeUpActivity()` は `mHandler.post()` したランナブルの中で `mUUID` を読み、
-  `onStartCommand` はそのランナブルと同じメインスレッドで走るため、ランナブルが
-  実行されるのは `onStartCommand` が return した**後**であり、その時点では
-  `mUUID` はどのみち新候補の値になっている。代入順序をどう変えても防げない
-  （裁定34 のレビューで判明）。ロールバックしなかったのは、`profile == null` の
-  早期 return 経路で `mUUID`/`service_mUUID` が古い値を保つという副次的な改善が
-  あり、かつ裁定34（後述）と組み合わせたときの順序として自然だからである。
-  代わりに必ず守るべき不変条件がある: `mUUID = newUUID` は `killVPNThread(true)`
-  の後、かつ `mVPNThread.start()` の前でなければならない。後者が破れると新
-  スレッドの `STATE_CONNECTING` が旧 UUID を載せてしまい、Ruling 13 の UUID
-  照合で捨てられて `sawCoreConnecting` が永久に立たなくなる。
+  の後に移した（それまでは局所変数 `newUUID` を使う）。**これ自体はブロード
+  キャストに載る UUID を変えない**——`wakeUpActivity()` は `mHandler.post()`
+  したランナブルの中で `mUUID` を読み、`onStartCommand` はそのランナブルと
+  同じメインスレッドで走るため、ランナブルが実行されるのは `onStartCommand`
+  が return した**後**であり、その時点では `mUUID` はどのみち新候補の値に
+  なっている。代入順序をどう変えても防げない（裁定34 のレビューで判明）。
+  ブロードキャストの UUID の正しさを保証しているのは裁定34
+  （状態と対の `mStateUUID` を運ぶ）であり、欠陥15 を実際に捕まえているのは
+  状態機械側の裁定31a の `sawCoreConnecting` である。
+  **裁定42a（M8）で訂正**: 以前ここには「`mUUID = newUUID` は
+  `killVPNThread(true)` の後、かつ `mVPNThread.start()` の前でなければならない
+  不変条件がある」と書かれていたが、裁定34 以降これは誤りである。新スレッドの
+  `STATE_CONNECTING` は `OpenConnectManagementThread.setState()` が
+  `mProfile.getUUIDString()`（そのスレッド自身が担当するプロファイルの UUID）
+  を渡すので、`mUUID` の値にも代入順序にも依存しない。`killVPNThread` →
+  `doStopVPN` → `mVPN.stopVPN()` も `mUUID` を一切読まない。したがって
+  この代入順序に機能的な要件は無い。ロールバックせずに残しているのは
+  副次的な改善のためである: `profile == null` の早期 return 経路で、`mUUID`
+  と `service_mUUID` が新候補の値で汚染されず古い値を保つ。
 
 **裁定34（根本原因の修正）**: 欠陥15 の根本原因は、状態のブロードキャストが
 「サービスの現在の `mUUID`」という、状態を生成したスレッドとは無関係の値を

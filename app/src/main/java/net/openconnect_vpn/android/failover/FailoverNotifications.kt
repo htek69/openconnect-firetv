@@ -58,4 +58,14 @@ object FailoverNotifications {
                 .build(),
         )
     }
+
+    /**
+     * 裁定41（M5）: [alert] で出した通知を取り下げる。呼び出し側が
+     * 「立ち上がりエッジでだけ [alert] する」規律を守っていても、状況が
+     * 解消したときに通知を残したままにしないため。
+     */
+    fun cancelAlert(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        nm.cancel(ALERT_ID)
+    }
 }
