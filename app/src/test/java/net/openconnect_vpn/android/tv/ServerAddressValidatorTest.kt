@@ -75,4 +75,32 @@ class ServerAddressValidatorTest {
     fun `正規化はパスを保持する`() {
         assertEquals("vpn.example.com/group1", ServerAddressValidator.normalize("https://vpn.example.com/group1"))
     }
+
+    @Test
+    fun `大文字の HTTPS スキームも有効`() {
+        assertTrue(ServerAddressValidator.validate("HTTPS://vpn.example.com") is AddressValidation.Valid)
+    }
+
+    @Test
+    fun `正規化は大文字の HTTPS スキームも落とす`() {
+        assertEquals("vpn.example.com", ServerAddressValidator.normalize("HTTPS://vpn.example.com"))
+    }
+
+    @Test
+    fun `ユーザ情報付き URL は資格情報として無効`() {
+        val result = ServerAddressValidator.validate("https://user:pass@vpn.example.com")
+        assertEquals(InvalidReason.ContainsCredentials, (result as AddressValidation.Invalid).reason)
+    }
+
+    @Test
+    fun `スキーム無しでも @ を含めば資格情報として無効`() {
+        val result = ServerAddressValidator.validate("admin@vpn.example.com")
+        assertEquals(InvalidReason.ContainsCredentials, (result as AddressValidation.Invalid).reason)
+    }
+
+    @Test
+    fun `https 以外のスキームは BadScheme`() {
+        val result = ServerAddressValidator.validate("ftp://vpn.example.com")
+        assertEquals(InvalidReason.BadScheme, (result as AddressValidation.Invalid).reason)
+    }
 }
