@@ -40,6 +40,19 @@ import net.openconnect_vpn.android.core.VPNLog
  *   --es host 10.255.255.1 --ei port 443
  * ```
  *
+ * **`android:permission="android.permission.DUMP"` で送信元を絞っている。**
+ * この受信機は `exported="true"` でなければ adb から到達できないが、無防備に開けると
+ * 任意のサイドロードアプリが `ACTION_DISCONNECT` で VPN を無効化できてしまう。
+ * `DUMP` は `signature|privileged|development` なので adb shell（uid 2000）は保持するが、
+ * 通常のサードパーティアプリは取得できない。これで adb からの検証手段を保ったまま
+ * 攻撃面を閉じられる。
+ *
+ * それでもこれは一時的なコンポーネントである。TV UI（計画2）が
+ * `FailoverService.connectGroup` / `disconnect` を呼べるようになった時点で、
+ * この受信機と `FailoverService` 側のハーネス用コード一式を削除すること。
+ * 現時点で削除すると、UI が無いためサービスを起動する手段が一切無くなり、
+ * アプリが使えなくなる。
+ *
  * 状態の確認は `adb logcat -s FailoverTask13Harness:D FailoverDebugReceiver:D` で行う。
  * 各コマンドの受信時と、FailoverService が状態機械をディスパッチするたびに、
  * 現在の state・excludedUuids・probeTarget を distinctive tag でログに出す。

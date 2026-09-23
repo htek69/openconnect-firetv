@@ -45,10 +45,6 @@
         android:name="net.openconnect_vpn.android.Application"
         android:theme="@android:style/Theme.Material">
         <activity
-            android:name=".tv.BuildProbeActivity"
-            android:exported="true"
-            android:theme="@android:style/Theme.Material.NoActionBar" />
-        <activity
             android:name=".ConnectionEditorActivity" />
         <activity
             android:name=".FragActivity" />
@@ -139,7 +135,8 @@
              届かないため、この受信機だけを exported にして既存のコンパニオンメソッドへ転送する。 -->
         <receiver
             android:name=".failover.FailoverDebugReceiver"
-            android:exported="true" />
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
 <!--
         <service
             android:name=".api.ExternalOpenVPNService"
