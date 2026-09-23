@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.preference.PreferenceManager
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -50,6 +51,12 @@ class FailoverService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loop: Job? = null
 
+    /**
+     * 裁定43（欠陥17）: 監視中に CPU を起こしておくための部分 wake lock。
+     * 詳細は [syncWakeLock]。
+     */
+    private var wakeLock: PowerManager.WakeLock? = null
+
     /** Ruling 27b: 外部イベントでループを早起こしするための合図。 */
     private val wakeLoop = Channel<Unit>(Channel.CONFLATED)
 
@@ -79,7 +86,11 @@ class FailoverService : Service() {
      */
     private var lastNeedsUserConsent = false
 
-    /** Ruling 17: 画面が点いているか。消灯中はティック間隔を延ばす。 */
+    /**
+     * Ruling 17: 画面が点いているか。消灯中はティック間隔を延ばす。
+     * 裁定44: 消灯中は接続しないので、この値は onCreate で実機の状態から初期化する
+     * （`true` 固定だと、消灯中に起動したサービスが繋ぎ始めてしまう）。
+     */
     private var screenOn = true
 
     /**
@@ -92,15 +103,65 @@ class FailoverService : Service() {
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_SCREEN_OFF -> screenOn = false
+                Intent.ACTION_SCREEN_OFF -> {
+                    screenOn = false
+                    onScreenOff()
+                }
+
                 Intent.ACTION_SCREEN_ON -> {
                     screenOn = true
                     if (controller.state is FailoverState.Healthy) {
                         probeOnScreenWake = true
                     }
+                    onScreenOn()
                 }
             }
         }
+    }
+
+    /**
+     * 裁定44: 画面消灯時は VPN を切断する（利用者の設計判断）。
+     *
+     * 理由は欠陥17 の測定結果である。消灯中に接続を維持しようとすると、端末が
+     * 深く眠った時点で状態機械が止まる。部分 wake lock（裁定43）は6分の消灯では
+     * 30秒間隔の tick を維持できたが、27分の消灯では tick がゼロになった。
+     * 維持を追求するなら `AlarmManager.setExactAndAllowWhileIdle()` が必要で、
+     * それでも Doze 中の起床は OS 側で9〜15分に1回程度に絞られるため、
+     * 「消灯中も監視できている」とは言い切れない状態が残る。
+     *
+     * TV が消灯している間に VPN が必要な場面は無いので、消灯したら切り、
+     * 点灯したら繋ぎ直す。これにより「消灯中は常に `Idle`」となり、
+     * 裁定43 の wake lock も自動的に解放される（`Idle` では保持しない）ので、
+     * 消灯中に電力を使い続けることも無い。Doze への対処そのものが不要になる。
+     *
+     * `activeGroupId` は**消去しない**。点灯時に同じグループへ繋ぎ直すためである
+     * （`ACTION_DISCONNECT` 経由の明示的な切断とはここが違う）。
+     */
+    private fun onScreenOff() {
+        if (controller.state is FailoverState.Idle) return
+        Log.d(HARNESS_TAG, "screen off -> disconnect")
+        dispatchExternal(FailoverEvent.UserDisconnect)
+    }
+
+    /**
+     * 裁定44: 点灯時に、記録されているグループへ繋ぎ直す。
+     *
+     * [FailoverEvent.AutoConnectGroup]（無人扱い）を使い、
+     * [FailoverEvent.UserConnectGroup] は使わない。点灯は「利用者が明示的に接続を
+     * 指示した」操作ではないので、裁定35 の除外集合クリアを起こしてはならない。
+     * 毎回クリアすると、認証情報が誤っている候補を TV の電源操作のたびに
+     * 再試行することになり、S1 が防いでいるサーバ側のアカウントロックを招く。
+     * 除外をやり直したい場合は、利用者が UI から明示的に接続を指示する。
+     */
+    private fun onScreenOn() {
+        if (controller.state !is FailoverState.Idle) return
+        val activeGroupId = groupStore.loadActiveGroupId() ?: return
+        if (VpnService.prepare(this) != null) {
+            FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
+            return
+        }
+        Log.d(HARNESS_TAG, "screen on -> reconnect $activeGroupId")
+        dispatchExternal(FailoverEvent.AutoConnectGroup(activeGroupId))
     }
 
     override fun onCreate() {
@@ -135,6 +196,13 @@ class FailoverService : Service() {
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
         bridge.register()
         registerScreenReceiver()
+
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        wakeLock = powerManager
+            ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "OpenConnectTV:failover")
+            ?.apply { setReferenceCounted(false) }
+        // 裁定44: 実機の画面状態から初期化する。isInteractive は API 20 以降。
+        screenOn = powerManager?.isInteractive ?: true
 
         restoreActiveGroupIfAny()
 
@@ -234,12 +302,49 @@ class FailoverService : Service() {
      */
     private fun restoreActiveGroupIfAny() {
         val activeGroupId = groupStore.loadActiveGroupId() ?: return
+        // 裁定44: 画面が消えている間は接続しない。プロセス kill からの復帰や
+        // 起動時に、消灯中の端末で勝手に繋ぎ始めないようにする。点灯時に
+        // onScreenOn() が繋ぎ直す。
+        if (!screenOn) {
+            Log.d(HARNESS_TAG, "restore skipped: screen is off")
+            return
+        }
         if (VpnService.prepare(this) == null) {
             // ループ起動前に一度だけ走るため、dispatchExternal の合図（早起こし）は
             // 不要（Ruling 27b 参照）。
             dispatch(FailoverEvent.AutoConnectGroup(activeGroupId))
         } else {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
+        }
+    }
+
+    /**
+     * 裁定43（欠陥17）: 状態機械が動いているあいだ CPU を起こしておく。
+     *
+     * 実機で観測した欠陥17: 画面消灯後、**68分間 tick が1度も走らなかった**
+     * （`logHarnessState()` は dispatch のたびに呼ばれるので、ログ0行＝tick 0回）。
+     * コルーチンの `delay` は端末が深いスリープに入ると発火しない。つまり
+     * 画面消灯中はフェイルオーバー機能が丸ごと停止し、トンネルが落ちても
+     * 復旧しない。Fire TV はほとんどの時間眠っている機器なので、実運用時間の
+     * 大半でエンジンが動いていないことになる。
+     *
+     * Fire TV Stick は電源に常時接続された据置機であり、電池を気にする必要が
+     * 無い。したがって「接続を維持しているあいだ CPU を起こしておく」という
+     * 素直な手段が取れる。`Idle` のときは保持しない（何も監視していないので
+     * 起きている必要が無い）。
+     *
+     * これで足りるかどうかは実機で測る。足りなければ
+     * `AlarmManager.setExactAndAllowWhileIdle()` による起床へ設計変更する。
+     */
+    private fun syncWakeLock() {
+        val shouldHold = controller.state !is FailoverState.Idle
+        val lock = wakeLock ?: return
+        if (shouldHold && !lock.isHeld) {
+            runCatching { lock.acquire() }
+            Log.d(HARNESS_TAG, "wakeLock acquired")
+        } else if (!shouldHold && lock.isHeld) {
+            runCatching { lock.release() }
+            Log.d(HARNESS_TAG, "wakeLock released")
         }
     }
 
@@ -258,6 +363,7 @@ class FailoverService : Service() {
 
     private fun dispatch(event: FailoverEvent) {
         controller.handle(event)
+        syncWakeLock()
         updateForegroundText()
         // 裁定41（M5）: lastNeedsUserConsent の説明を参照。
         val needsConsent = controller.needsUserConsent
@@ -357,6 +463,7 @@ class FailoverService : Service() {
         runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()
         scope.cancel()
+        wakeLock?.let { if (it.isHeld) runCatching { it.release() } }
         // wakeLoop は明示的に close しない。CONFLATED チャネルは close を必要とせず
         // サービスと一緒に回収される。一方 close すると「閉じたチャネルへ receive が
         // 再入すると ClosedReceiveChannelException が SupervisorJob 配下の launch から
