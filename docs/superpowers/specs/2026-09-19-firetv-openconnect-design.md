@@ -809,6 +809,18 @@ Compose for TV の `Card` や `Button` は既定でフォーカス可能なた�
 自然に満たされる見込みだが、`Modifier.clickable` を素の `Box` や `Row` に付けた場合は
 違反しうる。画面を追加するたびに計測する。
 
+**追加の基準（Task 6 の実機検証、裁定70で判明）**: **テキスト入力欄
+（`BasicTextField` 等）が画面の初期フォーカスを持ってはならない。** フォーカスが
+乗ったテキスト欄はソフトキーボードを要求し、Fire TV ではそのソフトキーボードが
+別ウィンドウ（`com.amazon.tv.ime/.FireTVIME` 等）としてアプリの Window の上に乗って
+D-pad を独占する。以後、キーイベントはそもそもアプリの Window に届かなくなるため、
+アプリ側で `Modifier.onPreviewKeyEvent` 等をどれだけ書いても効かない。
+9.4 冒頭の `clickable`/`focusable` の静的基準はこの不具合を検出できない
+（テキスト欄自体は `focusable="true"` だが、それでも画面全体が操作不能になる）。
+実装側の対策は、テキスト欄をラベル＋現在値を表示するだけのフォーカス可能な
+「行」として初期表示し、CENTER で選んだときだけテキスト欄へフォーカスを移す
+（`net.openconnect_vpn.android.tv.TvFieldRow` を参照）。
+
 ## 10. Fire TV 固有の対応
 
 **実測で判明した重要な事実**: フォーク元のマニフェストには TV 対応が**すでに入っている**。

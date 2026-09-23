@@ -1,38 +1,18 @@
 package net.openconnect_vpn.android.tv
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusDirection
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
@@ -66,21 +46,26 @@ import androidx.tv.material3.Text
  * キーを消すようにした。ここの注意書きも「無効になることがある」ではなく
  * 「消す・次回は必ず聞かれる」という事実に合わせてある。
  *
- * 裁定68（実機で発見した阻害欠陥）: 素の `BasicTextField`（`material3` の
- * `OutlinedTextField` が使えないための代替。その判断自体は裁定なし・維持）は、
- * フォーカスが乗っている間 D-pad の UP/DOWN/CENTER を内部の編集処理が横取りし、
- * 外へキーイベントを逃さない。実機計測ではこれが原因で UP/DOWN が効かず、
- * CENTER に至っては文字が入力されてしまい、「保存」にも「キャンセル」にも
- * 到達できなかった（BACK で画面を捨てるしか脱出手段が無い＝R2/R4 が壊れる）。
- * [TvTextField] 内の `Modifier.onPreviewKeyEvent` で UP/DOWN/CENTER/ENTER を
- * `BasicTextField` 本体より先に横取りし、フォーカス移動とソフトキーボード表示に
- * 差し替える（詳細は [TvTextField] と [TvTextFieldKeys] を参照）。
+ * 裁定68（実機で発見、裁定70で撤回）: 最初はテキスト欄にフォーカスを乗せたまま
+ * `Modifier.onPreviewKeyEvent` で D-pad の UP/DOWN/CENTER をアプリ側から横取りしよう
+ * とした。実機では効かなかった（裁定70参照）ため、この方式は撤回・削除した。
  *
- * 裁定69: 同じ実機検証で、サーバ URL 欄に `test.example.com` と打つと日本語 IME を
- * 経由して `てst。えぁmpぇ。こm` に変換されてしまうことが判明した。従来の
+ * 裁定69: 実機検証で、サーバ URL 欄に `test.example.com` と打つと日本語 IME を
+ * 経由して `てst。えぁmpぇ。こm` に変換されてしまうことが判明した。
  * `KeyboardType.Uri` では日本語 IME を抑止できなかったため、URL 欄だけ
- * `KeyboardType.Ascii` に変更した（詳細は URL 欄の `TvTextField` 呼び出し部を参照）。
+ * `KeyboardType.Ascii` を指定する（詳細は URL 欄の [TvFieldRow] 呼び出し部を参照）。
  * 表示名欄は意図的に既定の IME のまま（日本語で名付けたいはずだから）。
+ *
+ * 裁定70（実機で発見した阻害欠陥）: `dumpsys` で確認したところ、フォーカスが乗った
+ * `BasicTextField` は画面を開いた瞬間にソフトキーボードを要求し、Fire TV では
+ * それが別ウィンドウ（`com.amazon.tv.ime/.FireTVIME`）としてアプリの上に乗って
+ * D-pad を独占してしまう。アプリの Window にキーイベントが届かなくなるため、
+ * 裁定68の `onPreviewKeyEvent` は原理的に効かなかった。テキスト欄そのものに
+ * 初期フォーカスを持たせるのをやめ、[TvFieldRow]（ラベル＋現在値を表示する
+ * フォーカス可能な行。CENTER で選んだときだけ内部の `BasicTextField` へ
+ * フォーカスを移す）に置き換えた。詳細と設計判断は [TvFieldRow] の KDoc を参照。
+ * `GroupEditScreen`（Task 7）でも自由入力欄が要る場合はこれを再利用すること
+ * （この画面専用にしていない）。
  */
 @Composable
 fun ProfileEditScreen(
@@ -96,8 +81,6 @@ fun ProfileEditScreen(
     var displayName by remember { mutableStateOf(existing?.name ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
 
-    val addressFocus = remember { FocusRequester() }
-    val displayNameFocus = remember { FocusRequester() }
     val isEditing = editingUuid != null
 
     Column(
@@ -111,18 +94,21 @@ fun ProfileEditScreen(
             style = MaterialTheme.typography.headlineMedium,
         )
 
-        TvTextField(
+        // 裁定70: 画面全体でここだけ requestInitialFocus = true。テキスト欄では
+        // なく「行」に初期フォーカスが乗るので、開いた瞬間にソフトキーボードは
+        // 要求されない（TV では常にどこかへ初期フォーカスを置く必要があるが、
+        // それがテキスト欄自身であってはならない、というのが今回の教訓）。
+        TvFieldRow(
             value = address,
             onValueChange = { address = it; error = null },
             label = "サーバ URL（例: vpn.example.com）",
-            readOnly = false,
             // 裁定69: KeyboardType.Uri は実機の日本語 IME を抑止できず、
             // "test.example.com" が "てst。えぁmpぇ。こm" に変換された。
             // Ascii なら英数字・記号キーボードを要求するので日本語変換に落ちない。
             // 表示名欄（下）は逆に日本語で名付けたいはずなので既定のまま指定しない。
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-            focusRequester = addressFocus,
             modifier = Modifier.fillMaxWidth(),
+            requestInitialFocus = true,
         )
         if (isEditing) {
             // 裁定67: 「無効になることがあります」という可能性の言い方は誤りだった。
@@ -137,13 +123,11 @@ fun ProfileEditScreen(
             )
         }
 
-        TvTextField(
+        TvFieldRow(
             value = displayName,
             onValueChange = { displayName = it },
             label = "表示名（任意）",
-            readOnly = false,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-            focusRequester = displayNameFocus,
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -195,126 +179,6 @@ fun ProfileEditScreen(
                 Text("キャンセル")
             }
         }
-    }
-
-    // 裁定66: アドレス欄が常に編集可能になったので、常にそちらへ初期フォーカスを置く
-    // （作成・編集どちらも最初の項目という位置づけで揃う）。
-    LaunchedEffect(Unit) {
-        runCatching { addressFocus.requestFocus() }
-    }
-}
-
-/**
- * TV のリモコン操作に合わせた最小限のテキスト入力欄。
- *
- * tv-material には入力欄が無く、androidx.compose.material3 は依存に追加していない
- * （新規依存を増やさないという制約のため）ため、既存依存の
- * `androidx.compose.foundation.text.BasicTextField` を土台に、枠線とラベルだけを
- * 自前で描く。フォーカスの有無は [onFocusChanged] で追い、枠線の色に反映して
- * どの項目にフォーカスがあるかをリモコン操作でも分かるようにする。
- *
- * 裁定68: 素の `BasicTextField` はフォーカスが乗っている間、D-pad の
- * UP/DOWN/CENTER を内部の編集処理が先に消費してしまい、外（フォーカス移動）へ
- * 逃がさない。実機ではこれが原因で UP/DOWN が無反応、CENTER に至っては文字が
- * 入力されて「保存」にも「キャンセル」にも到達できなかった。
- * `Modifier.onPreviewKeyEvent` は子（`BasicTextField` 本体）より**先に**呼ばれるため、
- * ここで UP/DOWN/CENTER/ENTER を横取りしてフォーカス移動・ソフトキーボード表示に
- * 差し替え、`true` を返して `BasicTextField` に渡さない。これは編集中・非編集中で
- * 区別しない（`onPreviewKeyEvent` は IME の composing 状態に関係なく常に先に発火する
- * ため、「編集中は素通りする」といった抜け道が無い）。
- * KeyDown と KeyUp の両方を消費する（[TvTextFieldKeys.isHandled] は type を見ない）。
- * 実際のアクション（フォーカス移動／キーボード表示）は KeyDown のときだけ実行し、
- * 対になる KeyUp は「既に処理済みのキー」として無条件に消費するだけにする
- * （そうしないと KeyUp だけが `BasicTextField` に漏れて同じ不具合が再発しかねない）。
- *
- * 加えて `imeAction = Done` とセットの `onDone` で、ソフトキーボードの「完了」から
- * でも次の項目へフォーカスが送れるようにしてある（D-pad の物理キーだけに
- * 依存しない、もう1つの脱出経路）。
- */
-@Composable
-private fun TvTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    readOnly: Boolean,
-    keyboardOptions: KeyboardOptions,
-    focusRequester: FocusRequester,
-    modifier: Modifier = Modifier,
-) {
-    var isFocused by remember { mutableStateOf(false) }
-    val colors = MaterialTheme.colorScheme
-    val borderColor = if (isFocused) colors.primary else colors.border
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(label, style = MaterialTheme.typography.bodySmall)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(width = if (isFocused) 2.dp else 1.dp, color = borderColor, shape = RoundedCornerShape(4.dp))
-                .background(colors.surfaceVariant, shape = RoundedCornerShape(4.dp))
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                readOnly = readOnly,
-                singleLine = true,
-                keyboardOptions = keyboardOptions.copy(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(
-                    onDone = { focusManager.moveFocus(FocusDirection.Down) },
-                ),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
-                cursorBrush = SolidColor(colors.onSurface),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(focusRequester)
-                    .onFocusChanged { isFocused = it.isFocused }
-                    .onPreviewKeyEvent { event ->
-                        if (!TvTextFieldKeys.isHandled(event.key)) return@onPreviewKeyEvent false
-                        if (event.type == KeyEventType.KeyDown) {
-                            when (TvTextFieldKeys.actionFor(event.key)) {
-                                TvKeyAction.MoveFocusUp -> focusManager.moveFocus(FocusDirection.Up)
-                                TvKeyAction.MoveFocusDown -> focusManager.moveFocus(FocusDirection.Down)
-                                TvKeyAction.OpenKeyboard -> keyboardController?.show()
-                                TvKeyAction.Ignore -> Unit
-                            }
-                        }
-                        true
-                    },
-            )
-        }
-    }
-}
-
-/** [TvTextFieldKeys.actionFor] が返す、横取りした D-pad キーに対する挙動。 */
-enum class TvKeyAction { MoveFocusUp, MoveFocusDown, OpenKeyboard, Ignore }
-
-/**
- * どの D-pad キーを [TvTextField] が横取りするかの判定を、Compose から切り離した
- * 純粋ロジックとして持つ。`Key` / `KeyEventType` は Android フレームワークではなく
- * compose-ui のプレーンな値クラスなので Robolectric 無しでテストできる。
- */
-object TvTextFieldKeys {
-
-    private val HANDLED_KEYS = setOf(
-        Key.DirectionUp,
-        Key.DirectionDown,
-        Key.DirectionCenter,
-        Key.Enter,
-        Key.NumPadEnter,
-    )
-
-    /** true なら KeyDown・KeyUp を問わず [TvTextField] がこのキーを消費する。 */
-    fun isHandled(key: Key): Boolean = key in HANDLED_KEYS
-
-    /** [isHandled] が true のキーについて、実際に何をするか。 */
-    fun actionFor(key: Key): TvKeyAction = when (key) {
-        Key.DirectionUp -> TvKeyAction.MoveFocusUp
-        Key.DirectionDown -> TvKeyAction.MoveFocusDown
-        Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> TvKeyAction.OpenKeyboard
-        else -> TvKeyAction.Ignore
     }
 }
 
