@@ -4,11 +4,7 @@ import androidx.compose.runtime.Composable
 import net.openconnect_vpn.android.failover.GroupStore
 
 // Task 8 完了時に削除する（プレースホルダーは各タスクで本実装に置き換わる）。
-
-@Composable
-fun ProfileEditScreen(profiles: ProfileRepository, editingUuid: String?, onDone: () -> Unit) {
-    // Task 6 で実装する
-}
+// ProfileEditScreen は Task 6 で ProfileEditScreen.kt に実装済み。
 
 @Composable
 fun GroupEditScreen(

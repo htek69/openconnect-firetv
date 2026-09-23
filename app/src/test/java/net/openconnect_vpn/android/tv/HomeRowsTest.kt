@@ -198,4 +198,30 @@ class HomeRowsTest {
         val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
         assertEquals(2, (rows[0] as HomeRow.GroupRow).memberCount)
     }
+
+    @Test
+    fun `どのグループにも属さない接続先の削除警告は null`() {
+        val warning = HomeRows.groupDeletionWarning("uuid-z", listOf(group))
+        assertNull(warning)
+    }
+
+    @Test
+    fun `グループに属する接続先の削除警告はグループ名を含む`() {
+        val warning = HomeRows.groupDeletionWarning("uuid-a", listOf(group))
+        assertTrue(warning != null && warning.contains("自宅優先"))
+    }
+
+    @Test
+    fun `最後の1件を削除するとグループごと消えることを警告する`() {
+        val soloGroup = group.copy(id = "g2", name = "単独", memberUuids = listOf("uuid-a"))
+        val warning = HomeRows.groupDeletionWarning("uuid-a", listOf(soloGroup))
+        assertTrue(warning != null && warning.contains("グループごと消えます"))
+    }
+
+    @Test
+    fun `複数グループに属していればすべて警告に含まれる`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val warning = HomeRows.groupDeletionWarning("uuid-a", listOf(group, other))
+        assertTrue(warning != null && warning.contains("自宅優先") && warning.contains("予備"))
+    }
 }

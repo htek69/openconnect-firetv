@@ -130,4 +130,28 @@ object HomeRows {
         val uuid = index?.let { group.memberUuids.getOrNull(it) } ?: return null
         return profiles.firstOrNull { it.uuid == uuid }?.name
     }
+
+    /**
+     * 接続先の削除確認に添える警告文。
+     *
+     * [GroupStore.loadGroups] は既知のプロファイル UUID に無いメンバーを毎回
+     * 自動的にふるい落とし、メンバーが0件になったグループ自体も落とすため、
+     * 削除後にグループが存在しない接続先を指したままになることはない。
+     * ただしその挙動をユーザーは知らないので、削除前にどのグループへ
+     * 影響するかをここで案内する。対象がどのグループにも属していなければ null。
+     */
+    fun groupDeletionWarning(uuid: String, groups: List<FailoverGroup>): String? {
+        val affected = groups.filter { uuid in it.memberUuids }
+        if (affected.isEmpty()) return null
+
+        val parts = affected.map { group ->
+            if (group.memberUuids.size == 1) {
+                "「${group.name}」（削除するとグループごと消えます）"
+            } else {
+                "「${group.name}」"
+            }
+        }
+        return "この接続先は次のグループに含まれています: ${parts.joinToString("、")}。" +
+            "削除すると自動的にグループから外れます。"
+    }
 }

@@ -75,6 +75,7 @@ fun HomeScreen(
 
     var reloadToken by remember { mutableStateOf(0) }
     var pendingDelete by remember { mutableStateOf<HomeRow.ProfileRow?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val profileList = remember(reloadToken) { profiles.list() }
     val groupList = remember(reloadToken) {
@@ -106,6 +107,10 @@ fun HomeScreen(
             Card(onClick = { onNavigate(TvScreen.Settings) }) {
                 Text("設定", modifier = Modifier.padding(16.dp))
             }
+        }
+
+        statusMessage?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -141,7 +146,10 @@ fun HomeScreen(
                         row = row,
                         modifier = focusModifier,
                         onEdit = { onNavigate(TvScreen.EditProfile(row.uuid)) },
-                        onDelete = { pendingDelete = row },
+                        onDelete = {
+                            statusMessage = null
+                            pendingDelete = row
+                        },
                     )
 
                     HomeRow.AddProfile -> Card(
@@ -156,11 +164,22 @@ fun HomeScreen(
     }
 
     pendingDelete?.let { target ->
+        val warning = HomeRows.groupDeletionWarning(target.uuid, groupList)
+        val message = if (warning == null) {
+            "「${target.name}」を削除しますか？"
+        } else {
+            "「${target.name}」を削除しますか？\n\n$warning"
+        }
         ConfirmDialog(
-            message = "「${target.name}」を削除しますか？",
+            message = message,
             onConfirm = {
-                profiles.delete(target.uuid)
+                val deleted = profiles.delete(target.uuid)
                 pendingDelete = null
+                statusMessage = if (deleted) {
+                    null
+                } else {
+                    "「${target.name}」の削除に失敗しました。既に削除されている可能性があります。"
+                }
                 reloadToken++
             },
             onDismiss = { pendingDelete = null },
