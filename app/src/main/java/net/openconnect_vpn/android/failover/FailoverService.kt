@@ -363,6 +363,10 @@ class FailoverService : Service() {
 
     private fun dispatch(event: FailoverEvent) {
         controller.handle(event)
+        // 裁定58: Fire TV に通知シェードは無く、フォアグラウンド通知だけでは
+        // UI に接続状態が届かない。同一プロセス内の読み取り専用投影へ、
+        // 状態機械（真実）が変わるたびに publish する。
+        FailoverStateHolder.publish(controller.state)
         syncWakeLock()
         updateForegroundText()
         // 裁定41（M5）: lastNeedsUserConsent の説明を参照。
@@ -464,6 +468,9 @@ class FailoverService : Service() {
         loop?.cancel()
         scope.cancel()
         wakeLock?.let { if (it.isHeld) runCatching { it.release() } }
+        // 裁定58: サービスが止まったら投影も Idle に戻す。そうしないと、
+        // 停止済みサービスの代わりに UI が存在しない接続を表示し続けてしまう。
+        FailoverStateHolder.reset()
         // wakeLoop は明示的に close しない。CONFLATED チャネルは close を必要とせず
         // サービスと一緒に回収される。一方 close すると「閉じたチャネルへ receive が
         // 再入すると ClosedReceiveChannelException が SupervisorJob 配下の launch から
