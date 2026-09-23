@@ -100,13 +100,51 @@ class ProfileRepository(private val context: Context) {
      * この競合が起きる条件を満たさない。[rename] / [ensureBatchMode] と全く同じ
      * 状況なので、それらと同じく `apply()` で足りる。
      *
+     * 裁定67: アドレスが実際に変わるときは、このプロファイル自身の prefs に残る
+     * 資格情報・証明書承認（[isCredentialOrCertKey] が true を返すキー）も一緒に消す。
+     *
+     * `AuthFormHandler.getFormPrefix`（`AuthFormHandler.java:166-173`）が組み立てる
+     * `FORMDATA-<フォーム構造のダイジェスト>-` 鍵は、認証フォームの**構造**
+     * （各項目の type/name/label）だけから決まり、接続先サーバの identity を
+     * 一切含まない。したがって同じ形の認証フォームを出す別サーバへアドレスを
+     * 変更すると、次回接続時に `batch_mode=empty_only` かつ全項目が埋まっている
+     * 状態でこのプロファイルの資格情報が**ダイアログを出さずに新サーバへ自動送信
+     * されてしまう**（利用者のパスワードが意図しないサーバへ渡る、プライバシー上の
+     * 事故）。`ACCEPTED-CERT-<SHA1>` は証明書自身のハッシュを鍵にしているため
+     * 誤った承認には繋がらないが、もう指していないサーバの承認記録を残すのは
+     * 紛らわしく、二度と一致しないので一緒に消す。
+     *
+     * `batch_mode` を含むそれ以外のキーには触れない。
+     * キーは `profile.mPrefs.getAll()` から実際に存在するものだけを拾う
+     * （ダイジェストは計算できないので、推測ではなく列挙で判定する）。
+     *
+     * `commit()` ではなく `apply()` を使う。裁定51 が `commit()` を要求したのは
+     * `create()` 直後という特定の場面——`ProfileManager.create()` の永続化が
+     * `apply()`（非同期）で、呼び出し元が同じ呼び出しの中で直後に
+     * `rename()`/`ensureBatchMode()`/`delete()` を呼ぶと、`ProfileManager.init()` の
+     * ディレクトリ再走査がまだディスクに無いファイルを見失う——という競合を
+     * 避けるためだった。ここは `ProfileManager.get(uuid)` が既に見つけている
+     * （＝ディレクトリ走査が既に把握している）既存プロファイルの更新であり、
+     * この競合が起きる条件を満たさない。[rename] / [ensureBatchMode] と全く同じ
+     * 状況なので、それらと同じく `apply()` で足りる。
+     *
      * @return 対象プロファイルが見つかり、アドレスを変更できたら true。
      *         見つからなければ false。
      */
     fun updateServerAddress(uuid: String, serverAddress: String): Boolean {
         ProfileManager.init(context)
         val profile = ProfileManager.get(uuid) ?: return false
-        profile.mPrefs.edit().putString("server_address", serverAddress).apply()
+
+        val previous = profile.mPrefs.getString("server_address", null)
+        val editor = profile.mPrefs.edit().putString("server_address", serverAddress)
+
+        if (previous != serverAddress) {
+            profile.mPrefs.all.keys
+                .filter { isCredentialOrCertKey(it) }
+                .forEach { editor.remove(it) }
+        }
+
+        editor.apply()
         return true
     }
 
@@ -144,5 +182,15 @@ class ProfileRepository(private val context: Context) {
          */
         fun needsBatchModeUpdate(current: String?): Boolean =
             current != BATCH_MODE_EMPTY_ONLY
+
+        /**
+         * 裁定67: [key] が、サーバアドレス変更時に消すべき資格情報・証明書承認の
+         * キーかどうか。既存 Java（`ClearPasswordPreference.java:47`）が
+         * 「パスワードを消去」設定でこの2接頭辞を使っているのと同じ判定を
+         * 再利用する（あちらは全プロファイル横断・こちらは1プロファイルの
+         * prefs 内だけが対象という違いはあるが、判定条件自体は同じでよい）。
+         */
+        fun isCredentialOrCertKey(key: String): Boolean =
+            key.startsWith("FORMDATA-") || key.startsWith("ACCEPTED-CERT-")
     }
 }

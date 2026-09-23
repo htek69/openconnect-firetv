@@ -53,4 +53,39 @@ class ProfileRepositoryTest {
     fun `batch_mode が既に empty_only なら更新不要`() {
         assertEquals(false, ProfileRepository.needsBatchModeUpdate("empty_only"))
     }
+
+    // --- 裁定67: サーバアドレス変更時に消すべきキーの判定 ---
+
+    @Test
+    fun `FORMDATA- で始まるキーは資格情報キーとして判定される`() {
+        // AuthFormHandler.getFormPrefix が組み立てる形。実際のダイジェストは
+        // 計算できない前提なので、接頭辞だけで判定できることを確認する。
+        assertEquals(
+            true,
+            ProfileRepository.isCredentialOrCertKey("FORMDATA-abc123-def456"),
+        )
+    }
+
+    @Test
+    fun `ACCEPTED-CERT- で始まるキーは証明書承認キーとして判定される`() {
+        assertEquals(
+            true,
+            ProfileRepository.isCredentialOrCertKey("ACCEPTED-CERT-aa11bb22cc33"),
+        )
+    }
+
+    @Test
+    fun `server_address や batch_mode などそれ以外のキーは判定されない`() {
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("server_address"))
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("batch_mode"))
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("profile_name"))
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("profile_uuid"))
+    }
+
+    @Test
+    fun `接頭辞を含むだけで先頭一致でないキーは判定されない`() {
+        // startsWith であって contains ではないことを確認する。
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("prefix-FORMDATA-x"))
+        assertEquals(false, ProfileRepository.isCredentialOrCertKey("prefix-ACCEPTED-CERT-x"))
+    }
 }
