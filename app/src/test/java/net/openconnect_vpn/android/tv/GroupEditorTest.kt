@@ -101,4 +101,42 @@ class GroupEditorTest {
         assertEquals(emptyList<String>(), GroupEditor.moveUp(empty, "a").memberUuids)
         assertEquals(emptyList<String>(), GroupEditor.moveDown(empty, "a").memberUuids)
     }
+
+    @Test
+    fun `メンバー操作は config と autoFailoverEnabled を変えない`() {
+        // 既定値ではない FailoverConfig と autoFailoverEnabled = false を使う。
+        // 既定値のままだと「入力を保った」のか「たまたま既定値と一致した」のか
+        // テストからは区別できず、copy() でフィールドを取りこぼしていても
+        // 偶然グリーンになりかねない。
+        val customConfig = FailoverConfig(
+            probeIntervalSec = 99,
+            probeTimeoutMs = 1_234,
+            failureThreshold = 7,
+            graceAfterConnectSec = 3,
+            connectTimeoutSec = 12,
+        )
+        val source = FailoverGroup(
+            id = "g1",
+            name = "自宅優先",
+            memberUuids = listOf("a", "b"),
+            autoFailoverEnabled = false,
+            config = customConfig,
+        )
+
+        val afterAdd = GroupEditor.addMember(source, "c")
+        assertEquals(customConfig, afterAdd.config)
+        assertFalse(afterAdd.autoFailoverEnabled)
+
+        val afterRemove = GroupEditor.removeMember(source, "a")
+        assertEquals(customConfig, afterRemove.config)
+        assertFalse(afterRemove.autoFailoverEnabled)
+
+        val afterMoveUp = GroupEditor.moveUp(source, "b")
+        assertEquals(customConfig, afterMoveUp.config)
+        assertFalse(afterMoveUp.autoFailoverEnabled)
+
+        val afterMoveDown = GroupEditor.moveDown(source, "a")
+        assertEquals(customConfig, afterMoveDown.config)
+        assertFalse(afterMoveDown.autoFailoverEnabled)
+    }
 }

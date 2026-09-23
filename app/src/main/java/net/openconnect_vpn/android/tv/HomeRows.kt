@@ -19,8 +19,14 @@ sealed interface HomeRow {
         val memberCount: Int,
         val autoFailoverEnabled: Boolean,
         val badge: ConnectionBadge,
-        /** 現在つながっている候補の表示名。未接続なら null。 */
-        val activeMemberName: String?,
+        /**
+         * この行のグループで、いま対象になっている接続先の表示名。
+         * **接続済みを意味しない。** 接続済みかどうかは [badge] が示す
+         * （例: [ConnectionBadge.Connecting] の間はダイヤル中でトンネル未確立でも
+         * この名前が出る）。対象が定まっていない状態（`Idle` / `Exhausted` /
+         * `FailingOver`）では null。
+         */
+        val memberName: String?,
     ) : HomeRow
 
     data class SectionHeader(val title: String) : HomeRow
@@ -54,7 +60,7 @@ object HomeRows {
                 memberCount = group.memberUuids.size,
                 autoFailoverEnabled = group.autoFailoverEnabled,
                 badge = badgeFor(group.id, state),
-                activeMemberName = activeMemberName(group, profiles, state),
+                memberName = memberName(group, profiles, state),
             )
         }
 
@@ -97,12 +103,14 @@ object HomeRows {
     }
 
     /**
-     * 現在つながっている（または、つながろうとしている）候補の表示名。
+     * この行のグループで、いま対象になっている接続先の表示名。
+     * **接続済みを意味しない**（[FailoverState.Connecting] はダイヤル中でトンネル
+     * 未確立でも候補名を返す。接続済みかどうかは [badgeFor] が示す）。
      * [FailoverState.FailingOver] の `failedIndex` は見限られつつある候補を指す
      * だけで、次の候補への接続はまだ成立していないため null を返す。
      * こちらも6ケースを網羅し `else` は使わない。
      */
-    private fun activeMemberName(
+    private fun memberName(
         group: FailoverGroup,
         profiles: List<ProfileSummary>,
         state: FailoverState,

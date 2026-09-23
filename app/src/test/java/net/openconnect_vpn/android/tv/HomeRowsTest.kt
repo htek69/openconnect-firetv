@@ -58,12 +58,16 @@ class HomeRowsTest {
     }
 
     @Test
-    fun `接続中のグループには Connecting バッジが付く`() {
+    fun `接続中のグループには Connecting バッジが付き 候補名は出るが接続済みではない`() {
+        // Connecting はダイヤル中でトンネル未確立。memberName はどの候補へ
+        // 繋ごうとしているかを示す有用な情報として出すが、これは「接続済み」を
+        // 意味しない。接続済みかどうかは badge (Connecting) 側で示す。
         val state = FailoverState.Connecting("g1", candidateIndex = 0, startedAtMs = 0L)
         val rows = HomeRows.build(listOf(group), profiles, state)
 
         val row = rows[0] as HomeRow.GroupRow
         assertEquals(ConnectionBadge.Connecting, row.badge)
+        assertEquals("sv1", row.memberName)
     }
 
     @Test
@@ -73,27 +77,37 @@ class HomeRowsTest {
 
         val row = rows[0] as HomeRow.GroupRow
         assertEquals(ConnectionBadge.Connected, row.badge)
-        assertEquals("sv2", row.activeMemberName)
+        assertEquals("sv2", row.memberName)
     }
 
     @Test
-    fun `疎通確認中は Verifying バッジ`() {
+    fun `疎通確認中は Verifying バッジと候補名が付く`() {
+        // Verifying はすでにトンネルが張れている状態なので、memberName が
+        // 非 null であることを直接確認する。
         val state = FailoverState.Verifying("g1", candidateIndex = 0, connectedAtMs = 0L)
         val rows = HomeRows.build(listOf(group), profiles, state)
-        assertEquals(ConnectionBadge.Verifying, (rows[0] as HomeRow.GroupRow).badge)
+
+        val row = rows[0] as HomeRow.GroupRow
+        assertEquals(ConnectionBadge.Verifying, row.badge)
+        assertEquals("sv1", row.memberName)
     }
 
     @Test
-    fun `枯渇中は Retrying バッジ`() {
+    fun `枯渇中は Retrying バッジで候補名は出ない`() {
+        // Exhausted は全滅してバックオフ待ちの状態で、対象候補が定まっていない
+        // ため memberName は null であることを直接確認する。
         val state = FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 0L)
         val rows = HomeRows.build(listOf(group), profiles, state)
-        assertEquals(ConnectionBadge.Retrying, (rows[0] as HomeRow.GroupRow).badge)
+
+        val row = rows[0] as HomeRow.GroupRow
+        assertEquals(ConnectionBadge.Retrying, row.badge)
+        assertNull(row.memberName)
     }
 
     @Test
     fun `切替中は Connecting バッジで候補名は表示しない`() {
         // FailingOver.failedIndex は「見限られつつある」候補であり、まだ次の
-        // 候補への接続は成立していないため、activeMemberName は null のままにする。
+        // 候補への接続は成立していないため、memberName は null のままにする。
         val state = FailoverState.FailingOver(
             groupId = "g1",
             failedIndex = 0,
@@ -104,11 +118,11 @@ class HomeRowsTest {
 
         val row = rows[0] as HomeRow.GroupRow
         assertEquals(ConnectionBadge.Connecting, row.badge)
-        assertNull(row.activeMemberName)
+        assertNull(row.memberName)
     }
 
     @Test
-    fun `別のグループが接続中でも当該グループのバッジは None`() {
+    fun `別のグループが Healthy でも当該グループのバッジは None`() {
         val other = group.copy(id = "g2", name = "予備")
         val state = FailoverState.Healthy("g2", candidateIndex = 0, consecutiveFailures = 0, lastProbeAtMs = 0L)
 
@@ -116,6 +130,55 @@ class HomeRowsTest {
 
         assertEquals(ConnectionBadge.None, (rows[0] as HomeRow.GroupRow).badge)
         assertEquals(ConnectionBadge.Connected, (rows[1] as HomeRow.GroupRow).badge)
+    }
+
+    @Test
+    fun `別のグループが Connecting でも当該グループのバッジは None`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val state = FailoverState.Connecting("g2", candidateIndex = 0, startedAtMs = 0L)
+
+        val rows = HomeRows.build(listOf(group, other), profiles, state)
+
+        assertEquals(ConnectionBadge.None, (rows[0] as HomeRow.GroupRow).badge)
+        assertEquals(ConnectionBadge.Connecting, (rows[1] as HomeRow.GroupRow).badge)
+    }
+
+    @Test
+    fun `別のグループが Verifying でも当該グループのバッジは None`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val state = FailoverState.Verifying("g2", candidateIndex = 0, connectedAtMs = 0L)
+
+        val rows = HomeRows.build(listOf(group, other), profiles, state)
+
+        assertEquals(ConnectionBadge.None, (rows[0] as HomeRow.GroupRow).badge)
+        assertEquals(ConnectionBadge.Verifying, (rows[1] as HomeRow.GroupRow).badge)
+    }
+
+    @Test
+    fun `別のグループが FailingOver でも当該グループのバッジは None`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val state = FailoverState.FailingOver(
+            groupId = "g2",
+            failedIndex = 0,
+            awaitingUuid = "uuid-a",
+            startedAtMs = 0L,
+        )
+
+        val rows = HomeRows.build(listOf(group, other), profiles, state)
+
+        assertEquals(ConnectionBadge.None, (rows[0] as HomeRow.GroupRow).badge)
+        assertEquals(ConnectionBadge.Connecting, (rows[1] as HomeRow.GroupRow).badge)
+    }
+
+    @Test
+    fun `別のグループが Exhausted でも当該グループのバッジは None`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val state = FailoverState.Exhausted("g2", attempt = 0, retryAtMs = 0L)
+
+        val rows = HomeRows.build(listOf(group, other), profiles, state)
+
+        assertEquals(ConnectionBadge.None, (rows[0] as HomeRow.GroupRow).badge)
+        assertEquals(ConnectionBadge.Retrying, (rows[1] as HomeRow.GroupRow).badge)
     }
 
     @Test
