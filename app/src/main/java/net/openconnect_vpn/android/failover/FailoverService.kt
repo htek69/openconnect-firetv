@@ -366,7 +366,11 @@ class FailoverService : Service() {
         // 裁定58: Fire TV に通知シェードは無く、フォアグラウンド通知だけでは
         // UI に接続状態が届かない。同一プロセス内の読み取り専用投影へ、
         // 状態機械（真実）が変わるたびに publish する。
-        FailoverStateHolder.publish(controller.state)
+        // 裁定65（指摘8）: 現在対象のグループも、このサービスが実際に使っている
+        // スナップショット（`groups`。onCreate 時点で固定）から一緒に publish する。
+        // UI 側で GroupStore から読み直した一覧と世代がずれても、名前解決を
+        // このスナップショットと照合できるようにするため。
+        FailoverStateHolder.publish(controller.state, currentGroup())
         syncWakeLock()
         updateForegroundText()
         // 裁定41（M5）: lastNeedsUserConsent の説明を参照。
@@ -448,6 +452,16 @@ class FailoverService : Service() {
         is FailoverState.FailingOver -> s.groupId
         is FailoverState.Exhausted -> s.groupId
     }
+
+    /**
+     * 裁定65（指摘8）: [FailoverStateHolder] へ publish する、現在対象のグループの
+     * スナップショット。このサービスが実際に [controller] へ渡した [groups]
+     * （onCreate 時点で固定、まだ再読込されない）から引く。UI 側が
+     * `GroupStore` から独自に読み直した一覧と食い違いうるのはこちらではなく
+     * UI 側なので、参照元として信頼できるのはこちらである。
+     */
+    private fun currentGroup(): FailoverGroup? =
+        currentGroupId()?.let { id -> groups.firstOrNull { it.id == id } }
 
     private fun startForegroundCompat(text: String) {
         val notification = FailoverNotifications.foreground(this, text)

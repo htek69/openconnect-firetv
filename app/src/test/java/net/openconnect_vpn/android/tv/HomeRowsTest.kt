@@ -224,4 +224,65 @@ class HomeRowsTest {
         val warning = HomeRows.groupDeletionWarning("uuid-a", listOf(group, other))
         assertTrue(warning != null && warning.contains("自宅優先") && warning.contains("予備"))
     }
+
+    // --- 裁定65（指摘8）: withTrustworthyMemberNames ---
+
+    @Test
+    fun `エンジンのグループ定義が UI と同じなら memberName はそのまま`() {
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state)
+
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), group)
+
+        assertEquals("sv2", (reconciled[0] as HomeRow.GroupRow).memberName)
+    }
+
+    @Test
+    fun `エンジンのグループ定義が UI とずれていれば memberName を null にする`() {
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state)
+
+        // UI 側では並びが変わっている（例: グループ編集で候補順を入れ替えた）が、
+        // エンジン側（FailoverService の onCreate 時点のスナップショット）はまだ古いまま。
+        val engineGroup = group.copy(memberUuids = listOf("uuid-b", "uuid-a"))
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), engineGroup)
+
+        assertNull((reconciled[0] as HomeRow.GroupRow).memberName)
+    }
+
+    @Test
+    fun `ずれの補正は対象グループの行だけに適用され他の行は影響しない`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group, other), profiles, state)
+
+        val engineGroup = group.copy(memberUuids = listOf("uuid-b", "uuid-a"))
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group, other), engineGroup)
+
+        assertNull((reconciled[0] as HomeRow.GroupRow).memberName)
+        // g2（他のグループ）はそもそも対象でない（badge が None）ので、
+        // 元から memberName は null。影響を受けていないことをバッジで確認する。
+        assertEquals(ConnectionBadge.None, (reconciled[1] as HomeRow.GroupRow).badge)
+    }
+
+    @Test
+    fun `engineGroup が null なら何も補正しない`() {
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state)
+
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), null)
+
+        assertEquals(rows, reconciled)
+    }
+
+    @Test
+    fun `engineGroup に対応する UI 側グループが見つからなければ何も補正しない`() {
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state)
+
+        val vanishedEngineGroup = group.copy(id = "g-deleted")
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), vanishedEngineGroup)
+
+        assertEquals(rows, reconciled)
+    }
 }

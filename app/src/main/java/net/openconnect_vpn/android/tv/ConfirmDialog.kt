@@ -54,5 +54,8 @@ fun ConfirmDialog(
         }
     }
 
-    LaunchedEffect(Unit) { cancelFocus.requestFocus() }
+    // 裁定62: Dialog のコンテンツは別ウィンドウに組まれるため、このウィンドウの
+    // ノードツリーがまだアタッチされていないタイミングでこの効果が走りうる。
+    // 他の呼び出し箇所（HomeScreen の各 FocusRequester）と同じく保護する。
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
 }

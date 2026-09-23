@@ -31,6 +31,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import net.openconnect_vpn.android.failover.FailoverGroup
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.FailoverStateHolder
 import net.openconnect_vpn.android.failover.GroupStore
@@ -85,9 +86,14 @@ fun HomeScreen(
     // 裁定58: FailoverService が publish する現在の状態機械の状態を購読する。
     // ここが変われば rows も再計算され、バッジと候補名が実際の接続状況に追従する。
     val failoverState by FailoverStateHolder.state.collectAsStateWithLifecycle()
+    // 裁定65（指摘8）: 状態機械が実際に使っているグループのスナップショット。
+    // groupList（下の remember、GroupStore から読み直したもの）と世代がずれて
+    // いないかを照合するために使う。
+    val engineActiveGroup by FailoverStateHolder.activeGroup.collectAsStateWithLifecycle()
 
-    val rows = remember(reloadToken, profileList, groupList, failoverState) {
-        HomeRows.build(groupList, profileList, failoverState)
+    val rows = remember(reloadToken, profileList, groupList, failoverState, engineActiveGroup) {
+        val built = HomeRows.build(groupList, profileList, failoverState)
+        HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }
 
     val firstItemFocus = remember { FocusRequester() }
@@ -124,13 +130,20 @@ fun HomeScreen(
                         row = row,
                         modifier = focusModifier,
                         onToggleConnection = {
-                            // このグループが既に対象（バッジが None でない）なら
-                            // 触っているのは「いま繋いでいる/繋ごうとしている」相手
-                            // なので切断、そうでなければ新規に接続を指示する。
-                            if (row.badge == ConnectionBadge.None) {
-                                FailoverService.connectGroup(context, row.groupId)
-                            } else {
-                                FailoverService.disconnect(context)
+                            // 裁定63（レビュー指摘5）: None と Retrying（Exhausted）は
+                            // 「まだ何もつながっていない／全滅してバックオフ待ち」で
+                            // どちらも接続操作が要る。Retrying を切断側に倒すと、
+                            // 全滅からの復帰（裁定35 の除外クリア）に UserConnectGroup
+                            // が要るにもかかわらずラベルが「切断」になり、利用者は
+                            // 実際と違う操作を2回踏まされる。
+                            when (row.badge) {
+                                ConnectionBadge.None, ConnectionBadge.Retrying ->
+                                    FailoverService.connectGroup(context, row.groupId)
+
+                                ConnectionBadge.Connecting,
+                                ConnectionBadge.Verifying,
+                                ConnectionBadge.Connected,
+                                -> FailoverService.disconnect(context)
                             }
                         },
                         onEdit = { onNavigate(TvScreen.EditGroup(row.groupId)) },
@@ -188,7 +201,23 @@ fun HomeScreen(
 
     // TV UI で最も多い不具合は「フォーカスがどこにも無い」状態。
     // 画面表示時に必ず先頭項目へフォーカスを置く。
-    LaunchedEffect(rows) {
+    //
+    // 裁定60（レビュー指摘2・High）: 以前は LaunchedEffect(rows) だったため、
+    // rows は failoverState が変わるたびに再計算される内容（バッジ）で
+    // equals が変わり、接続中はバッジが何度も遷移する分だけこの効果が毎回
+    // 再実行されていた。その結果、利用者が2行目以降にフォーカスを合わせていても
+    // 接続の進行にあわせて勝手に1行目へ戻り、次に押した決定が意図しない行
+    // （＝意図しない接続や切断）に当たっていた。初回表示のときだけ要求するよう、
+    // 一度実行したら二度と実行しないガードを立てる。
+    //
+    // 初回に rows が空（要求先が無い）ケース: 現状 HomeRows.build は
+    // HomeRow.AddProfile を必ず末尾に足すため rows が空になることは無いが、
+    // 将来 build が変わって空を返しうる場合に備え、rows が空の間は要求せず
+    // 「空でなくなった最初の回」まで待つ（didRequestInitialFocus を立てない）。
+    var didRequestInitialFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(rows.isNotEmpty()) {
+        if (didRequestInitialFocus || rows.isEmpty()) return@LaunchedEffect
+        didRequestInitialFocus = true
         runCatching { firstItemFocus.requestFocus() }
     }
 }
@@ -222,6 +251,25 @@ private fun ConsentRequiredScreen(onRequestConsent: () -> Unit) {
     }
 }
 
+/**
+ * 裁定63（レビュー指摘5）: グループ行の決定操作は [ConnectionBadge] に応じて
+ * 接続/切断を切り替える。ラベルと実際の動作が必ず一致するよう、対応を
+ * ここに一覧化する（状態機械の [FailoverState] とバッジの対応は
+ * [HomeRows.badgeFor] を参照）。
+ *
+ * | バッジ | ラベル | 決定で呼ぶ関数 | 備考 |
+ * |---|---|---|---|
+ * | [ConnectionBadge.None] | 決定で接続 | `connectGroup` | 何も対象になっていない |
+ * | [ConnectionBadge.Connecting] | 決定で切断 | `disconnect` | ダイヤル中 |
+ * | [ConnectionBadge.Verifying] | 決定で切断 | `disconnect` | トンネル確立・疎通確認待ち |
+ * | [ConnectionBadge.Connected] | 決定で切断 | `disconnect` | 疎通確認済み |
+ * | [ConnectionBadge.Retrying] | 決定で再接続 | `connectGroup` | `Exhausted`。裁定35 により `UserConnectGroup` だけが除外集合をクリアして再試行できる |
+ *
+ * `Retrying`（`Exhausted`）を「切断」側に倒さなかった理由: 何も接続されていない
+ * 状態に「切断」ラベルを出すのは事実と矛盾するうえ、全滅からの復帰には
+ * どのみち `UserConnectGroup` が要る（`disconnect` を挟むと Idle には戻るが
+ * 除外集合はクリアされず、次に「接続」を押しても何も繋がらない: 裁定35b）。
+ */
 @Composable
 private fun GroupCard(
     row: HomeRow.GroupRow,
@@ -237,7 +285,16 @@ private fun GroupCard(
                 "${row.memberCount} 件の候補 · $auto${statusSuffix(row)}",
                 style = MaterialTheme.typography.bodySmall,
             )
-            val actionHint = if (row.badge == ConnectionBadge.None) "決定で接続" else "決定で切断"
+            // 裁定63: ラベルは実際の動作と一致させる。全状態の対応は
+            // GroupCard 直前の KDoc の表を参照。
+            val actionHint = when (row.badge) {
+                ConnectionBadge.None -> "決定で接続"
+                ConnectionBadge.Retrying -> "決定で再接続"
+                ConnectionBadge.Connecting,
+                ConnectionBadge.Verifying,
+                ConnectionBadge.Connected,
+                -> "決定で切断"
+            }
             Text("$actionHint · 長押しで編集", style = MaterialTheme.typography.bodySmall)
         }
     }

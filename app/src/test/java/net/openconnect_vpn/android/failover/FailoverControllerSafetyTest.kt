@@ -673,10 +673,27 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
         assertTrue("uuid-a" in controller.excludedUuids)
+        // uuid-a が除外され、自動的に次候補（uuid-b）へ進んでいる（生きている可能性がある）。
+        assertTrue(controller.state is FailoverState.Connecting)
+        // 裁定31: uuid-b の試行についても実機同様、自分の Connecting を観測させる
+        // （でないと、この後の Disconnected 確認が「まだ Connecting を見ていない
+        // 旧スレッドのもの」として捨てられてしまう）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
 
+        // 裁定59: このときの状態（Connecting）は「生きている可能性のある候補がある」
+        // に該当するため、同じグループへの再指示であっても Ruling 25 の2段階を
+        // 経由する（uuid-b の切断完了を待ってから uuid-a を起動する）。
+        // ここで即座に vpn.connect("uuid-a") を呼んでしまうと、uuid-b 側のスレッドが
+        // 後から tun を取る事故（裁定59 がまさに防いでいるもの）が同じグループ内でも
+        // 起こりうる。
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
 
         assertTrue(controller.excludedUuids.isEmpty())
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals("uuid-b", vpn.connectCalls.last()) // まだ uuid-a へは繋いでいない
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+
         assertEquals("uuid-a", vpn.connectCalls.last())
     }
 

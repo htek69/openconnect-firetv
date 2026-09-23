@@ -154,4 +154,36 @@ object HomeRows {
         return "この接続先は次のグループに含まれています: ${parts.joinToString("、")}。" +
             "削除すると自動的にグループから外れます。"
     }
+
+    /**
+     * 裁定65（指摘8）: [build] の `memberName` は、UI 側が読んだ [rows] 生成時点の
+     * グループ定義（`memberUuids` の並び）に対して `candidateIndex` を当てはめて
+     * 解決している。一方、状態機械（[FailoverStateHolder.activeGroup]）が実際に
+     * 使っているグループ定義は `FailoverService.onCreate` 時点で固定されたもので、
+     * 別経路（グループ編集など）で UI 側の定義だけが更新されると世代がずれる。
+     * ずれたまま同じ index を当てはめると、「実際に繋いでいるのとは別の候補」を
+     * 確信ありげに表示してしまう（[HomeRow.GroupRow.memberName] の契約が壊れる）。
+     *
+     * [engineGroup] は [FailoverStateHolder.activeGroup] からそのまま渡す。対象
+     * グループの `memberUuids` が [uiGroups] 側の同じ ID のグループと一致しない
+     * 場合だけ、その行の `memberName` を null にする（誤った名前を出すくらいなら
+     * 何も出さない）。一致していれば [rows] をそのまま返す。
+     */
+    fun withTrustworthyMemberNames(
+        rows: List<HomeRow>,
+        uiGroups: List<FailoverGroup>,
+        engineGroup: FailoverGroup?,
+    ): List<HomeRow> {
+        if (engineGroup == null) return rows
+        val uiGroup = uiGroups.firstOrNull { it.id == engineGroup.id } ?: return rows
+        if (uiGroup.memberUuids == engineGroup.memberUuids) return rows
+
+        return rows.map { row ->
+            if (row is HomeRow.GroupRow && row.groupId == engineGroup.id) {
+                row.copy(memberName = null)
+            } else {
+                row
+            }
+        }
+    }
 }

@@ -81,6 +81,35 @@ class ProfileRepository(private val context: Context) {
         return true
     }
 
+    /**
+     * 裁定66（Task 6 の判断の差し戻し）: サーバアドレスの打ち間違いは最も起きやすい
+     * 失敗であり、Fire TV では文字入力が D-pad ＋ソフトキーボードで著しく遅い。
+     * 読み取り専用のままだと1文字の訂正のために削除して作り直すことになり、
+     * そのプロファイルが属するグループのメンバーシップも失う
+     * （[GroupStore.loadGroups] は存在しないメンバー参照を読み込み時に落とすため）。
+     *
+     * [serverAddress] は正規化済みの値を渡すこと（[create] と同じ）。
+     *
+     * `commit()` ではなく `apply()` を使う。裁定51 が `commit()` を要求したのは
+     * `create()` 直後という特定の場面——`ProfileManager.create()` の永続化が
+     * `apply()`（非同期）で、呼び出し元が同じ呼び出しの中で直後に
+     * `rename()`/`ensureBatchMode()`/`delete()` を呼ぶと、`ProfileManager.init()` の
+     * ディレクトリ再走査がまだディスクに無いファイルを見失う——という競合を
+     * 避けるためだった。ここは `ProfileManager.get(uuid)` が既に見つけている
+     * （＝ディレクトリ走査が既に把握している）既存プロファイルの更新であり、
+     * この競合が起きる条件を満たさない。[rename] / [ensureBatchMode] と全く同じ
+     * 状況なので、それらと同じく `apply()` で足りる。
+     *
+     * @return 対象プロファイルが見つかり、アドレスを変更できたら true。
+     *         見つからなければ false。
+     */
+    fun updateServerAddress(uuid: String, serverAddress: String): Boolean {
+        ProfileManager.init(context)
+        val profile = ProfileManager.get(uuid) ?: return false
+        profile.mPrefs.edit().putString("server_address", serverAddress).apply()
+        return true
+    }
+
     /** @return `ProfileManager.delete()` の結果をそのまま返す。false は対象が見つからなかったことを示す。 */
     fun delete(uuid: String): Boolean {
         ProfileManager.init(context)

@@ -53,14 +53,36 @@ class ProfileEditMessagesTest {
     }
 
     @Test
-    fun `rename も ensureBatchMode も成功すれば Success`() {
-        val outcome = ProfileEditMessages.outcomeForEdit(renamed = true, batchModeEnsured = true)
+    fun `アドレス更新も rename も ensureBatchMode も成功すれば Success`() {
+        val outcome = ProfileEditMessages.outcomeForEdit(
+            addressUpdated = true,
+            renamed = true,
+            batchModeEnsured = true,
+        )
         assertEquals(ProfileEditMessages.SaveOutcome.Success, outcome)
     }
 
     @Test
+    fun `アドレス更新が失敗したら Error で理由が分かる`() {
+        // 裁定66: アドレスが変わっているのに対象プロファイルが見つからなかった
+        // （updateServerAddress が false を返した）場合。
+        val outcome = ProfileEditMessages.outcomeForEdit(
+            addressUpdated = false,
+            renamed = false,
+            batchModeEnsured = false,
+        )
+        assertTrue(outcome is ProfileEditMessages.SaveOutcome.Error)
+        val message = (outcome as ProfileEditMessages.SaveOutcome.Error).message
+        assertTrue(message.contains("見つかりませんでした"))
+    }
+
+    @Test
     fun `rename が失敗したら Error で理由が分かる`() {
-        val outcome = ProfileEditMessages.outcomeForEdit(renamed = false, batchModeEnsured = false)
+        val outcome = ProfileEditMessages.outcomeForEdit(
+            addressUpdated = true,
+            renamed = false,
+            batchModeEnsured = false,
+        )
         assertTrue(outcome is ProfileEditMessages.SaveOutcome.Error)
         val message = (outcome as ProfileEditMessages.SaveOutcome.Error).message
         assertTrue(message.contains("見つかりませんでした"))
@@ -68,7 +90,11 @@ class ProfileEditMessagesTest {
 
     @Test
     fun `rename は成功したが ensureBatchMode が失敗したら Error で理由が分かる`() {
-        val outcome = ProfileEditMessages.outcomeForEdit(renamed = true, batchModeEnsured = false)
+        val outcome = ProfileEditMessages.outcomeForEdit(
+            addressUpdated = true,
+            renamed = true,
+            batchModeEnsured = false,
+        )
         assertTrue(outcome is ProfileEditMessages.SaveOutcome.Error)
         val message = (outcome as ProfileEditMessages.SaveOutcome.Error).message
         assertTrue(message.contains("自動接続"))

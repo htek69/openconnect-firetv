@@ -36,10 +36,20 @@ import androidx.tv.material3.Text
  * 認証フォームの構造から鍵が決まるため接続前に書き込めず、初回接続時に
  * 既存の認証ダイアログで入力・保存する（仕様書 9.1）。
  *
- * 編集時にサーバアドレスを変更すると、`AuthFormHandler` が認証フォームの構造
- * から導く鍵（MD5）が変わり、既に保存済みの資格情報と一致しなくなる
- * おそれがある。そのため編集モードではアドレス欄を読み取り専用にし、
- * 表示名だけを変更できるようにしている（`rename` だけを呼ぶ）。
+ * 裁定66（Task 6 の判断の差し戻し）: 編集時にサーバ URL を読み取り専用にする案は
+ * 一度採用されたが、差し戻した。理由はアドレスの打ち間違いが最も起きやすい失敗で
+ * あり、Fire TV では文字入力が D-pad ＋ソフトキーボードで著しく遅いこと。
+ * 読み取り専用だと1文字の訂正のために削除して作り直すことになり、
+ * そのプロファイルが属するグループのメンバーシップも失う（[GroupStore] は
+ * 存在しないメンバー参照を読み込み時に自動的に落とすため）。「簡単に
+ * 追加・削除できる」（R2）の趣旨に反するので、編集可能にする。
+ *
+ * 保存済みの資格情報の鍵（`AuthFormHandler` が認証フォームの構造から導く MD5）や
+ * サーバ証明書の承認（`ACCEPTED-CERT-<SHA1>`）はサーバごとに紐づくため、
+ * アドレスを変更すると新しいアドレスに対しては無効になりうる。これらを
+ * 自動で消す・移行することはせず（既存 Java／既存 prefs 構造には触れない）、
+ * 画面上で注意書きするだけに留める（変更後の初回接続で再度確認を求められても
+ * 利用者が驚かないように）。
  */
 @Composable
 fun ProfileEditScreen(
@@ -74,16 +84,19 @@ fun ProfileEditScreen(
             value = address,
             onValueChange = { address = it; error = null },
             label = "サーバ URL（例: vpn.example.com）",
-            readOnly = isEditing,
+            readOnly = false,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             focusRequester = addressFocus,
             modifier = Modifier.fillMaxWidth(),
         )
         if (isEditing) {
+            // 裁定66: サーバ URL を変更できるようにした代わりに、資格情報や
+            // 証明書承認がアドレスに紐づいていることを事前に案内する
+            // （「なぜまた認証を求められるのか」で利用者が詰まらないように）。
             Text(
-                "既存の接続先のサーバ URL は変更できません" +
-                    "（保存済みの認証情報と紐付いているため）。" +
-                    "サーバを変えたい場合は削除してから新しく追加してください。",
+                "サーバ URL を変更すると、保存済みのユーザー名・パスワードや" +
+                    "サーバ証明書の承認がこの接続先に対して無効になることがあります。" +
+                    "変更後の初回接続時に、改めて確認を求められる場合があります。",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -108,24 +121,35 @@ fun ProfileEditScreen(
 
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Button(onClick = {
-                if (!isEditing) {
-                    when (val result = ServerAddressValidator.validate(address)) {
-                        AddressValidation.Valid -> {
-                            val normalized = ServerAddressValidator.normalize(address)
+                when (val result = ServerAddressValidator.validate(address)) {
+                    is AddressValidation.Invalid ->
+                        error = ProfileEditMessages.messageFor(result.reason)
+
+                    AddressValidation.Valid -> {
+                        val normalized = ServerAddressValidator.normalize(address)
+                        if (!isEditing) {
                             profiles.create(normalized, displayName)
                             onDone()
+                        } else {
+                            val uuid = requireNotNull(editingUuid)
+                            // 裁定66: アドレスが変わっていなければ書き込みを増やさない。
+                            // 変わっていれば updateServerAddress を呼び、その成否を
+                            // outcomeForEdit に渡す（対象が見つからなければ false）。
+                            val addressChanged = normalized != existing?.serverAddress
+                            val addressUpdated = !addressChanged ||
+                                profiles.updateServerAddress(uuid, normalized)
+                            val renamed = profiles.rename(uuid, displayName)
+                            val batchModeOk = renamed && profiles.ensureBatchMode(uuid)
+                            val outcome = ProfileEditMessages.outcomeForEdit(
+                                addressUpdated = addressUpdated,
+                                renamed = renamed,
+                                batchModeEnsured = batchModeOk,
+                            )
+                            when (outcome) {
+                                ProfileEditMessages.SaveOutcome.Success -> onDone()
+                                is ProfileEditMessages.SaveOutcome.Error -> error = outcome.message
+                            }
                         }
-
-                        is AddressValidation.Invalid ->
-                            error = ProfileEditMessages.messageFor(result.reason)
-                    }
-                } else {
-                    val uuid = requireNotNull(editingUuid)
-                    val renamed = profiles.rename(uuid, displayName)
-                    val batchModeOk = renamed && profiles.ensureBatchMode(uuid)
-                    when (val outcome = ProfileEditMessages.outcomeForEdit(renamed, batchModeOk)) {
-                        ProfileEditMessages.SaveOutcome.Success -> onDone()
-                        is ProfileEditMessages.SaveOutcome.Error -> error = outcome.message
                     }
                 }
             }) {
@@ -137,9 +161,10 @@ fun ProfileEditScreen(
         }
     }
 
-    // 編集時はアドレス欄が読み取り専用のため、フォーカスは編集できる表示名欄に置く。
+    // 裁定66: アドレス欄が常に編集可能になったので、常にそちらへ初期フォーカスを置く
+    // （作成・編集どちらも最初の項目という位置づけで揃う）。
     LaunchedEffect(Unit) {
-        runCatching { (if (isEditing) displayNameFocus else addressFocus).requestFocus() }
+        runCatching { addressFocus.requestFocus() }
     }
 }
 
@@ -218,19 +243,35 @@ object ProfileEditMessages {
     /**
      * 編集保存の結果を判定する。
      *
-     * `rename` が false を返すのは対象プロファイルが見つからなかったとき
-     * （他の経路で既に削除された等）。`ensureBatchMode` も同じ理由で false に
-     * なり得る。どちらであっても、保存できていないのに保存できたかのように
+     * [addressUpdated] / [renamed] / [batchModeEnsured] が false を返すのは
+     * いずれも対象プロファイルが見つからなかったとき（他の経路で既に削除された等）。
+     * どれか1つでも false であれば、保存できていないのに保存できたかのように
      * ホーム画面へ戻ってはいけないため、[SaveOutcome.Error] を返す。
+     * 判定は実行順（アドレス → 表示名 → batch_mode）どおりに並べ、
+     * 最初に失敗した段階のメッセージを返す。
+     *
+     * 裁定66: [addressUpdated] を追加した。アドレスが変わっていない場合は
+     * 呼び出し側が `updateServerAddress` を呼ばず true を渡す（対象が既に
+     * 見つからない場合を除き、常に成功扱いにしてよい操作だから）。
      */
-    fun outcomeForEdit(renamed: Boolean, batchModeEnsured: Boolean): SaveOutcome = when {
-        !renamed -> SaveOutcome.Error(
+    fun outcomeForEdit(
+        addressUpdated: Boolean,
+        renamed: Boolean,
+        batchModeEnsured: Boolean,
+    ): SaveOutcome = when {
+        !addressUpdated -> SaveOutcome.Error(
             "この接続先は見つかりませんでした（既に削除された可能性があります）。" +
                 "「キャンセル」でホーム画面に戻って確認してください。",
         )
 
+        !renamed -> SaveOutcome.Error(
+            "サーバ URL は保存されましたが、表示名の変更に失敗しました" +
+                "（この接続先が見つかりませんでした。既に削除された可能性があります）。" +
+                "「キャンセル」でホーム画面に戻って確認してください。",
+        )
+
         !batchModeEnsured -> SaveOutcome.Error(
-            "表示名は保存されましたが、自動接続の設定に失敗しました。" +
+            "サーバ URL と表示名は保存されましたが、自動接続の設定に失敗しました。" +
                 "「キャンセル」でホーム画面に戻って確認してください。",
         )
 
