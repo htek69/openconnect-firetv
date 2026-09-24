@@ -1,6 +1,7 @@
 package net.openconnect_vpn.android.tv
 
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -13,6 +14,34 @@ import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.PrefsKeyValueStore
 
 class TvMainActivity : ComponentActivity() {
+
+    // 裁定78: 長押しで画面遷移する操作（onLongClick）は ACTION_DOWN 中に発火するため、
+    // 続く ACTION_UP が行き場を失い、遷移先の画面の初期フォーカス要素
+    // （編集モードやダイアログの既定選択）を誤って押してしまう。対応する DOWN を
+    // この Activity が見ていない UP は孤児とみなして捨てる。判定ロジック自体は
+    // Android に依存しない OrphanKeyUpFilter に切り出してあり、JVM テストで検証できる。
+    // 選択キーは KEYCODE_DPAD_CENTER だけでなく、Fire TV では KEY_KPENTER(96) が
+    // KEYCODE_ENTER 系として届くことがあるため、ENTER / NUMPAD_ENTER も対象に含める。
+    private val orphanKeyUpFilter = OrphanKeyUpFilter(
+        trackedKeyCodes = setOf(
+            KeyEvent.KEYCODE_DPAD_CENTER,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER,
+        ),
+    )
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> orphanKeyUpFilter.onKeyDown(event.keyCode)
+            KeyEvent.ACTION_UP -> {
+                if (orphanKeyUpFilter.shouldConsumeUp(event.keyCode)) {
+                    // 孤児 UP。super に渡さず、ここで消費して捨てる。
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
