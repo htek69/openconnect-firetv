@@ -82,9 +82,50 @@ import androidx.tv.material3.Text
  * であり、まれにその分岐が本当に実行された場合、既に表示されている
  * キーボードを閉じてしまう向きにも倒れうる（無害ではなく有害）。
  *
- * 現在の実装は `EditText` がアタッチされた時点で `showSoftInput` を1回呼ぶ
- * だけで、成否を判定するコードは持たない。キーボードが実際に描画されるかは
- * 端末（Fire TV の IME 実装）次第の問題であり、コード側で推測しようとしない
+ * 裁定75（実機で発見、裁定71の記述を訂正）: 裁定71-fix(F3) 後の実装は
+ * `showSoftInput(editText, SHOW_IMPLICIT)` を1回呼ぶだけにし、「キーボードが
+ * 実際に描画されるかは端末（Fire TV の IME 実装）側の問題であり、コード側で
+ * 推測しようとしない」と書いていた。**この「端末側の問題」という診断が
+ * 誤りだった。** 実機の dumpsys（`IMMS`/IME 双方のダンプ）で追ったところ、
+ * `InputMethodService.onShowInputRequested(flags, configChange)` が false を
+ * 返して IME 自身が表示を拒否しており、`InputMethod` ウィンドウは
+ * `mViewVisibility=0x8`（GONE）・サーフェス無しのまま何も描画していなかった。
+ * この拒否には2経路しかなく、この端末（`keyboard=NOKEYS` かつ
+ * `hardKeyboardHidden=YES`）では `!onEvaluateInputViewShown()` は成立しない。
+ * 成立していたのはもう一方——`(flags & SHOW_EXPLICIT) == 0 && !configChange &&
+ * onEvaluateFullscreenMode()`——で、AOSP の言う「利用者が明示的に求めたのでな
+ * ければ邪魔なフルスクリーン IME は出さない」という拒否である。`EditText` は
+ * `IME_FLAG_NO_FULLSCREEN` を立てないので `onEvaluateFullscreenMode()` は
+ * true になり、こちらが渡していた `SHOW_IMPLICIT` フラグ（＝
+ * `mShowExplicitlyRequested=false`）と組み合わさって、IME 側に
+ * 「暗黙要求＋フルスクリーン」という拒否条件がそのまま揃っていた。
+ *
+ * 必要だったのは次の2条件を**同時に**満たすことで、直前の版は毎回どちらか
+ * 片方しか満たしていなかった:
+ *
+ * | 版 | `IME_FLAG_NO_FULLSCREEN` | 表示要求 | `onEvaluateFullscreenMode()` | 結果 |
+ * |---|---|---|---|---|
+ * | `BasicTextField`（裁定70時点） | 立つ（Compose が必ず立てる） | 明示 | false → フローティング表示を要求 | Fire TV にフローティング表示が無く描かれない |
+ * | `EditText` ＋ `SHOW_IMPLICIT`（裁定71-fix(F3)まで） | 立たない | 暗黙 | true | 暗黙＋フルスクリーンなので IME が拒否する |
+ * | `EditText` ＋ `flags = 0`（裁定75・現在） | 立たない | 明示 | true | フルスクリーンの extract エディタが出る（期待どおり） |
+ *
+ * 直し方は `showSoftInput` のフラグを `SHOW_IMPLICIT` から `0`
+ * （明示要求）に変えるだけの1語の修正である。`SHOW_FORCED` は使わない
+ * （裁定71-fix(F3) の判定どおり、利用者が閉じても居座り続ける有害な挙動を招く
+ * ため）。`flags = 0` を渡すと `IMMS` 側で `mShowExplicitlyRequested = true`
+ * が立ち、`InputMethod.SHOW_EXPLICIT` 付きで IME に届くので、上の拒否条件
+ * `(flags & SHOW_EXPLICIT) == 0` が成立しなくなる。
+ *
+ * **将来ここを `SHOW_IMPLICIT` に戻すと、コンパイルは通ったまま無言で
+ * 壊れる**（IME が表示要求を静かに拒否するだけで、例外もログもクラッシュも
+ * 出ない）。変更する場合は必ず実機の dumpsys で
+ * `mShowExplicitlyRequested` と IME 側の `mWindowVisible` を確認すること。
+ *
+ * 現在の実装は `EditText` がアタッチされた時点で `showSoftInput(editText, 0)`
+ * を1回呼ぶだけで、成否を判定するコードは持たない。裁定71-fix(F3) の結論
+ * ——`isActive` 等での成否判定やリトライ・フォールバックは足さない——は
+ * そのまま維持する。原因は上記の通り特定済みであり、フラグを正しく渡す
+ * こと自体が対策であって、実行時に成否を推測する仕組みは不要だからである
  * （詳細は編集中分岐内の `LaunchedEffect` のコメントを参照）。
  *
  * フィールドごとのキーボード種別の使い分け（サーバ URL は ASCII/URI 系、表示名は
@@ -238,14 +279,32 @@ fun TvFieldRow(
             // 自体が `toggleSoftInput`（トグル）であるため、狙って動かせたと
             // しても、その瞬間キーボードが既に出ていれば逆に閉じてしまう。
             // 判定を試みるのをやめ、アタッチ後に `showSoftInput` を1回呼ぶだけに
-            // した。実際に描画されるかどうかは Fire TV の IME 実装次第の
-            // 端末側の問題であり、ここで推測しようとしない。
+            // した。
+            //
+            // 裁定75（実機の dumpsys で特定、裁定71-fix(F3) 時点の記述を訂正）:
+            // 上の「1回呼ぶだけ」の実装は当初 `SHOW_IMPLICIT` フラグを渡していたが、
+            // それ自体が拒否の原因だった。`EditText` は `IME_FLAG_NO_FULLSCREEN` を
+            // 立てないため `InputMethodService.onEvaluateFullscreenMode()` は true
+            // になり、AOSP の `onShowInputRequested` は「暗黙要求 かつ
+            // フルスクリーン」の組み合わせを利用者の邪魔になるとみなして表示を
+            // 拒否する（`IME` 側 `mViewVisibility=0x8` でサーフェス無し、
+            // `mInputShown=true` なのに何も描かれない状態が実機で確認された）。
+            // `flags = 0`（明示要求。`SHOW_EXPLICIT` 相当）に変えると
+            // `IMMS` が `mShowExplicitlyRequested = true` を立て、拒否条件が
+            // 成立しなくなる。`SHOW_FORCED` は使わない（居座り続ける有害な
+            // 挙動のため、裁定71-fix(F3) の判定どおり）。
+            // 成否を実行時に判定してリトライ・フォールバックする、という
+            // 裁定71-fix(F3) の結論（＝しない）はそのまま維持している。原因は
+            // 上記の通り特定済みで、正しいフラグを渡すこと自体が対策だからである。
+            // **ここを `SHOW_IMPLICIT` に戻すと、コンパイルは通ったまま実機でのみ
+            // 無言で壊れる。** 変更する場合は必ず実機の dumpsys で
+            // `mShowExplicitlyRequested` を確認すること。
             LaunchedEffect(Unit) {
                 val editText = editTextRef.value ?: return@LaunchedEffect
                 editText.requestFocus()
                 val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE)
                     as? InputMethodManager ?: return@LaunchedEffect
-                imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+                imm.showSoftInput(editText, 0) // 明示要求。SHOW_IMPLICIT では IME に拒否される（裁定75）
             }
 
             // 編集中だけ有効。TvMainActivity 側の「Home へ戻る」BackHandler より
