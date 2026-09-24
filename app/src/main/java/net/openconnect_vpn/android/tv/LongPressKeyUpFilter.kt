@@ -33,13 +33,13 @@ package net.openconnect_vpn.android.tv
  * Android の `KeyEvent` には依存しない純粋なクラスなので JVM 単体テストで検証できる。
  * `TvMainActivity.dispatchKeyEvent` から呼び出して使う。
  *
- * **守備範囲は `TvMainActivity` の Window に限る**（裁定81）。`ConfirmDialog` が使う
- * `androidx.compose.ui.window.Dialog` は独立した別の Window を作るため、
- * `dispatchKeyEvent` はそのダイアログの Window に届く `ACTION_UP` を一切見られず、
- * このクラスは無力である。ダイアログの Window の中の誤爆対策には、別の判定基準
- * （新しい Window は長押しの DOWN をそもそも見ていないので「孤児の UP を捨てる」で
- * 正しく機能する）を使う [DialogOrphanUpFilter] を使うこと。詳細は
- * [DialogOrphanUpFilter] の KDoc（両者の守備範囲の違いの節）を参照。
+ * **守備範囲は `TvMainActivity` の Window**。裁定81 では `ConfirmDialog` が
+ * `androidx.compose.ui.window.Dialog` で別の Window を作っていたため、この
+ * クラスは確認ダイアログの誤爆を防げなかった（ダイアログの Window に届く
+ * `ACTION_UP` を `dispatchKeyEvent` が一切見られないため）。裁定83 で
+ * `ConfirmDialog` を別 Window の `Dialog` から Activity と同じ Window の中に
+ * 描く画面内オーバーレイへ作り直したことで、確認ダイアログもこのクラスの
+ * 守備範囲に自然に入るようになった（専用の別クラスは不要になり削除した）。
  */
 class LongPressKeyUpFilter(private val trackedKeyCodes: Set<Int>) {
 

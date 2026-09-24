@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -106,7 +107,17 @@ fun HomeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 48.dp, vertical = 32.dp),
+            .padding(horizontal = 48.dp, vertical = 32.dp)
+            // 裁定83: ConfirmDialog は別 Window の Dialog をやめ、この画面と同じ
+            // Window の中に描くオーバーレイになった。表示中に背後のこの Column
+            // （ヘッダーの2枚のカードと LazyColumn の各行）へフォーカスが移ると、
+            // オーバーレイの陰で意図しない接続/切断や編集画面遷移が起きうる。
+            // Modifier.focusProperties の canFocus は、その要素配下の
+            // フォーカスターゲットすべてに継承される（より内側で上書きされない
+            // 限り）ため、この1箇所を false にするだけで LazyColumn の行・
+            // ヘッダーのカードを含む配下すべてがフォーカス探索の対象から外れる。
+            // pendingDelete が null に戻ればまた true になり、通常操作に戻る。
+            .focusProperties { canFocus = pendingDelete == null },
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(
