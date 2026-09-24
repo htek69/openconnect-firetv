@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,9 +86,28 @@ fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
 
     val requestConsent = rememberVpnConsentLauncher()
 
+    // 裁定85（実機で発見）: この Column は fillMaxSize() でスクロールを持たず、
+    // 1920x1080 実機では内容が画面の高さを超えた分がそのまま描画されない
+    // ことが uiautomator dump で確認された（「設定を保存」「VPN の許可を
+    // 取得する」「VPN を切断する」「詳細設定とログ（従来の画面）」「戻る」の
+    // 5つの文字列が dump に一切現れず、D-pad で降りるとバウンディングボックス
+    // [0,0][0,0] の位置だけにフォーカスが移った＝レイアウトされていない）。
+    // 裁定82（GroupEditScreen）と同じ壊れ方だが、あちらと違いこの画面の
+    // 内容はすべて固定長（可変長のリストを持たない）なので、LazyColumn +
+    // weight(1f) の構成に変える理由が無い。単純に
+    // Modifier.verticalScroll(rememberScrollState()) を外側の Column に
+    // 与えるだけで足りる。Compose はフォーカス移動に追従してこの
+    // ScrollState を自動でスクロールするため、D-pad で下へ降りていけば
+    // 上の5つのボタン・カードは順にフォーカスが乗った時点で可視領域内に
+    // 入る。裁定70（テキスト欄そのものに初期フォーカスを持たせない）には
+    // 触れていない——初期フォーカスは以前と変わらず宛先ホストの
+    // TvFieldRow（requestInitialFocus = true）のままで、verticalScroll は
+    // スクロール可能にするだけでフォーカスの初期位置やフォーカス探索の
+    // 経路には影響しない。
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 48.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
