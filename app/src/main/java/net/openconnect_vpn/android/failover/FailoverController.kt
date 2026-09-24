@@ -9,11 +9,20 @@ package net.openconnect_vpn.android.failover
  * 結果を [FailoverEvent.ProbeResult] として戻す。
  */
 class FailoverController(
-    private val groups: List<FailoverGroup>,
+    private val groupsProvider: () -> List<FailoverGroup>,
     private val clock: Clock,
     private val vpn: VpnController,
     private val network: NetworkGate,
 ) {
+
+    /**
+     * 裁定48/72: グループ一覧を1回だけ受け取って保持するのをやめ、参照のたびに
+     * [groupsProvider] を呼ぶ。これにより FailoverService が SharedPreferences の
+     * 変更を検知して読み直した最新のグループ一覧が、コントローラを作り直さずに
+     * （＝接続中の状態・除外集合・世代カウンタを失わずに）ここへ届く。
+     * [groupOf] / [configOf] の呼び出し側はこれまでどおり同期的な参照のまま使える。
+     */
+    private val groups: List<FailoverGroup> get() = groupsProvider()
 
     var state: FailoverState = FailoverState.Idle
         private set
@@ -114,6 +123,10 @@ class FailoverController(
     private var pendingConnectGroupId: String? = null
 
     fun handle(event: FailoverEvent) {
+        // 裁定72a: どのイベントを処理する前にも、まず現在の候補の添字が
+        // 最新のグループ構成とまだ整合しているかを確認する。理由は
+        // reconcileCandidateIdentity のドキュメントを参照。
+        state = reconcileCandidateIdentity(state)
         state = when (event) {
             is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId)
             is FailoverEvent.AutoConnectGroup -> onAutoConnect(event.groupId)
@@ -123,6 +136,68 @@ class FailoverController(
             is FailoverEvent.UnderlyingNetworkChanged -> onUnderlyingNetworkChanged(event.available)
             is FailoverEvent.Tick -> onTick()
         }
+    }
+
+    /**
+     * 裁定72a: `FailoverState` は現在の候補を**添字**（`candidateIndex` /
+     * `failedIndex`）で持つ。これは「[groupsProvider] が返す一覧のその時点の並び」
+     * における位置でしかない。TV UI が接続中にグループのメンバーを並び替えたり
+     * 削除したりすると、次に読み直された一覧では同じ添字が別の接続先を指す
+     * ことになる——計画1 で欠陥13・欠陥15 として潰した「画面は A に接続済みと
+     * 言っているのに実際のトンネルは B」という嘘と同じ形の事故が、エンジンの
+     * 内部競合ではなく設定変更という経路から再来する。
+     *
+     * [currentCandidateUuid] は候補への接続を開始した瞬間に固定される真実であり、
+     * 添字より信頼できる。ここで両者を突き合わせ:
+     *
+     * - 現在の候補がまだ新しい一覧のどこかに存在する（並び替えられただけ）:
+     *   添字をその位置へ振り直す。接続そのものは維持してよい。
+     * - 存在しない（削除された）: この候補はグループから外されたということ。
+     *   「生きている候補」として扱い続けてはならず、通常の障害経路
+     *   （[failOver]。まだ生きている可能性があるので `alreadyDown = false`）へ
+     *   入れる。ただし既に [FailoverState.FailingOver] で切断確認を待っている
+     *   最中なら、[failOver] を再度呼んで `vpn.disconnect()` を二重に要求したり
+     *   `startedAtMs` をリセットしたりしてはならない（Ruling 25/裁定26 の
+     *   「上限は起点が変わらない限り有界」という前提を壊す）。その場合は
+     *   `failedIndex` を「不明」を表す `-1` に落とすだけに留める。
+     *   [advanceAfterFailingOver] は `failedIndex + 1` を次の探索開始位置に
+     *   使うので、`-1` なら新しい一覧の先頭（0）から探し直すことになり、
+     *   もう存在しない位置を引きずらない。
+     *
+     * [handle] の冒頭でイベント種別を問わず毎回呼ぶ（Tick に限らない）。判定は
+     * 現在の候補ひとつを `memberUuids` から引くだけの O(メンバー数) であり、
+     * メンバー数はたかだか数件なので Tick のたびに走らせても安い。Tick 以外の
+     * `onDisconnected` / `onUnattendedUserPrompt` も候補の添字からメンバーを
+     * 逆引きして S1 の除外対象を決めるため、Tick 経由でしか直さないと次の
+     * Tick が来るまでの間はそれらのハンドラが古い添字を使ってしまう
+     * （＝間違った候補を除外しかねない）。イベント種別を問わず毎回直すことで
+     * その隙間を作らない。
+     */
+    private fun reconcileCandidateIdentity(s: FailoverState): FailoverState {
+        val groupId = groupIdOf(s) ?: return s
+        val index = candidateIndexOf(s) ?: return s
+        val uuid = currentCandidateUuid ?: return s
+        val group = groupOf(groupId) ?: return s
+
+        if (group.memberUuids.getOrNull(index) == uuid) return s
+
+        val newIndex = group.memberUuids.indexOf(uuid)
+        if (newIndex >= 0) return withCandidateIndex(s, newIndex)
+
+        return if (s is FailoverState.FailingOver) {
+            s.copy(failedIndex = -1)
+        } else {
+            failOver(groupId, failedIndex = -1, alreadyDown = false)
+        }
+    }
+
+    private fun withCandidateIndex(s: FailoverState, index: Int): FailoverState = when (s) {
+        is FailoverState.Connecting -> s.copy(candidateIndex = index)
+        is FailoverState.Verifying -> s.copy(candidateIndex = index)
+        is FailoverState.Healthy -> s.copy(candidateIndex = index)
+        is FailoverState.FailingOver -> s.copy(failedIndex = index)
+        is FailoverState.Exhausted -> s
+        FailoverState.Idle -> s
     }
 
     /**

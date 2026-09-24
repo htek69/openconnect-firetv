@@ -60,7 +60,7 @@ class FailoverControllerUserSwitchTest {
         clock = FakeClock(0L)
         vpn = FakeVpnController()
         network = FakeNetworkGate(available = true)
-        controller = FailoverController(listOf(g1, g2, g3), clock, vpn, network)
+        controller = FailoverController({ listOf(g1, g2, g3) }, clock, vpn, network)
     }
 
     @Test

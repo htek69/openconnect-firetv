@@ -27,7 +27,7 @@ class FailoverControllerHappyPathTest {
         vpn = FakeVpnController()
         network = FakeNetworkGate(available = true)
         controller = FailoverController(
-            groups = listOf(group),
+            groupsProvider = { listOf(group) },
             clock = clock,
             vpn = vpn,
             network = network,

@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -66,6 +67,22 @@ class FailoverService : Service() {
     private lateinit var bridge: VpnStatusBridge
     private lateinit var networkGate: NetworkGate
     private var probeTarget: ProbeTarget = ProbeTarget()
+
+    /**
+     * 裁定48/72: TV UI が保存したグループ・プローブ宛先の変更を検知するための
+     * リスナ。onCreate で登録し onDestroy で解除する。[FailoverController] には
+     * `{ groups }` という供給関数を渡してあるので、このサービスが持つ [groups]
+     * を差し替えるだけでコントローラ側の次回参照から新しい値が見える。
+     * ここでは [groups]/[probeTarget] を更新して [wakeLoop] を早起こしする
+     * だけでよい（コントローラを作り直さない。作り直すと接続中の状態・
+     * 除外集合・世代カウンタを失う）。
+     */
+    private lateinit var prefs: SharedPreferences
+    private val prefsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (!groupStore.isReloadTriggerKey(key)) return@OnSharedPreferenceChangeListener
+            reloadGroupsAndProbeTarget()
+        }
 
     /**
      * onCreate で読み込んだグループ一覧。Ruling 5 のプローブタイムアウト解決のために、
@@ -170,7 +187,7 @@ class FailoverService : Service() {
         startForegroundCompat("待機中")
         lastForegroundText = "待機中"
 
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        prefs = PreferenceManager.getDefaultSharedPreferences(this)
         groupStore = GroupStore(PrefsKeyValueStore(prefs))
         probe = TcpHealthProbe()
         networkGate = ConnectivityNetworkGate(this)
@@ -187,7 +204,7 @@ class FailoverService : Service() {
 
         groups = groupStore.loadGroups(knownUuids)
         controller = FailoverController(
-            groups = groups,
+            groupsProvider = { groups },
             clock = SystemClock(),
             vpn = OpenConnectVpnController(this),
             network = networkGate,
@@ -196,6 +213,7 @@ class FailoverService : Service() {
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
         bridge.register()
         registerScreenReceiver()
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
         wakeLock = powerManager
@@ -316,6 +334,25 @@ class FailoverService : Service() {
         } else {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
         }
+    }
+
+    /**
+     * 裁定48/72: TV UI が保存したグループ一覧またはプローブ宛先が変わったときに
+     * [prefsListener] から呼ばれる。[FailoverController] を作り直さず、
+     * コンストラクタに渡した供給関数 `{ groups }` が次に参照したときに新しい
+     * 値を返せるよう、この [groups] フィールドを差し替えるだけでよい。
+     * [probeTarget] も同様に読み直す。最後に [wakeLoop] を早起こしし、次の
+     * Tick 分の遅延を待たずに新しい設定（特に R6 の自動切替 ON/OFF）を
+     * 反映させる。
+     *
+     * `ProfileManager.getProfiles()` は [onCreate] と同じ理由（既に削除された
+     * プロファイルの UUID をメンバーから除去する）で毎回引き直す。
+     */
+    private fun reloadGroupsAndProbeTarget() {
+        val knownUuids = ProfileManager.getProfiles().map { it.getUUIDString() }.toSet()
+        groups = groupStore.loadGroups(knownUuids)
+        probeTarget = groupStore.loadProbeTarget()
+        wakeLoop.trySend(Unit)
     }
 
     /**
@@ -477,6 +514,7 @@ class FailoverService : Service() {
     }
 
     override fun onDestroy() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         bridge.unregister()
         runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()

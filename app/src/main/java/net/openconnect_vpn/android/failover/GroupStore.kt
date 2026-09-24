@@ -66,6 +66,16 @@ class GroupStore(private val store: KeyValueStore) {
         }
     }
 
+    /**
+     * 裁定48/72: FailoverService が SharedPreferences の変更リスナで
+     * 「グループまたはプローブ宛先に関わるキーが変わったか」を判定するための
+     * 問い合わせ。永続化フォーマットや保存先はここで一切変えない
+     * （読み取り専用の追加であり、キー文字列を外に漏らさないための窓口）。
+     * `KEY_ACTIVE_GROUP_ID` はどのグループに繋ぐかの記録であって
+     * グループ定義そのものではないので対象に含めない。
+     */
+    fun isReloadTriggerKey(key: String?): Boolean = key == KEY_GROUPS || key == KEY_PROBE_TARGET
+
     private companion object {
         const val KEY_GROUPS = "failover_groups_v1"
         const val KEY_PROBE_TARGET = "failover_probe_target_v1"

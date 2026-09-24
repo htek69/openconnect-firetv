@@ -26,7 +26,7 @@ class FailoverControllerSafetyTest {
         clock = FakeClock(1_000L)
         vpn = FakeVpnController()
         network = FakeNetworkGate(available = true)
-        controller = FailoverController(listOf(group), clock, vpn, network)
+        controller = FailoverController({ listOf(group) }, clock, vpn, network)
     }
 
     // --- S1: 認証失敗した候補は再試行しない ---
@@ -524,7 +524,7 @@ class FailoverControllerSafetyTest {
             autoFailoverEnabled = true,
             config = FailoverConfig(connectTimeoutSec = 8),
         )
-        val shortController = FailoverController(listOf(shortTimeoutGroup), clock, vpn, network)
+        val shortController = FailoverController({ listOf(shortTimeoutGroup) }, clock, vpn, network)
 
         // UserConnectGroup は unattended = false になり、UserPrompt タイムアウトの
         // 対象外になってしまう（画面の前にいるので待たせてよい）ので、uuid-a を
