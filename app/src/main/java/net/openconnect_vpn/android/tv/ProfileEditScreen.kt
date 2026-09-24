@@ -1,6 +1,7 @@
 package net.openconnect_vpn.android.tv
 
 import android.text.InputType
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,7 +13,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
@@ -76,7 +81,25 @@ import androidx.tv.material3.Text
  * 詳細と設計判断は [TvFieldRow] の KDoc を参照。
  * `GroupEditScreen`（Task 7）でも自由入力欄が要る場合は [TvFieldRow] を
  * 再利用すること（この画面専用にしていない）。
+ *
+ * 裁定76（実機で再現した阻害欠陥）: 最後の入力行から `DPAD_DOWN` で
+ * ボタン行に入ると、既定の2次元フォーカス探索では「キャンセル」に着地して
+ * いた（`保存` には着地しない）。`保存` はこの画面で最も押される操作なので、
+ * 利用者が自然に「下 → 決定」と押すと変更が保存されずに破棄される事故に
+ * つながる。原因は Compose の既定の2次元フォーカス探索が、直前のフォーカス
+ * 矩形（幅いっぱいの [TvFieldRow] の行）ともっとも近い候補をボタンの
+ * 矩形の重なり・距離だけで機械的に選ぶことで、「意味的にどのボタンが
+ * 既定であるべきか」という情報を一切持たないため。ボタンの並び順を
+ * 保存→キャンセルにしていても、それだけでは探索結果を保証できない。
+ * 対策として、ボタン行に `Modifier.focusGroup()` と
+ * `Modifier.focusProperties { enter = ... }`（[FocusRequester] で「保存」を
+ * 指す）を付け、このボタン行に**どの方向から**入っても常に「保存」へ
+ * 着地するようにした（`enter` はグループへの進入時に呼ばれ、方向を問わない
+ * ため、`DOWN` 以外の経路で将来ボタンより上の要素が増減しても壊れにくい）。
+ * `LEFT`/`RIGHT` によるボタン間移動と、ボタン行から `UP` で入力行へ戻る
+ * 動作は `enter`/`exit` のどちらも上書きしていないので既定のまま維持される。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ProfileEditScreen(
     profiles: ProfileRepository,
@@ -90,6 +113,9 @@ fun ProfileEditScreen(
     var address by remember { mutableStateOf(existing?.serverAddress ?: "") }
     var displayName by remember { mutableStateOf(existing?.name ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
+
+    // 裁定76: ボタン行への既定の進入先を「保存」に固定するための FocusRequester。
+    val saveButtonFocus = remember { FocusRequester() }
 
     val isEditing = editingUuid != null
 
@@ -158,40 +184,54 @@ fun ProfileEditScreen(
             style = MaterialTheme.typography.bodySmall,
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Button(onClick = {
-                when (val result = ServerAddressValidator.validate(address)) {
-                    is AddressValidation.Invalid ->
-                        error = ProfileEditMessages.messageFor(result.reason)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            // 裁定76: 既定の2次元フォーカス探索はこの行に「キャンセル」で
+            // 着地しうる（実機で確認済み）。`focusGroup()` + `focusProperties`
+            // でこの行に入るときの既定を常に「保存」へ固定する。
+            modifier = Modifier
+                .focusGroup()
+                .focusProperties { enter = { saveButtonFocus } },
+        ) {
+            Button(
+                onClick = {
+                    when (val result = ServerAddressValidator.validate(address)) {
+                        is AddressValidation.Invalid ->
+                            error = ProfileEditMessages.messageFor(result.reason)
 
-                    AddressValidation.Valid -> {
-                        val normalized = ServerAddressValidator.normalize(address)
-                        if (!isEditing) {
-                            profiles.create(normalized, displayName)
-                            onDone()
-                        } else {
-                            val uuid = requireNotNull(editingUuid)
-                            // 裁定66: アドレスが変わっていなければ書き込みを増やさない。
-                            // 変わっていれば updateServerAddress を呼び、その成否を
-                            // outcomeForEdit に渡す（対象が見つからなければ false）。
-                            val addressChanged = normalized != existing?.serverAddress
-                            val addressUpdated = !addressChanged ||
-                                profiles.updateServerAddress(uuid, normalized)
-                            val renamed = profiles.rename(uuid, displayName)
-                            val batchModeOk = renamed && profiles.ensureBatchMode(uuid)
-                            val outcome = ProfileEditMessages.outcomeForEdit(
-                                addressUpdated = addressUpdated,
-                                renamed = renamed,
-                                batchModeEnsured = batchModeOk,
-                            )
-                            when (outcome) {
-                                ProfileEditMessages.SaveOutcome.Success -> onDone()
-                                is ProfileEditMessages.SaveOutcome.Error -> error = outcome.message
+                        AddressValidation.Valid -> {
+                            val normalized = ServerAddressValidator.normalize(address)
+                            if (!isEditing) {
+                                profiles.create(normalized, displayName)
+                                onDone()
+                            } else {
+                                val uuid = requireNotNull(editingUuid)
+                                // 裁定66: アドレスが変わっていなければ書き込みを増やさない。
+                                // 変わっていれば updateServerAddress を呼び、その成否を
+                                // outcomeForEdit に渡す（対象が見つからなければ false）。
+                                val addressChanged = normalized != existing?.serverAddress
+                                val addressUpdated = !addressChanged ||
+                                    profiles.updateServerAddress(uuid, normalized)
+                                val renamed = profiles.rename(uuid, displayName)
+                                val batchModeOk = renamed && profiles.ensureBatchMode(uuid)
+                                val outcome = ProfileEditMessages.outcomeForEdit(
+                                    addressUpdated = addressUpdated,
+                                    renamed = renamed,
+                                    batchModeEnsured = batchModeOk,
+                                )
+                                when (outcome) {
+                                    ProfileEditMessages.SaveOutcome.Success -> onDone()
+                                    is ProfileEditMessages.SaveOutcome.Error ->
+                                        error = outcome.message
+                                }
                             }
                         }
                     }
-                }
-            }) {
+                },
+                // 裁定76: このボタンがボタン行の既定の進入先になる（上の
+                // focusProperties { enter = ... } 参照）。
+                modifier = Modifier.focusRequester(saveButtonFocus),
+            ) {
                 Text("保存")
             }
             Button(onClick = onDone) {

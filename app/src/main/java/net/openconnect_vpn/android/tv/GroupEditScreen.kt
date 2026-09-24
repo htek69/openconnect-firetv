@@ -1,5 +1,6 @@
 package net.openconnect_vpn.android.tv
 
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,7 +14,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.Card
@@ -49,7 +54,17 @@ import java.util.UUID
  * キーを監視し、変わればグループ定義を読み直す（計画1 Task 6.5）ため、自動切替の
  * ON/OFF を含む変更は保存するだけで稼働中の接続にも反映される。別途シグナリング
  * は行わない。
+ *
+ * 裁定76（実機で再現した阻害欠陥、`ProfileEditScreen` と共通）: 最後の入力行
+ * （候補リストの末尾の項目）から `DPAD_DOWN` でボタン行に入ると、既定の
+ * 2次元フォーカス探索では「キャンセル」に着地していた。このスクリーンは
+ * ボタンが3つ（保存・キャンセル・グループを削除、削除は編集時のみ）ある
+ * ため、[ProfileEditScreen] と同じ理由で余計に不安定になりうる。詳細な原因と
+ * 対策（`Modifier.focusGroup()` + `Modifier.focusProperties { enter = ... }`
+ * でボタン行の既定の進入先を「保存」に固定する）は [ProfileEditScreen] の
+ * KDoc の裁定76の節を参照。この画面でもボタン行の先頭が「保存」になる。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun GroupEditScreen(
     profiles: ProfileRepository,
@@ -76,6 +91,9 @@ fun GroupEditScreen(
 
     fun nameOf(uuid: String): String =
         allProfiles.firstOrNull { it.uuid == uuid }?.name ?: uuid
+
+    // 裁定76: ボタン行への既定の進入先を「保存」に固定するための FocusRequester。
+    val saveButtonFocus = remember { FocusRequester() }
 
     Column(
         modifier = Modifier
@@ -147,13 +165,26 @@ fun GroupEditScreen(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Button(onClick = {
-                if (group.name.isBlank() || group.memberUuids.isEmpty()) return@Button
-                val others = storedGroups.filterNot { it.id == group.id }
-                groupStore.saveGroups(others + group)
-                onDone()
-            }) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            // 裁定76: 既定の2次元フォーカス探索はこの行に「キャンセル」で
+            // 着地しうる（実機で確認済み）。`focusGroup()` + `focusProperties`
+            // でこの行に入るときの既定を常に「保存」へ固定する。
+            modifier = Modifier
+                .focusGroup()
+                .focusProperties { enter = { saveButtonFocus } },
+        ) {
+            Button(
+                onClick = {
+                    if (group.name.isBlank() || group.memberUuids.isEmpty()) return@Button
+                    val others = storedGroups.filterNot { it.id == group.id }
+                    groupStore.saveGroups(others + group)
+                    onDone()
+                },
+                // 裁定76: このボタンがボタン行の既定の進入先になる（上の
+                // focusProperties { enter = ... } 参照）。
+                modifier = Modifier.focusRequester(saveButtonFocus),
+            ) {
                 Text("保存")
             }
             Button(onClick = onDone) {
