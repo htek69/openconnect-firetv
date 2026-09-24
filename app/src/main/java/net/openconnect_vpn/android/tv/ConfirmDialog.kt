@@ -46,6 +46,16 @@ import androidx.tv.material3.Text
  * 呼び出し側（`HomeScreen` 等）のシグネチャは変えていない。背後の画面の要素へ
  * フォーカスが漏れない仕組みは呼び出し側（`HomeScreen` の背後の `Column` に
  * 掛けた `Modifier.focusProperties { canFocus = ... }`）で確保している。
+ *
+ * 裁定84（fix8）: `canFocus` を `true` に戻すだけでは、それ以前にフォーカスを
+ * 持っていたノードは自動的には復帰しない（Compose の仕様。誰かが改めて
+ * `requestFocus()` を呼ばない限りフォーカスはどこにも無い状態のまま）。
+ * このコンポーザブルはそれを知らなくてよい設計のままにしてある
+ * （[onConfirm] / [onDismiss] を呼ぶだけ）。閉じたあとにどの行へフォーカスを
+ * 戻すか（キャンセル/BACK なら長押しした行、削除実行なら詰めたあとに
+ * 同じ位置へ来た行）は呼び出し側（`HomeScreen` の `onConfirm`/`onDismiss` と、
+ * それらがセットする `FocusRestoreRequest` を処理する `LaunchedEffect`）の
+ * 責務にしている。
  */
 @Composable
 fun ConfirmDialog(

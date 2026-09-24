@@ -17,6 +17,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -101,8 +102,30 @@ fun HomeScreen(
         val built = HomeRows.build(groupList, profileList, failoverState)
         HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }
+    // 裁定84（fix8）: rows のうちフォーカス対象になりうる行のキーだけを並べたもの。
+    // 初回フォーカスの対象や、ConfirmDialog を閉じたあとの復帰先
+    // （HomeRows.targetKeyAfterConfirmedDelete）を決めるのに使う。
+    val focusableKeys = remember(rows) { rows.mapNotNull { it.focusKey() } }
 
-    val firstItemFocus = remember { FocusRequester() }
+    // 裁定84（fix8）: 行ごとの FocusRequester を focusKey() で引けるようにする
+    // キャッシュ。rows はバッジの変化などのたびに新しい List インスタンスとして
+    // 作り直されるが、同じ行なら focusKey() は変わらないので、ここに一度作った
+    // FocusRequester をそのまま使い続ける（作り直すと、対象を掴んだままの
+    // Modifier.focusRequester との対応が切れてしまう）。Compose の状態
+    // （mutableStateOf）には乗せない単なるオブジェクトキャッシュなので
+    // remember { } だけで十分（このマップ自体の変更が再コンポーズを起こす
+    // 必要はない）。
+    val focusRequesters = remember { mutableMapOf<String, FocusRequester>() }
+    fun focusRequesterFor(key: String): FocusRequester =
+        focusRequesters.getOrPut(key) { FocusRequester() }
+
+    // 裁定84（fix8）: ConfirmDialog を「閉じた」という一度きりの出来事にだけ
+    // 反応してフォーカスを戻すためのリクエスト。token は、内容が同じリクエストが
+    // 連続しても LaunchedEffect のキーが必ず変わる（＝必ず再実行される）ように
+    // するためだけの値。rows の変化（裁定60 が禁じる「行が変わるたびに」）とは
+    // 独立に、onConfirm/onDismiss の中でだけ発行する。
+    var focusRestoreRequest by remember { mutableStateOf<FocusRestoreRequest?>(null) }
+    var focusRestoreTokenSeq by remember { mutableStateOf(0) }
 
     Column(
         modifier = Modifier
@@ -145,9 +168,16 @@ fun HomeScreen(
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(rows) { row ->
-                val isFirst = row === rows.firstOrNull()
+                // 裁定84（fix8）: 最初の行だけでなく全行に安定したキーで
+                // FocusRequester を紐付けておく。ConfirmDialog を閉じたあとに
+                // 「長押しした行」や「削除で詰めたあとに同じ位置へ来た行」へ
+                // プログラムからフォーカスを戻すには、対象がどの行であっても
+                // 引ける必要があるため（Modifier.focusRequester を付けるだけでは
+                // 自動でフォーカスが移ることはなく、requestFocus() を呼んで
+                // 初めて効くので、通常時のフォーカス移動やタブ順には影響しない）。
+                val key = row.focusKey()
                 val focusModifier =
-                    if (isFirst) Modifier.focusRequester(firstItemFocus) else Modifier
+                    if (key != null) Modifier.focusRequester(focusRequesterFor(key)) else Modifier
 
                 when (row) {
                     is HomeRow.GroupRow -> GroupCard(
@@ -213,6 +243,12 @@ fun HomeScreen(
             message = message,
             onConfirm = {
                 val deleted = profiles.delete(target.uuid)
+                // 裁定84（fix8）: 削除実行では対象行が一覧から消えるので、
+                // 「詰めたあとに同じ位置へ来た行」を求めるのに削除前の並びが要る。
+                // rows/focusableKeys は reloadToken++ で次のコンポーズ時に
+                // 作り直されてしまうので、消える前のいま captured しておく。
+                val keysBeforeDelete = focusableKeys
+                val deletedKey = target.focusKey()
                 pendingDelete = null
                 statusMessage = if (deleted) {
                     null
@@ -220,8 +256,25 @@ fun HomeScreen(
                     "「${target.name}」の削除に失敗しました。既に削除されている可能性があります。"
                 }
                 reloadToken++
+                if (deletedKey != null) {
+                    focusRestoreTokenSeq++
+                    focusRestoreRequest = FocusRestoreRequest.AfterDelete(
+                        keysBeforeDelete = keysBeforeDelete,
+                        deletedKey = deletedKey,
+                        token = focusRestoreTokenSeq,
+                    )
+                }
             },
-            onDismiss = { pendingDelete = null },
+            onDismiss = {
+                // 裁定84（fix8）: キャンセル/BACK では一覧は変わらないので、
+                // 長押しした行そのものへフォーカスを戻す。
+                val key = target.focusKey()
+                pendingDelete = null
+                if (key != null) {
+                    focusRestoreTokenSeq++
+                    focusRestoreRequest = FocusRestoreRequest.ToRow(key, focusRestoreTokenSeq)
+                }
+            },
         )
     }
 
@@ -244,7 +297,76 @@ fun HomeScreen(
     LaunchedEffect(rows.isNotEmpty()) {
         if (didRequestInitialFocus || rows.isEmpty()) return@LaunchedEffect
         didRequestInitialFocus = true
-        runCatching { firstItemFocus.requestFocus() }
+        val key = focusableKeys.firstOrNull() ?: return@LaunchedEffect
+        focusRequesterFor(key).requestFocusRetrying()
+    }
+
+    // 裁定84（fix8）: ConfirmDialog を閉じたという一度きりの出来事（onConfirm /
+    // onDismiss が focusRestoreRequest をセットしたとき）にだけ反応してフォーカスを
+    // 復帰させる。キーは focusRestoreRequest そのもの（data class の構造的等価）
+    // ではなく token（Int）にしている — 「rows が変わるたびに再実行」（裁定60 が
+    // 禁じる形）を確実に避けるには、rows を直接キーに使わない一度きりのトリガーが
+    // 要る。
+    //
+    // AfterDelete のとき、対象キーの算出に使う focusableKeys はこの効果が実行される
+    // 時点のもの（＝削除後の rows から作り直された最新のもの）を参照する。
+    // pendingDelete=null と reloadToken++ は同じイベントハンドラの中で一緒に
+    // 更新されるため、その1回の再コンポーズで rows・focusableKeys とも削除後の
+    // 内容へ更新されてからこの LaunchedEffect が走る（Compose はエフェクトを
+    // 該当フレームの再コンポーズ確定後に実行する）。
+    LaunchedEffect(focusRestoreRequest?.token) {
+        val request = focusRestoreRequest ?: return@LaunchedEffect
+        val targetKey = when (request) {
+            is FocusRestoreRequest.ToRow -> request.key
+            is FocusRestoreRequest.AfterDelete -> HomeRows.targetKeyAfterConfirmedDelete(
+                focusableKeysBeforeDelete = request.keysBeforeDelete,
+                deletedRowKey = request.deletedKey,
+                focusableKeysAfterDelete = focusableKeys,
+            )
+        }
+        if (targetKey != null) {
+            focusRequesterFor(targetKey).requestFocusRetrying()
+        }
+    }
+}
+
+/**
+ * 裁定84（fix8）: ConfirmDialog を閉じた直後に一度だけ行うフォーカス復帰の指示。
+ * [token] 自体に意味は無く、同じ内容の指示が連続しても
+ * `LaunchedEffect(focusRestoreRequest?.token)` が確実にそのたび再実行される
+ * ようにするためだけに持たせている。
+ */
+private sealed interface FocusRestoreRequest {
+    val token: Int
+
+    /** キャンセル/BACK で閉じた: 長押しした行そのものへ戻す。 */
+    data class ToRow(val key: String, override val token: Int) : FocusRestoreRequest
+
+    /**
+     * 削除を実行して閉じた: 対象行が一覧から消えるので、削除前の並びでの位置を
+     * 削除後の並びに当てはめ直した行へ戻す
+     * （[HomeRows.targetKeyAfterConfirmedDelete] 参照）。
+     */
+    data class AfterDelete(
+        val keysBeforeDelete: List<String>,
+        val deletedKey: String,
+        override val token: Int,
+    ) : FocusRestoreRequest
+}
+
+/**
+ * 裁定84（fix8）/ 裁定62: 対象の [FocusRequester] へフォーカスを移す。
+ * `ConfirmDialog` を閉じた直後の同じフレームでは、復帰先の行がまだ
+ * コンポーズ／アタッチされていない可能性がある（LazyColumn の再構成順序に
+ * 依存しないこと、というのが fix8 の要求）ため、成功するかここで打ち切るまで
+ * 最大 [maxAttempts] フレーム試みる。`requestFocus()` は未アタッチだと
+ * 例外になるため、既存の呼び出し箇所（[ConsentRequiredScreen] や
+ * [ConfirmDialog] 自身）と同じく runCatching で包む（裁定62）。
+ */
+private suspend fun FocusRequester.requestFocusRetrying(maxAttempts: Int = 5) {
+    repeat(maxAttempts) { attempt ->
+        if (runCatching { requestFocus() }.isSuccess) return
+        if (attempt < maxAttempts - 1) withFrameNanos { }
     }
 }
 

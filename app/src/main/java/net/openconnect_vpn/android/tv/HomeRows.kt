@@ -41,6 +41,24 @@ sealed interface HomeRow {
 }
 
 /**
+ * この行を一意に識別する安定したキー。[HomeRow.SectionHeader] はフォーカス対象では
+ * ないため null。
+ *
+ * 裁定84（fix8）: 削除確認オーバーレイ（[ConfirmDialog]）を閉じたあと、
+ * `HomeScreen` がどの行へフォーカスを戻すかを決めるために使う。`rows` は
+ * バッジの変化などで作り直される（毎回新しい `List<HomeRow>` インスタンスに
+ * なる）が、uuid/groupId は再生成されない安定した ID なので、同じ行なら
+ * 作り直されたあとも同じキーを返す。`HomeScreen` はこのキーで
+ * `FocusRequester` をキャッシュして引き当てる。
+ */
+fun HomeRow.focusKey(): String? = when (this) {
+    is HomeRow.GroupRow -> "group:$groupId"
+    is HomeRow.ProfileRow -> "profile:$uuid"
+    HomeRow.AddProfile -> "add"
+    is HomeRow.SectionHeader -> null
+}
+
+/**
  * 一覧画面に出す行を組み立てる純粋ロジック。
  * Compose 側はこの結果を描くだけにして、表示の判断をここに集約する。
  */
@@ -190,5 +208,33 @@ object HomeRows {
                 row
             }
         }
+    }
+
+    /**
+     * 裁定84（fix8）: 削除確認オーバーレイで削除を実行したあと、フォーカスを
+     * どの行に戻すかを決める純粋ロジック。
+     *
+     * 対象行そのものは一覧から消えるので、「削除前の並びでの位置（index）」を
+     * 「削除後の並び」でも同じ index に当てはめ直す。つまり「詰めたあとに
+     * 同じ場所へ来た行」を選ぶ。一覧の途中にフォーカスがあった状態で削除すると、
+     * 直後に呼び出し側がここへ戻す（いきなり一覧の先頭へ飛ばされることはない）。
+     *
+     * - 末尾の行を削除した場合は index が配列外になるので、削除後の一覧の
+     *   末尾（多くの場合 [HomeRow.AddProfile]）へ丸める。
+     * - [deletedRowKey] が [focusableKeysBeforeDelete] に見当たらない（通常
+     *   起こらない防御的分岐）場合は一覧の先頭に丸める。
+     * - [focusableKeysAfterDelete] が空になることは [build] が必ず
+     *   [HomeRow.AddProfile] を末尾に足すため実際には起きないが、その場合は
+     *   戻す先が無いので null を返す。
+     */
+    fun targetKeyAfterConfirmedDelete(
+        focusableKeysBeforeDelete: List<String>,
+        deletedRowKey: String,
+        focusableKeysAfterDelete: List<String>,
+    ): String? {
+        if (focusableKeysAfterDelete.isEmpty()) return null
+        val originalIndex = focusableKeysBeforeDelete.indexOf(deletedRowKey)
+        val index = if (originalIndex < 0) 0 else originalIndex
+        return focusableKeysAfterDelete[index.coerceIn(0, focusableKeysAfterDelete.lastIndex)]
     }
 }

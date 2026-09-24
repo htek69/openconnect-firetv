@@ -285,4 +285,102 @@ class HomeRowsTest {
 
         assertEquals(rows, reconciled)
     }
+
+    // --- 裁定84（fix8）: HomeRow.focusKey() ---
+
+    @Test
+    fun `focusKey はグループ行と接続先行と追加行それぞれで異なる`() {
+        val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+        val keys = rows.mapNotNull { it.focusKey() }
+
+        assertEquals(keys.size, keys.toSet().size)
+    }
+
+    @Test
+    fun `SectionHeader の focusKey は null`() {
+        val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+        val header = rows.first { it is HomeRow.SectionHeader }
+
+        assertNull(header.focusKey())
+    }
+
+    @Test
+    fun `同じ行ならバッジが変わっても focusKey は変わらない`() {
+        val idleRows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+        val connectedState = FailoverState.Healthy("g1", candidateIndex = 0, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val connectedRows = HomeRows.build(listOf(group), profiles, connectedState)
+
+        assertEquals(
+            (idleRows[0] as HomeRow.GroupRow).focusKey(),
+            (connectedRows[0] as HomeRow.GroupRow).focusKey(),
+        )
+    }
+
+    @Test
+    fun `AddProfile の focusKey は常に同じ値`() {
+        assertEquals(HomeRow.AddProfile.focusKey(), HomeRow.AddProfile.focusKey())
+    }
+
+    // --- 裁定84（fix8）: HomeRows.targetKeyAfterConfirmedDelete ---
+
+    @Test
+    fun `一覧の途中を削除すると詰めたあとに同じ位置へ来た行へ戻す`() {
+        // 削除前: [a, b, c, add] から b（index1）を削除 → 削除後 [a, c, add]。
+        // index1 に来るのは c。
+        val before = listOf("a", "b", "c", "add")
+        val after = listOf("a", "c", "add")
+
+        val target = HomeRows.targetKeyAfterConfirmedDelete(before, "b", after)
+
+        assertEquals("c", target)
+    }
+
+    @Test
+    fun `末尾の行を削除すると削除後の一覧の末尾へ丸める`() {
+        // 削除前: [a, b, add] から add の直前の b（index1、一覧の実質末尾）を削除
+        // → 削除後 [a, add]。index1 は配列外になるので末尾（add）へ丸める。
+        val before = listOf("a", "b", "add")
+        val after = listOf("a", "add")
+
+        val target = HomeRows.targetKeyAfterConfirmedDelete(before, "b", after)
+
+        assertEquals("add", target)
+    }
+
+    @Test
+    fun `唯一の接続先を削除すると残るのは追加行だけなのでそこへ戻す`() {
+        val before = listOf("profile:only", "add")
+        val after = listOf("add")
+
+        val target = HomeRows.targetKeyAfterConfirmedDelete(before, "profile:only", after)
+
+        assertEquals("add", target)
+    }
+
+    @Test
+    fun `先頭を削除すると詰めたあとの先頭へ戻す`() {
+        val before = listOf("a", "b", "c", "add")
+        val after = listOf("b", "c", "add")
+
+        val target = HomeRows.targetKeyAfterConfirmedDelete(before, "a", after)
+
+        assertEquals("b", target)
+    }
+
+    @Test
+    fun `削除前の一覧に対象キーが見当たらない防御的分岐では先頭に丸める`() {
+        val before = listOf("a", "b", "add")
+        val after = listOf("a", "b", "add")
+
+        val target = HomeRows.targetKeyAfterConfirmedDelete(before, "存在しないキー", after)
+
+        assertEquals("a", target)
+    }
+
+    @Test
+    fun `削除後の一覧が空なら戻す先が無いので null`() {
+        val target = HomeRows.targetKeyAfterConfirmedDelete(listOf("a"), "a", emptyList())
+
+        assertNull(target)
+    }
 }
