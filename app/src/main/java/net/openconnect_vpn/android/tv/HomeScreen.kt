@@ -52,6 +52,12 @@ fun HomeScreen(
     profiles: ProfileRepository,
     groupStore: GroupStore,
     onNavigate: (TvScreen) -> Unit,
+    // 裁定80: 長押しで画面遷移・ダイアログ表示する操作は ACTION_DOWN 中に発火し、
+    // 続く ACTION_UP が遷移先の初期フォーカス要素を誤って押してしまう
+    // （LongPressKeyUpFilter の KDoc 参照）。この画面の onLongClick ハンドラは
+    // 必ず [withLongPressConsumed] を経由してこれを呼ぶこと。直接
+    // `onLongClick = { ... }` と書いて素通ししないこと。
+    onLongPressConsumed: () -> Unit,
 ) {
     val context = LocalContext.current
     val requestConsent = rememberVpnConsentLauncher()
@@ -136,6 +142,7 @@ fun HomeScreen(
                     is HomeRow.GroupRow -> GroupCard(
                         row = row,
                         modifier = focusModifier,
+                        onLongPressConsumed = onLongPressConsumed,
                         onToggleConnection = {
                             // 裁定63（レビュー指摘5）: None と Retrying（Exhausted）は
                             // 「まだ何もつながっていない／全滅してバックオフ待ち」で
@@ -165,6 +172,7 @@ fun HomeScreen(
                     is HomeRow.ProfileRow -> ProfileCard(
                         row = row,
                         modifier = focusModifier,
+                        onLongPressConsumed = onLongPressConsumed,
                         onEdit = { onNavigate(TvScreen.EditProfile(row.uuid)) },
                         onDelete = {
                             statusMessage = null
@@ -281,10 +289,15 @@ private fun ConsentRequiredScreen(onRequestConsent: () -> Unit) {
 private fun GroupCard(
     row: HomeRow.GroupRow,
     modifier: Modifier,
+    onLongPressConsumed: () -> Unit,
     onToggleConnection: () -> Unit,
     onEdit: () -> Unit,
 ) {
-    Card(onClick = onToggleConnection, onLongClick = onEdit, modifier = modifier) {
+    Card(
+        onClick = onToggleConnection,
+        onLongClick = withLongPressConsumed(onLongPressConsumed, onEdit),
+        modifier = modifier,
+    ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.name, style = MaterialTheme.typography.titleMedium)
             val auto = if (row.autoFailoverEnabled) "自動切替 ON" else "自動切替 OFF"
@@ -330,14 +343,42 @@ private fun statusSuffix(row: HomeRow.GroupRow): String {
 private fun ProfileCard(
     row: HomeRow.ProfileRow,
     modifier: Modifier,
+    onLongPressConsumed: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(onClick = onEdit, onLongClick = onDelete, modifier = modifier) {
+    Card(
+        onClick = onEdit,
+        onLongClick = withLongPressConsumed(onLongPressConsumed, onDelete),
+        modifier = modifier,
+    ) {
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.name, style = MaterialTheme.typography.titleMedium)
             Text(row.serverAddress, style = MaterialTheme.typography.bodySmall)
             Text("長押しで削除", style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+/**
+ * 裁定80: `Card` の `onLongClick` は ACTION_DOWN 中に発火し、その後に届く
+ * ACTION_UP が遷移先の画面（`TvFieldRow` の編集モードや `ConfirmDialog` の
+ * 既定選択）の初期フォーカス要素を誤って押してしまう
+ * （[LongPressKeyUpFilter] の KDoc 参照）。TV UI で `onLongClick` を書くときは
+ * 必ずこの関数を経由させ、実際の処理（[action]）の前に
+ * [onLongPressConsumed] を呼ぶこと。
+ *
+ * 呼び出しを1か所（この関数）にまとめることで、`onLongClick = { ... }` を
+ * 直接書いて呼び忘れる経路そのものを塞いでいる。将来 `HomeScreen` に
+ * 長押しを増やすときは、この関数を通さない `onLongClick` は
+ * コードレビューで目に留まりやすい（この関数が唯一の「正しい書き方」になる）
+ * うえ、[HomeScreen] の `onLongPressConsumed` パラメータの KDoc にも
+ * 同じ注意書きがある。
+ */
+private fun withLongPressConsumed(
+    onLongPressConsumed: () -> Unit,
+    action: () -> Unit,
+): () -> Unit = {
+    onLongPressConsumed()
+    action()
 }

@@ -15,14 +15,16 @@ import net.openconnect_vpn.android.failover.PrefsKeyValueStore
 
 class TvMainActivity : ComponentActivity() {
 
-    // 裁定78: 長押しで画面遷移する操作（onLongClick）は ACTION_DOWN 中に発火するため、
-    // 続く ACTION_UP が行き場を失い、遷移先の画面の初期フォーカス要素
-    // （編集モードやダイアログの既定選択）を誤って押してしまう。対応する DOWN を
-    // この Activity が見ていない UP は孤児とみなして捨てる。判定ロジック自体は
-    // Android に依存しない OrphanKeyUpFilter に切り出してあり、JVM テストで検証できる。
+    // 裁定80（裁定78 の判定基準の差し替え。詳細は LongPressKeyUpFilter の KDoc 参照）:
+    // このアプリは単一 Activity で画面は Compose のコンポーザブルが入れ替わるだけなので、
+    // 長押しの DOWN も UP も同じ Activity が受け取り、「対応する DOWN を見ていない UP」
+    // （裁定78 の孤児判定）では検出できなかった。差し替えた判定基準は「この押下は
+    // 既に長押しとして消費されたか」。長押しハンドラ側（HomeScreen の各 onLongClick）が
+    // onLongPressConsumed() を呼んで印を付け、続く ACTION_UP はその印を見て捨てるか
+    // 素通しするかを決める。
     // 選択キーは KEYCODE_DPAD_CENTER だけでなく、Fire TV では KEY_KPENTER(96) が
     // KEYCODE_ENTER 系として届くことがあるため、ENTER / NUMPAD_ENTER も対象に含める。
-    private val orphanKeyUpFilter = OrphanKeyUpFilter(
+    private val longPressKeyUpFilter = LongPressKeyUpFilter(
         trackedKeyCodes = setOf(
             KeyEvent.KEYCODE_DPAD_CENTER,
             KeyEvent.KEYCODE_ENTER,
@@ -32,10 +34,10 @@ class TvMainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         when (event.action) {
-            KeyEvent.ACTION_DOWN -> orphanKeyUpFilter.onKeyDown(event.keyCode)
+            KeyEvent.ACTION_DOWN -> longPressKeyUpFilter.onKeyDown(event.keyCode)
             KeyEvent.ACTION_UP -> {
-                if (orphanKeyUpFilter.shouldConsumeUp(event.keyCode)) {
-                    // 孤児 UP。super に渡さず、ここで消費して捨てる。
+                if (longPressKeyUpFilter.shouldConsumeUp(event.keyCode)) {
+                    // 長押しとして既に消費された押下の UP。super に渡さず、ここで捨てる。
                     return true
                 }
             }
@@ -74,6 +76,9 @@ class TvMainActivity : ComponentActivity() {
                         profiles = profiles,
                         groupStore = groupStore,
                         onNavigate = { screen = it },
+                        // 裁定80: HomeScreen の各 onLongClick ハンドラの先頭で必ずこれを
+                        // 通すこと（詳細は HomeScreen の onLongPressConsumed の KDoc 参照）。
+                        onLongPressConsumed = longPressKeyUpFilter::onLongPressConsumed,
                     )
 
                     is TvScreen.EditProfile -> ProfileEditScreen(
