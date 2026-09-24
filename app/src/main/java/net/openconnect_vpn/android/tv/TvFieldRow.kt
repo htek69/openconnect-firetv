@@ -152,13 +152,23 @@ import androidx.tv.material3.Text
  *   この行の実体（フォーカス対象）は呼び出し側が渡す [modifier] が付く外側の
  *   `Column` ではなく**内部の `Card`**（下の非編集時分岐）なので、
  *   `focusProperties { down = ... }` は呼び出し側の `modifier` に頼らず、
- *   この `Card` 自身に直接適用する。呼び出し側の `Modifier.focusProperties`
- *   が外側の `Column` に付いていても、`down` は「現在フォーカスを持つノード」
- *   から見て最も近い `FocusProperties` 修飾子が優先されるため、`Column` に
- *   付けても内部の `Card`（実際にフォーカスされるノード）には届かない
- *   （＝ `enter` が2次元探索の経路で参照されないのと同種の、実体とフォーカス
- *   対象のずれの問題）。`Card` に直接付けることで、この行が実際に
+ *   この `Card` 自身に直接適用する。`Card` に直接付けることで、この行が実際に
  *   フォーカスされた状態から `DOWN` を押したときに必ず参照される。
+ *
+ *   **裁定87 による訂正**: ここには当初「`down` は現在フォーカスを持つノードから
+ *   見て最も近い `FocusProperties` 修飾子が優先されるため、外側の `Column` に
+ *   付けても内部の `Card` には届かない」と書いてあったが、**これは逆で誤り**
+ *   だった。`compose-ui` 1.7.6 の `FocusTargetNode.fetchFocusProperties()` は
+ *   `visitSelfAndAncestors(FocusProperties, untilType = FocusTarget)` で自分から
+ *   上へ辿り、見つけた順に `applyFocusProperties` を呼ぶ。`FocusPropertiesImpl`
+ *   は素の可変フィールドなので**後に適用される祖先側が内側を上書きする**
+ *   （途中に別の `FocusTarget` があるとそこで打ち切られる、という境界はある）。
+ *   したがって呼び出し側が外側の `Column` に `focusProperties` を付けると、
+ *   その内容は内部の `Card` にも**届いてしまう**。`GroupEditScreen` は
+ *   この誤解のまま外側 `Column` に `canFocus` を足して実機の D-pad を殺した
+ *   （詳細は [GroupEditScreen] の KDoc の裁定87 の節）。`Card` 自身に直接
+ *   付ける方針そのものは（実体とフォーカス対象がずれないという理由で）
+ *   正しいので変えていない。
  */
 @Composable
 fun TvFieldRow(

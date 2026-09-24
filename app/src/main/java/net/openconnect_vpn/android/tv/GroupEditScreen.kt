@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,7 +93,8 @@ import java.util.UUID
  * それより前の行の `DOWN`（次の行へ移動する既定の挙動）には影響しない
  * （逆に `LazyColumn` や `Column` 全体に `focusProperties` を付けると、
  * 内側の全フォーカス対象がその `down` を継承してしまい、行間移動が
- * 全滅する。そのため意図的に「最後の行の `Card` だけ」に絞っている）。
+ * 全滅する。そのため意図的に「最後の行の `Card` だけ」に絞っている。
+ * この警告を裁定86 で自分で踏み抜いた——裁定87 の節を必ず読むこと）。
  *
  * `focusGroup()` はボタン行に残した。ボタン行に入る **前**（直前の要素側）
  * の `down` を変えているだけでボタン行自身の `focusProperties` は
@@ -122,17 +124,65 @@ import java.util.UUID
  * 「削除は確認1枚」を規定しており、接続先の削除には既に [ConfirmDialog] が入って
  * いた）。裁定77 により候補行からの `DOWN` は必ず「保存」に着地するので、そこから
  * `RIGHT` を1回多く押すだけで並び順と自動切替の設定が取り消し不能に消えていた。
- * `HomeScreen` と同じ形で直す:
+ * 確認は裁定83 の**画面内オーバーレイ**（[ConfirmDialog]）で挟む。別 Window の
+ * `Dialog` は長押しの孤児 UP に誤爆されることが実機で確認済みなので使わない。
  *
- * - 確認は裁定83 の**画面内オーバーレイ**（[ConfirmDialog]）。別 Window の
- *   `Dialog` は長押しの孤児 UP に誤爆されることが実機で確認済みなので使わない。
- * - 表示中は外側 `Column` に `focusProperties { canFocus = false }` を掛けて
- *   背後へフォーカスが漏れないようにする（裁定83）。`down` は指定しないので、
- *   裁定77 の着地先固定には影響しない。
- * - 取り消し／BACK で閉じたあとは「グループを削除」ボタンへフォーカスを戻す
- *   （裁定84。`canFocus` を true に戻すだけでは、誰も `requestFocus()` しない
- *   限りフォーカスがどこにも無い状態が残る）。要求は「閉じた」という一度きりの
- *   出来事に対してだけ行う（裁定60 を壊さない）。
+ * 裁定87（実機で計測した回帰。**この画面に `focusProperties` を足すときは必ず
+ * ここを読むこと**）: 裁定86（M3）の最初の実装は、`HomeScreen`（裁定83）を
+ * そのまま真似て外側の `Column` に `.focusProperties { canFocus = !pendingDelete }`
+ * を足していた。実機ではそれだけで、**確認オーバーレイを出していない通常状態の
+ * D-pad が2手で死んだ**（グループ名 → `DOWN` で自動切替 → もう1回の `DOWN` で
+ * `focused="true"` のノードが0個になり、以後どのキーも効かない）。編集・作成の
+ * 両方、メンバー/候補の件数に関わらず再現し、直前の `b60606e` / `78dbee8` では
+ * 同じ操作でボタン行まで到達できていた。
+ *
+ * この1行が何をしていたか（`compose-ui` 1.7.6 のバイトコードで確認した事実）:
+ *
+ * - `FocusTargetNode.fetchFocusProperties()` は
+ *   `visitSelfAndAncestors(NodeKind.FocusProperties, untilType = NodeKind.FocusTarget)`
+ *   で**自分から上へ**辿り、見つけた `FocusPropertiesModifierNode` を順に
+ *   `applyFocusProperties` に通す。`FocusPropertiesImpl` は「設定済みか」を
+ *   持たない素の可変フィールドなので、**後に適用されたものが勝つ**
+ *   ——つまり**外側（祖先）の指定が内側の指定を上書きする**。
+ *   [TvFieldRow] の裁定77 の KDoc にあった「近い方が優先」は逆であり、誤りだった
+ *   （そちらも訂正済み）。
+ * - `Modifier.focusGroup()` は `focusProperties { canFocus = false }.focusTarget()`
+ *   そのものである（`FocusableKt.focusGroup`）。
+ *
+ * 帰結として、外側 `Column` の `canFocus = true`（`pendingDelete == false` の
+ * 通常状態）は**ボタン行の `focusGroup()` の `canFocus = false` を打ち消し**、
+ * ボタン行自身が2次元探索の候補ノードに化けていた。ボタン行の `Row` には
+ * セマンティクスが無いのでフォーカスが乗っても `uiautomator` には
+ * `focused="true"` が1つも出ない——観測された「フォーカス消失」の像と一致する。
+ * 逆に `pendingDelete == true` のときは、ボタン行の `focusTarget` が祖先探索を
+ * 止めるため**中の3つの `Button` には `canFocus = false` が届かず**、
+ * 遮断そのものも不完全だった（裁定83 が `HomeScreen` で成立していたのは、
+ * あちらの背後に `focusGroup()` が1つも無く、名指しの `down` も持たないため）。
+ *
+ * 対策（`focusProperties` の継承に頼らない形）: **オーバーレイを出している間は
+ * 背後のツリーそのものを組み立てない**。`pendingDelete` のときは
+ * [ConfirmDialog] だけをコンポーズし、この画面の本体（外側 `Column` 以下）は
+ * `else` 側に置く。効果は2つある:
+ *
+ * 1. 通常状態（`pendingDelete == false`）のフォーカスツリーが、実機で計測済みの
+ *    `b60606e` と**完全に同一**に戻る。祖先側に `FocusProperties` ノードが1つも
+ *    無いので、裁定77 の各行の `down` も、ボタン行の `focusGroup()` も、
+ *    上書きされる余地が無い。
+ * 2. 表示中は背後の `Button`/`Card` がそもそも存在しないので、遮断は
+ *    Compose のフォーカス探索の細部に一切依存せず成立する（裁定86 M3 の要件）。
+ *
+ * 代償は「オーバーレイの暗幕の裏に背後の画面が見えない」ことだけで、
+ * [ConfirmDialog] 自身は不透明な `surface` 背景を持つので読める。
+ *
+ * 付随して2点:
+ *
+ * - 候補リストの `LazyListState` は [GroupEditScreen] 側に持ち上げた。背後の
+ *   ツリーを組み立て直す形にしたので、持ち上げないと確認を取り消したあとに
+ *   スクロール位置が先頭へ戻ってしまう。
+ * - [TvFieldRow] の `requestInitialFocus` は「一度も確認を閉じていない」間だけ
+ *   true にする（`focusRestoreToken == 0`）。本体を組み立て直すと
+ *   [TvFieldRow] の1回きりの初期フォーカス要求が再発火し、下の
+ *   裁定84 の「グループを削除」への復帰と競合して着地先が不定になるため。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -171,6 +221,11 @@ fun GroupEditScreen(
     }
     val hasListItems = group.memberUuids.isNotEmpty() || candidates.isNotEmpty()
 
+    // 裁定87: 確認オーバーレイ表示中は本体のツリーを組み立てない（下の if/else）。
+    // そのため LazyColumn ごと作り直されるので、スクロール位置はここに持ち上げて
+    // おかないと確認を取り消したあとに先頭へ戻ってしまう。
+    val listState = rememberLazyListState()
+
     // 裁定76/77: ボタン行への DOWN の着地先を「保存」に固定するための FocusRequester。
     val saveButtonFocus = remember { FocusRequester() }
 
@@ -187,9 +242,10 @@ fun GroupEditScreen(
 
     // 裁定86（M3 / 裁定84 と同じ形）: 確認を取り消して閉じたあと、フォーカスを
     // 「グループを削除」ボタンへ戻すための一度きりのトリガー。0 は初期値
-    // （＝まだ一度も閉じていない）なので何もしない。裁定83 以降、オーバーレイ
-    // 表示中は背後が canFocus = false になり、true に戻しても誰も requestFocus()
-    // しない限りフォーカスはどこにも無いままになる。
+    // （＝まだ一度も閉じていない）なので何もしない。裁定87 以降、オーバーレイ
+    // 表示中は背後のツリーそのものが無くなるので、閉じたときに誰かが
+    // requestFocus() しない限りフォーカスはどこにも無いままになる
+    // （requestFocusRetrying はツリーの再アタッチを数フレーム待てる）。
     val deleteButtonFocus = remember { FocusRequester() }
     var focusRestoreToken by remember { mutableStateOf(0) }
     LaunchedEffect(focusRestoreToken) {
@@ -197,189 +253,12 @@ fun GroupEditScreen(
         deleteButtonFocus.requestFocusRetrying()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 48.dp, vertical = 32.dp)
-            // 裁定86（M3。裁定83 と同じ形）: 確認オーバーレイ表示中は、背後の
-            // この Column 配下すべてをフォーカス探索の対象から外す。canFocus は
-            // 配下のフォーカスターゲットに継承されるので、この1箇所で足りる。
-            .focusProperties { canFocus = !pendingDelete },
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Text(
-            if (editingGroupId == null) "グループを作成" else "グループを編集",
-            style = MaterialTheme.typography.headlineMedium,
-        )
-
-        // 裁定72: 画面全体でここだけ requestInitialFocus = true（TvFieldRow の
-        // 契約どおり、複数行が初期フォーカスを取り合わないようにする）。
-        TvFieldRow(
-            value = group.name,
-            // 裁定86（M2）: 入力し直したらエラーは消す（ProfileEditScreen と同じ）。
-            onValueChange = { group = group.copy(name = it); error = null },
-            label = "グループ名",
-            modifier = Modifier.fillMaxWidth(),
-            requestInitialFocus = true,
-        )
-
-        Card(
-            onClick = {
-                group = GroupEditor.setAutoFailover(group, !group.autoFailoverEnabled)
-            },
-            // 裁定77: メンバーも候補も0件のとき、この Card がボタン行の直前の
-            // 要素になる。その場合だけ DOWN の着地先を「保存」に固定する。
-            modifier = if (!hasListItems) {
-                Modifier.focusProperties { down = saveButtonFocus }
-            } else {
-                Modifier
-            },
-        ) {
-            Text(
-                if (group.autoFailoverEnabled) "自動切替: ON" else "自動切替: OFF",
-                modifier = Modifier.padding(20.dp),
-            )
-        }
-
-        Text(
-            "候補（上が優先。▲▼ で並び替え、決定で除外）",
-            style = MaterialTheme.typography.titleSmall,
-        )
-
-        // 裁定82（実機で発見）: この Column は fillMaxSize() でスクロールを
-        // 持たず、この LazyColumn も高さの制約が無かったため、メンバーと候補が
-        // 増えると LazyColumn が縦を食い尽くし、その下のボタン行（保存・
-        // キャンセル・グループを削除）が可視領域の外へ押し出されていた
-        // （実機で uiautomator dump に3つのボタンの文字が1つも現れないことを
-        // 確認）。Modifier.weight(1f) を与えて残り高さちょうどに収め、内部で
-        // スクロールさせることで、外側の Column が非 weight の子（見出し・
-        // グループ名行・自動切替・「候補」見出し・ボタン行）に必要な高さを
-        // 先に確保し、この LazyColumn には残りだけを渡す。結果、件数に
-        // 関わらずボタン行は常に可視領域内の下端に固定される。
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-        ) {
-            val lastMemberIndex = group.memberUuids.lastIndex
-            itemsIndexed(group.memberUuids) { index, uuid ->
-                // 裁定77: 候補が0件で、かつこれがメンバーリストの最後の行なら、
-                // この行のどの列（▲/▼/名前）から DOWN しても「保存」に固定する
-                // （最後の行のどこにフォーカスがあるかは利用者の操作次第なので、
-                // 3枚とも対象にする）。
-                val isLastRowBeforeButtons = candidates.isEmpty() && index == lastMemberIndex
-                val downModifier = if (isLastRowBeforeButtons) {
-                    Modifier.focusProperties { down = saveButtonFocus }
-                } else {
-                    Modifier
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Card(
-                        onClick = { group = GroupEditor.moveUp(group, uuid) },
-                        modifier = downModifier,
-                    ) {
-                        Text("▲", modifier = Modifier.padding(16.dp))
-                    }
-                    Card(
-                        onClick = { group = GroupEditor.moveDown(group, uuid) },
-                        modifier = downModifier,
-                    ) {
-                        Text("▼", modifier = Modifier.padding(16.dp))
-                    }
-                    Card(
-                        onClick = { group = GroupEditor.removeMember(group, uuid) },
-                        modifier = downModifier,
-                    ) {
-                        Text("${nameOf(uuid)}  （決定で除外）", modifier = Modifier.padding(16.dp))
-                    }
-                }
-            }
-
-            if (candidates.isNotEmpty()) {
-                item {
-                    Text(
-                        "追加できる接続先",
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(top = 16.dp),
-                    )
-                }
-            }
-            val lastCandidateIndex = candidates.lastIndex
-            itemsIndexed(candidates) { index, profile ->
-                // 裁定77: 候補リストの最後の項目なら、ボタン行の直前の要素として
-                // DOWN の着地先を「保存」に固定する。
-                val downModifier = if (index == lastCandidateIndex) {
-                    Modifier.focusProperties { down = saveButtonFocus }
-                } else {
-                    Modifier
-                }
-                Card(
-                    // 裁定86（M2）: 候補を足したらエラーは消す。
-                    onClick = { group = GroupEditor.addMember(group, profile.uuid); error = null },
-                    modifier = downModifier,
-                ) {
-                    Text("＋ ${profile.name}", modifier = Modifier.padding(16.dp))
-                }
-            }
-        }
-
-        // 裁定86（M2）: 保存できない理由をここに出す（ProfileEditScreen の
-        // `error` と同じ位置・同じスタイルに揃える）。
-        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            // 裁定77: DOWN の着地先固定は、この行に入る `enter` ではなく、
-            // 直前の要素（自動切替 Card / メンバー最終行 / 候補最終行のいずれか、
-            // 上の分岐参照）側の `down` で行っている。`focusGroup()` は
-            // LEFT/RIGHT/UP の挙動を変えないので残す。
-            modifier = Modifier.focusGroup(),
-        ) {
-            Button(
-                onClick = {
-                    // 裁定86（M2）: 以前はここが `return@Button` だけで、
-                    // エラー表示もフォーカス移動も無く画面が完全に無反応に
-                    // なっていた。理由を出す。
-                    val blocked = GroupEditor.saveBlockedReason(group)
-                    if (blocked != null) {
-                        error = blocked
-                        return@Button
-                    }
-                    val others = storedGroups.filterNot { it.id == group.id }
-                    groupStore.saveGroups(others + group)
-                    onDone()
-                },
-                // 裁定77: このボタンが、直前の要素側に付けた
-                // `focusProperties { down = saveButtonFocus }` の着地先になる。
-                modifier = Modifier.focusRequester(saveButtonFocus),
-            ) {
-                Text("保存")
-            }
-            Button(onClick = onDone) {
-                Text("キャンセル")
-            }
-            if (editingGroupId != null) {
-                Button(
-                    // 裁定86（M3）: 決定1回で即削除するのをやめ、HomeScreen と
-                    // 同じ ConfirmDialog を1枚挟む（仕様書 §9 / R2）。
-                    onClick = {
-                        error = null
-                        pendingDelete = true
-                    },
-                    modifier = Modifier.focusRequester(deleteButtonFocus),
-                ) {
-                    Text("グループを削除")
-                }
-            }
-        }
-    }
-
-    // 裁定86（M3）: 裁定83 の画面内オーバーレイをそのまま使う（別 Window の
-    // Dialog は実機で長押しの孤児 UP に誤爆されることが確認済みなので使わない）。
-    // 背後のフォーカス遮断は上の Column の focusProperties、閉じた後の復帰は
-    // 上の LaunchedEffect（裁定84 と同じ形）で用意している。
     if (pendingDelete) {
+        // 裁定87: 背後（下の else 側）は組み立てない。これが「オーバーレイ表示中に
+        // 背後へフォーカスが漏れない」ことの根拠であり、外側 Column への
+        // focusProperties（＝裁定86 で D-pad を殺した継承）はもう使わない。
+        // 裁定83 の画面内オーバーレイはそのまま使う（別 Window の Dialog は実機で
+        // 長押しの孤児 UP に誤爆されることが確認済みなので使わない）。
         ConfirmDialog(
             message = "グループ「${group.name}」を削除しますか？\n\n" +
                 "候補の並び順と自動切替の設定が消えます。" +
@@ -397,5 +276,188 @@ fun GroupEditScreen(
                 focusRestoreToken++
             },
         )
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 48.dp, vertical = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                if (editingGroupId == null) "グループを作成" else "グループを編集",
+                style = MaterialTheme.typography.headlineMedium,
+            )
+
+            // 裁定72: 画面全体でここだけ requestInitialFocus = true（TvFieldRow の
+            // 契約どおり、複数行が初期フォーカスを取り合わないようにする）。
+            TvFieldRow(
+                value = group.name,
+                // 裁定86（M2）: 入力し直したらエラーは消す（ProfileEditScreen と同じ）。
+                onValueChange = { group = group.copy(name = it); error = null },
+                label = "グループ名",
+                modifier = Modifier.fillMaxWidth(),
+                // 裁定87: 確認を一度でも閉じたあとは、この行に初期フォーカスを
+                // 取らせない。上の LaunchedEffect（裁定84）が「グループを削除」へ
+                // 戻す要求を出しており、TvFieldRow の1回きりの初期フォーカス要求が
+                // 同じフレームで競合すると着地先が不定になる。
+                requestInitialFocus = focusRestoreToken == 0,
+            )
+
+            Card(
+                onClick = {
+                    group = GroupEditor.setAutoFailover(group, !group.autoFailoverEnabled)
+                },
+                // 裁定77: メンバーも候補も0件のとき、この Card がボタン行の直前の
+                // 要素になる。その場合だけ DOWN の着地先を「保存」に固定する。
+                modifier = if (!hasListItems) {
+                    Modifier.focusProperties { down = saveButtonFocus }
+                } else {
+                    Modifier
+                },
+            ) {
+                Text(
+                    if (group.autoFailoverEnabled) "自動切替: ON" else "自動切替: OFF",
+                    modifier = Modifier.padding(20.dp),
+                )
+            }
+
+            Text(
+                "候補（上が優先。▲▼ で並び替え、決定で除外）",
+                style = MaterialTheme.typography.titleSmall,
+            )
+
+            // 裁定82（実機で発見）: この Column は fillMaxSize() でスクロールを
+            // 持たず、この LazyColumn も高さの制約が無かったため、メンバーと候補が
+            // 増えると LazyColumn が縦を食い尽くし、その下のボタン行（保存・
+            // キャンセル・グループを削除）が可視領域の外へ押し出されていた
+            // （実機で uiautomator dump に3つのボタンの文字が1つも現れないことを
+            // 確認）。Modifier.weight(1f) を与えて残り高さちょうどに収め、内部で
+            // スクロールさせることで、外側の Column が非 weight の子（見出し・
+            // グループ名行・自動切替・「候補」見出し・ボタン行）に必要な高さを
+            // 先に確保し、この LazyColumn には残りだけを渡す。結果、件数に
+            // 関わらずボタン行は常に可視領域内の下端に固定される。
+            LazyColumn(
+                // 裁定87: state は GroupEditScreen 側に持ち上げてある（上のコメント）。
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                val lastMemberIndex = group.memberUuids.lastIndex
+                itemsIndexed(group.memberUuids) { index, uuid ->
+                    // 裁定77: 候補が0件で、かつこれがメンバーリストの最後の行なら、
+                    // この行のどの列（▲/▼/名前）から DOWN しても「保存」に固定する
+                    // （最後の行のどこにフォーカスがあるかは利用者の操作次第なので、
+                    // 3枚とも対象にする）。
+                    val isLastRowBeforeButtons = candidates.isEmpty() && index == lastMemberIndex
+                    val downModifier = if (isLastRowBeforeButtons) {
+                        Modifier.focusProperties { down = saveButtonFocus }
+                    } else {
+                        Modifier
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Card(
+                            onClick = { group = GroupEditor.moveUp(group, uuid) },
+                            modifier = downModifier,
+                        ) {
+                            Text("▲", modifier = Modifier.padding(16.dp))
+                        }
+                        Card(
+                            onClick = { group = GroupEditor.moveDown(group, uuid) },
+                            modifier = downModifier,
+                        ) {
+                            Text("▼", modifier = Modifier.padding(16.dp))
+                        }
+                        Card(
+                            onClick = { group = GroupEditor.removeMember(group, uuid) },
+                            modifier = downModifier,
+                        ) {
+                            Text("${nameOf(uuid)}  （決定で除外）", modifier = Modifier.padding(16.dp))
+                        }
+                    }
+                }
+
+                if (candidates.isNotEmpty()) {
+                    item {
+                        Text(
+                            "追加できる接続先",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(top = 16.dp),
+                        )
+                    }
+                }
+                val lastCandidateIndex = candidates.lastIndex
+                itemsIndexed(candidates) { index, profile ->
+                    // 裁定77: 候補リストの最後の項目なら、ボタン行の直前の要素として
+                    // DOWN の着地先を「保存」に固定する。
+                    val downModifier = if (index == lastCandidateIndex) {
+                        Modifier.focusProperties { down = saveButtonFocus }
+                    } else {
+                        Modifier
+                    }
+                    Card(
+                        // 裁定86（M2）: 候補を足したらエラーは消す。
+                        onClick = { group = GroupEditor.addMember(group, profile.uuid); error = null },
+                        modifier = downModifier,
+                    ) {
+                        Text("＋ ${profile.name}", modifier = Modifier.padding(16.dp))
+                    }
+                }
+            }
+
+            // 裁定86（M2）: 保存できない理由をここに出す（ProfileEditScreen の
+            // `error` と同じ位置・同じスタイルに揃える）。
+            error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                // 裁定77: DOWN の着地先固定は、この行に入る `enter` ではなく、
+                // 直前の要素（自動切替 Card / メンバー最終行 / 候補最終行のいずれか、
+                // 上の分岐参照）側の `down` で行っている。`focusGroup()` は
+                // LEFT/RIGHT/UP の挙動を変えないので残す。
+                // 裁定87: この `focusGroup()` の canFocus = false を、外側 Column に
+                // 足した `focusProperties` が（祖先が勝つため）打ち消していたのが
+                // 回帰の正体だった。祖先側に `focusProperties` を足してはならない。
+                modifier = Modifier.focusGroup(),
+            ) {
+                Button(
+                    onClick = {
+                        // 裁定86（M2）: 以前はここが `return@Button` だけで、
+                        // エラー表示もフォーカス移動も無く画面が完全に無反応に
+                        // なっていた。理由を出す。
+                        val blocked = GroupEditor.saveBlockedReason(group)
+                        if (blocked != null) {
+                            error = blocked
+                            return@Button
+                        }
+                        val others = storedGroups.filterNot { it.id == group.id }
+                        groupStore.saveGroups(others + group)
+                        onDone()
+                    },
+                    // 裁定77: このボタンが、直前の要素側に付けた
+                    // `focusProperties { down = saveButtonFocus }` の着地先になる。
+                    modifier = Modifier.focusRequester(saveButtonFocus),
+                ) {
+                    Text("保存")
+                }
+                Button(onClick = onDone) {
+                    Text("キャンセル")
+                }
+                if (editingGroupId != null) {
+                    Button(
+                        // 裁定86（M3）: 決定1回で即削除するのをやめ、HomeScreen と
+                        // 同じ ConfirmDialog を1枚挟む（仕様書 §9 / R2）。
+                        onClick = {
+                            error = null
+                            pendingDelete = true
+                        },
+                        modifier = Modifier.focusRequester(deleteButtonFocus),
+                    ) {
+                        Text("グループを削除")
+                    }
+                }
+            }
+        }
     }
 }

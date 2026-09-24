@@ -138,10 +138,23 @@ fun HomeScreen(
             // （ヘッダーの2枚のカードと LazyColumn の各行）へフォーカスが移ると、
             // オーバーレイの陰で意図しない接続/切断や編集画面遷移が起きうる。
             // Modifier.focusProperties の canFocus は、その要素配下の
-            // フォーカスターゲットすべてに継承される（より内側で上書きされない
-            // 限り）ため、この1箇所を false にするだけで LazyColumn の行・
-            // ヘッダーのカードを含む配下すべてがフォーカス探索の対象から外れる。
+            // フォーカスターゲットに継承されるため、この1箇所を false にするだけで
+            // LazyColumn の行・ヘッダーのカードを含む配下すべてがフォーカス探索の
+            // 対象から外れる。
             // pendingDelete が null に戻ればまた true になり、通常操作に戻る。
+            //
+            // 裁定87 による訂正と、この書き方をよそへ写すときの注意:
+            // 継承の向きは「内側が勝つ」ではなく **外側（祖先）が勝つ**
+            // （`fetchFocusProperties()` は自分から祖先へ辿って順に適用し、
+            // 素の可変フィールドを上書きしていく）。さらに途中に別の
+            // `FocusTarget` があるとそこで打ち切られる。つまりこの1行は
+            // 「配下の canFocus = false をすべて true に塗り替える」副作用も
+            // 持っており、`Modifier.focusGroup()`（= canFocus = false +
+            // focusTarget）を背後に持つ画面では通常時の方向探索まで壊す。
+            // ここが成立しているのは、この Column の配下に `focusGroup()` が
+            // 1つも無く、名指しの `down` も無いという条件が揃っているからに
+            // すぎない。`GroupEditScreen` は同じ書き方を写して実機の D-pad を
+            // 2手で殺した（[GroupEditScreen] の KDoc 裁定87 の節を参照）。
             .focusProperties { canFocus = pendingDelete == null },
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
