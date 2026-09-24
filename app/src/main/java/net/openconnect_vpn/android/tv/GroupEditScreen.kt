@@ -98,6 +98,19 @@ import java.util.UUID
  * 触っていないため、`focusGroup()` の有無は `down` の解決に影響しない。
  * `LEFT`/`RIGHT`/`UP` はこのラウンドで一切変更していないので、既定の
  * 2次元探索のまま維持される。
+ *
+ * 裁定82（実機で発見）: 外側の `Column` は `fillMaxSize()` でスクロールを持たず、
+ * 候補・メンバーを並べる `LazyColumn` も高さの制約（`weight`）を持たなかった。
+ * 件数が増えると `LazyColumn` が縦を食い尽くし、その下のボタン行
+ * （保存・キャンセル・グループを削除）が可視領域の外へ押し出される
+ * （実機の uiautomator dump で3つのボタンの文字が1つも現れないことを確認）。
+ * `LazyColumn` に `Modifier.weight(1f)` を与えて残り高さに収め、内部で
+ * スクロールさせることで、ボタン行は常に可視領域内の下端に固定される
+ * （他の非 weight の兄弟——見出し・グループ名行・自動切替・「候補」見出し・
+ * ボタン行自身——が先に必要な高さを確保し、`LazyColumn` には残りだけが渡る）。
+ * 裁定77 の DOWN 着地先固定はこの変更で崩れない: `weight`/スクロールは高さの
+ * 配分を変えるだけで、フォーカス探索が使う各要素の `focusProperties { down = ... }`
+ * には触れていない。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -183,9 +196,21 @@ fun GroupEditScreen(
             style = MaterialTheme.typography.titleSmall,
         )
 
+        // 裁定82（実機で発見）: この Column は fillMaxSize() でスクロールを
+        // 持たず、この LazyColumn も高さの制約が無かったため、メンバーと候補が
+        // 増えると LazyColumn が縦を食い尽くし、その下のボタン行（保存・
+        // キャンセル・グループを削除）が可視領域の外へ押し出されていた
+        // （実機で uiautomator dump に3つのボタンの文字が1つも現れないことを
+        // 確認）。Modifier.weight(1f) を与えて残り高さちょうどに収め、内部で
+        // スクロールさせることで、外側の Column が非 weight の子（見出し・
+        // グループ名行・自動切替・「候補」見出し・ボタン行）に必要な高さを
+        // 先に確保し、この LazyColumn には残りだけを渡す。結果、件数に
+        // 関わらずボタン行は常に可視領域内の下端に固定される。
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
         ) {
             val lastMemberIndex = group.memberUuids.lastIndex
             itemsIndexed(group.memberUuids) { index, uuid ->
