@@ -1,19 +1,18 @@
 package net.openconnect_vpn.android.tv
 
+import android.text.InputType
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
@@ -51,10 +50,10 @@ import androidx.tv.material3.Text
  * とした。実機では効かなかった（裁定70参照）ため、この方式は撤回・削除した。
  *
  * 裁定69: 実機検証で、サーバ URL 欄に `test.example.com` と打つと日本語 IME を
- * 経由して `てst。えぁmpぇ。こm` に変換されてしまうことが判明した。
- * `KeyboardType.Uri` では日本語 IME を抑止できなかったため、URL 欄だけ
- * `KeyboardType.Ascii` を指定する（詳細は URL 欄の [TvFieldRow] 呼び出し部を参照）。
- * 表示名欄は意図的に既定の IME のまま（日本語で名付けたいはずだから）。
+ * 経由して `てst。えぁmpぇ。こm` に変換されてしまうことが判明した。URL 欄だけ
+ * `InputType.TYPE_TEXT_VARIATION_URI` を指定する（詳細は URL 欄の [TvFieldRow]
+ * 呼び出し部と裁定71を参照）。表示名欄は意図的に既定のまま
+ * （日本語で名付けたいはずだから）。
  *
  * 裁定70（実機で発見した阻害欠陥）: `dumpsys` で確認したところ、フォーカスが乗った
  * `BasicTextField` は画面を開いた瞬間にソフトキーボードを要求し、Fire TV では
@@ -62,10 +61,21 @@ import androidx.tv.material3.Text
  * D-pad を独占してしまう。アプリの Window にキーイベントが届かなくなるため、
  * 裁定68の `onPreviewKeyEvent` は原理的に効かなかった。テキスト欄そのものに
  * 初期フォーカスを持たせるのをやめ、[TvFieldRow]（ラベル＋現在値を表示する
- * フォーカス可能な行。CENTER で選んだときだけ内部の `BasicTextField` へ
- * フォーカスを移す）に置き換えた。詳細と設計判断は [TvFieldRow] の KDoc を参照。
- * `GroupEditScreen`（Task 7）でも自由入力欄が要る場合はこれを再利用すること
- * （この画面専用にしていない）。
+ * フォーカス可能な行。CENTER で選んだときだけ内部の入力欄へフォーカスを移す）に
+ * 置き換えた。D-pad のナビゲーション・CENTER での編集開始・BACK での離脱・
+ * 保存への到達はこの時点で実機確認済みになった。
+ *
+ * 裁定71（実機で発見した阻害欠陥）: 裁定70の行方式に切り替えた後も、実際には
+ * ソフトキーボードが**描画されない**ことが `dumpsys` で判明した
+ * （`imeOptions` に `IME_FLAG_NO_FULLSCREEN` / `IME_FLAG_NO_EXTRACT_UI` が
+ * 立っており、Fire TV の IME はフルスクリーンの extract エディタしか描画手段を
+ * 持たないため、両方禁止されると何も描かない）。これは `BasicTextField` が既定で
+ * 立てるフラグで、Compose に外す公開 API が無い。アプリの旧 UI のパスワード入力
+ * （素の `EditText`）は同じ実機で実際にキーボードが出ることが確認されているため、
+ * [TvFieldRow] の入力欄の実体を `AndroidView` 経由の `EditText` に置き換えた。
+ * 詳細と設計判断は [TvFieldRow] の KDoc を参照。
+ * `GroupEditScreen`（Task 7）でも自由入力欄が要る場合は [TvFieldRow] を
+ * 再利用すること（この画面専用にしていない）。
  */
 @Composable
 fun ProfileEditScreen(
@@ -102,11 +112,9 @@ fun ProfileEditScreen(
             value = address,
             onValueChange = { address = it; error = null },
             label = "サーバ URL（例: vpn.example.com）",
-            // 裁定69: KeyboardType.Uri は実機の日本語 IME を抑止できず、
-            // "test.example.com" が "てst。えぁmpぇ。こm" に変換された。
-            // Ascii なら英数字・記号キーボードを要求するので日本語変換に落ちない。
-            // 表示名欄（下）は逆に日本語で名付けたいはずなので既定のまま指定しない。
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+            // 裁定69/71: URI 用の inputType を指定する。表示名欄（下）は逆に
+            // 日本語で名付けたいはずなので既定のまま指定しない。
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI,
             modifier = Modifier.fillMaxWidth(),
             requestInitialFocus = true,
         )
@@ -127,7 +135,6 @@ fun ProfileEditScreen(
             value = displayName,
             onValueChange = { displayName = it },
             label = "表示名（任意）",
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             modifier = Modifier.fillMaxWidth(),
         )
 
