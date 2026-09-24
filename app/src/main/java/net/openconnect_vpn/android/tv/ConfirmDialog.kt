@@ -99,6 +99,11 @@ fun ConfirmDialog(
     }
 
     // 裁定62: このコンポーザブルのノードツリーがまだアタッチされていない
-    // タイミングでこの効果が走りうる。他の呼び出し箇所と同じく保護する。
-    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+    // タイミングでこの効果が走りうる。
+    // 裁定86（M5）: 以前は1回きりの runCatching { requestFocus() } だった。
+    // 裁定83 で背後の画面が canFocus = false になったため、この1回が失敗すると
+    // Window 内にフォーカス対象が1つも無くなり D-pad が完全に死ぬ（脱出は
+    // BACK だけ）。HomeScreen が既に使っていたリトライを共有ヘルパへ格上げして
+    // ここでも使う（理由の詳細は TvFocus.kt）。
+    LaunchedEffect(Unit) { cancelFocus.requestFocusRetrying() }
 }

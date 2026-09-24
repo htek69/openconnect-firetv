@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,6 +112,27 @@ import java.util.UUID
  * 裁定77 の DOWN 着地先固定はこの変更で崩れない: `weight`/スクロールは高さの
  * 配分を変えるだけで、フォーカス探索が使う各要素の `focusProperties { down = ... }`
  * には触れていない。
+ *
+ * 裁定86（M2）: 「保存」は条件を満たさないとき `return@Button` するだけで、
+ * エラー表示もフォーカス移動も無く**画面が完全に無反応**になっていた
+ * （Fire TV では「固まった」と解釈される）。理由を [GroupEditor.saveBlockedReason]
+ * の文言で出し、`ProfileEditScreen` の `error` と同じ位置・同じスタイルに揃えた。
+ *
+ * 裁定86（M3）: 「グループを削除」が決定1回で即実行されていた（仕様書 §9 と R2 は
+ * 「削除は確認1枚」を規定しており、接続先の削除には既に [ConfirmDialog] が入って
+ * いた）。裁定77 により候補行からの `DOWN` は必ず「保存」に着地するので、そこから
+ * `RIGHT` を1回多く押すだけで並び順と自動切替の設定が取り消し不能に消えていた。
+ * `HomeScreen` と同じ形で直す:
+ *
+ * - 確認は裁定83 の**画面内オーバーレイ**（[ConfirmDialog]）。別 Window の
+ *   `Dialog` は長押しの孤児 UP に誤爆されることが実機で確認済みなので使わない。
+ * - 表示中は外側 `Column` に `focusProperties { canFocus = false }` を掛けて
+ *   背後へフォーカスが漏れないようにする（裁定83）。`down` は指定しないので、
+ *   裁定77 の着地先固定には影響しない。
+ * - 取り消し／BACK で閉じたあとは「グループを削除」ボタンへフォーカスを戻す
+ *   （裁定84。`canFocus` を true に戻すだけでは、誰も `requestFocus()` しない
+ *   限りフォーカスがどこにも無い状態が残る）。要求は「閉じた」という一度きりの
+ *   出来事に対してだけ行う（裁定60 を壊さない）。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -152,10 +174,37 @@ fun GroupEditScreen(
     // 裁定76/77: ボタン行への DOWN の着地先を「保存」に固定するための FocusRequester。
     val saveButtonFocus = remember { FocusRequester() }
 
+    // 裁定86（M2）: 保存できない理由。無反応のまま押させ続けないために出す
+    // （文言と条件は GroupEditor.saveBlockedReason）。
+    var error by remember { mutableStateOf<String?>(null) }
+
+    // 裁定86（M3）: グループの削除の確認。仕様書 §9 と R2 が「削除は確認1枚」を
+    // 規定しており、接続先の削除には ConfirmDialog が入っているのにグループの
+    // 削除だけが決定1回で即実行されていた（裁定77 により候補行からの DOWN は
+    // 必ず「保存」に着地するので、そこから RIGHT を1回多く押すだけで、
+    // 並び順と自動切替の設定が取り消し不能に消える）。
+    var pendingDelete by remember { mutableStateOf(false) }
+
+    // 裁定86（M3 / 裁定84 と同じ形）: 確認を取り消して閉じたあと、フォーカスを
+    // 「グループを削除」ボタンへ戻すための一度きりのトリガー。0 は初期値
+    // （＝まだ一度も閉じていない）なので何もしない。裁定83 以降、オーバーレイ
+    // 表示中は背後が canFocus = false になり、true に戻しても誰も requestFocus()
+    // しない限りフォーカスはどこにも無いままになる。
+    val deleteButtonFocus = remember { FocusRequester() }
+    var focusRestoreToken by remember { mutableStateOf(0) }
+    LaunchedEffect(focusRestoreToken) {
+        if (focusRestoreToken == 0) return@LaunchedEffect
+        deleteButtonFocus.requestFocusRetrying()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 48.dp, vertical = 32.dp),
+            .padding(horizontal = 48.dp, vertical = 32.dp)
+            // 裁定86（M3。裁定83 と同じ形）: 確認オーバーレイ表示中は、背後の
+            // この Column 配下すべてをフォーカス探索の対象から外す。canFocus は
+            // 配下のフォーカスターゲットに継承されるので、この1箇所で足りる。
+            .focusProperties { canFocus = !pendingDelete },
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
@@ -167,7 +216,8 @@ fun GroupEditScreen(
         // 契約どおり、複数行が初期フォーカスを取り合わないようにする）。
         TvFieldRow(
             value = group.name,
-            onValueChange = { group = group.copy(name = it) },
+            // 裁定86（M2）: 入力し直したらエラーは消す（ProfileEditScreen と同じ）。
+            onValueChange = { group = group.copy(name = it); error = null },
             label = "グループ名",
             modifier = Modifier.fillMaxWidth(),
             requestInitialFocus = true,
@@ -265,13 +315,18 @@ fun GroupEditScreen(
                     Modifier
                 }
                 Card(
-                    onClick = { group = GroupEditor.addMember(group, profile.uuid) },
+                    // 裁定86（M2）: 候補を足したらエラーは消す。
+                    onClick = { group = GroupEditor.addMember(group, profile.uuid); error = null },
                     modifier = downModifier,
                 ) {
                     Text("＋ ${profile.name}", modifier = Modifier.padding(16.dp))
                 }
             }
         }
+
+        // 裁定86（M2）: 保存できない理由をここに出す（ProfileEditScreen の
+        // `error` と同じ位置・同じスタイルに揃える）。
+        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
         Row(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -283,7 +338,14 @@ fun GroupEditScreen(
         ) {
             Button(
                 onClick = {
-                    if (group.name.isBlank() || group.memberUuids.isEmpty()) return@Button
+                    // 裁定86（M2）: 以前はここが `return@Button` だけで、
+                    // エラー表示もフォーカス移動も無く画面が完全に無反応に
+                    // なっていた。理由を出す。
+                    val blocked = GroupEditor.saveBlockedReason(group)
+                    if (blocked != null) {
+                        error = blocked
+                        return@Button
+                    }
                     val others = storedGroups.filterNot { it.id == group.id }
                     groupStore.saveGroups(others + group)
                     onDone()
@@ -298,13 +360,42 @@ fun GroupEditScreen(
                 Text("キャンセル")
             }
             if (editingGroupId != null) {
-                Button(onClick = {
-                    groupStore.saveGroups(storedGroups.filterNot { it.id == group.id })
-                    onDone()
-                }) {
+                Button(
+                    // 裁定86（M3）: 決定1回で即削除するのをやめ、HomeScreen と
+                    // 同じ ConfirmDialog を1枚挟む（仕様書 §9 / R2）。
+                    onClick = {
+                        error = null
+                        pendingDelete = true
+                    },
+                    modifier = Modifier.focusRequester(deleteButtonFocus),
+                ) {
                     Text("グループを削除")
                 }
             }
         }
+    }
+
+    // 裁定86（M3）: 裁定83 の画面内オーバーレイをそのまま使う（別 Window の
+    // Dialog は実機で長押しの孤児 UP に誤爆されることが確認済みなので使わない）。
+    // 背後のフォーカス遮断は上の Column の focusProperties、閉じた後の復帰は
+    // 上の LaunchedEffect（裁定84 と同じ形）で用意している。
+    if (pendingDelete) {
+        ConfirmDialog(
+            message = "グループ「${group.name}」を削除しますか？\n\n" +
+                "候補の並び順と自動切替の設定が消えます。" +
+                "接続先そのものは削除されません。",
+            onConfirm = {
+                groupStore.saveGroups(storedGroups.filterNot { it.id == group.id })
+                // 削除したらこの画面に留まる意味が無いので Home へ戻る。
+                // フォーカス復帰は Home 側（裁定84）が行うため、ここでは
+                // トークンを進めない。
+                pendingDelete = false
+                onDone()
+            },
+            onDismiss = {
+                pendingDelete = false
+                focusRestoreToken++
+            },
+        )
     }
 }

@@ -17,7 +17,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -77,7 +76,10 @@ fun HomeScreen(
     }
 
     if (needsConsent) {
-        ConsentRequiredScreen(onRequestConsent = requestConsent)
+        // 裁定86（L4）: rememberVpnConsentLauncher は「許可画面を出したか」を
+        // 返すようになったが、この画面は needsConsent が true のときだけ出るので
+        // （＝必ず未許可）戻り値を見る意味が無い。ラムダで包んで捨てる。
+        ConsentRequiredScreen(onRequestConsent = { requestConsent() })
         return
     }
 
@@ -355,30 +357,19 @@ private sealed interface FocusRestoreRequest {
 }
 
 /**
- * 裁定84（fix8）/ 裁定62: 対象の [FocusRequester] へフォーカスを移す。
- * `ConfirmDialog` を閉じた直後の同じフレームでは、復帰先の行がまだ
- * コンポーズ／アタッチされていない可能性がある（LazyColumn の再構成順序に
- * 依存しないこと、というのが fix8 の要求）ため、成功するかここで打ち切るまで
- * 最大 [maxAttempts] フレーム試みる。`requestFocus()` は未アタッチだと
- * 例外になるため、既存の呼び出し箇所（[ConsentRequiredScreen] や
- * [ConfirmDialog] 自身）と同じく runCatching で包む（裁定62）。
- */
-private suspend fun FocusRequester.requestFocusRetrying(maxAttempts: Int = 5) {
-    repeat(maxAttempts) { attempt ->
-        if (runCatching { requestFocus() }.isSuccess) return
-        if (attempt < maxAttempts - 1) withFrameNanos { }
-    }
-}
-
-/**
  * 裁定57/58: VPN 許可が無いと `FailoverService` は無人で繋げず、通知を出すだけで
  * 止まる。一覧より前にここで止め、許可を取る手段を必ず提示する。
  * 初期フォーカスはここでも必ず置く。
+ *
+ * 裁定86（M5）: 初期フォーカスの要求を1回きりの `runCatching { requestFocus() }`
+ * から共有の [requestFocusRetrying] に替えた。この画面はフォーカス可能な要素が
+ * このボタン1つだけなので、要求が1回失敗するとフォーカスがどこにも無い状態に
+ * なる（理由の詳細は `TvFocus.kt`）。
  */
 @Composable
 private fun ConsentRequiredScreen(onRequestConsent: () -> Unit) {
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    LaunchedEffect(Unit) { focusRequester.requestFocusRetrying() }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(

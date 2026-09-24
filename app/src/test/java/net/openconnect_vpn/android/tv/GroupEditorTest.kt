@@ -4,6 +4,7 @@ import net.openconnect_vpn.android.failover.FailoverConfig
 import net.openconnect_vpn.android.failover.FailoverGroup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -138,5 +139,41 @@ class GroupEditorTest {
         val afterMoveDown = GroupEditor.moveDown(source, "a")
         assertEquals(customConfig, afterMoveDown.config)
         assertFalse(afterMoveDown.autoFailoverEnabled)
+    }
+
+    // --- 裁定86（M2）: 保存できない理由の文言 ---
+
+    @Test
+    fun `名前と候補が揃っていれば保存を妨げない`() {
+        assertNull(GroupEditor.saveBlockedReason(group("a")))
+    }
+
+    @Test
+    fun `グループ名が空なら理由を返す`() {
+        val blocked = GroupEditor.saveBlockedReason(group("a").copy(name = ""))
+        assertEquals("グループ名を入力してください", blocked)
+    }
+
+    @Test
+    fun `グループ名が空白のみでも理由を返す`() {
+        // isBlank なので空白だけの名前も弾く（保存すると一覧で名無しに見える）。
+        assertEquals(
+            "グループ名を入力してください",
+            GroupEditor.saveBlockedReason(group("a").copy(name = "   ")),
+        )
+    }
+
+    @Test
+    fun `候補が0件なら理由を返す`() {
+        assertEquals("候補を1件以上選んでください", GroupEditor.saveBlockedReason(group()))
+    }
+
+    @Test
+    fun `両方満たしていないときは先にグループ名を案内する`() {
+        // 画面の並び（グループ名 -> 候補）と同じ順序で直せるようにする。
+        assertEquals(
+            "グループ名を入力してください",
+            GroupEditor.saveBlockedReason(group().copy(name = "")),
+        )
     }
 }
