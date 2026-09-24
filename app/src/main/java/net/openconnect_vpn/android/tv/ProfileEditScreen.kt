@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -143,9 +145,34 @@ fun ProfileEditScreen(
 
     val isEditing = editingUuid != null
 
+    // 裁定88（保険。欠陥の修正ではない）: 再レビューは「裁定86（L3）で常設の
+    // 説明文を足したことで、編集モードでは `保存`/`キャンセル` が画面外へ
+    // 落ちているはずだ」と計算した（裁定82/85 と同じ壊れ方の再生産）。
+    // コントローラが実機（Fire TV Stick 4K、1080p）で
+    // `vpn.example.com:4443` / 表示名 `myvpn` を編集モードで開いて計測した結果、
+    // **落ちていない**:
+    //   注意書き（アドレス変更） [96,348][1824,440]
+    //   表示名を空に…の注意書き  [96,658][1370,686]
+    //   初回ログインの注意書き   [96,734][1824,794]
+    //   保存 [128,866][185,899]  キャンセル [281,866][422,899]
+    //   DOWN #2 → 保存 [96,834][217,930]、RIGHT → キャンセル、LEFT → 保存
+    // つまり 1080px に対して下端にまだ約 180px の余裕がある。
+    // したがってこの 1 行は**現在の欠陥を直すものではない**。ただし余裕が
+    // 薄いこと自体は妥当な懸念であり、この画面族では同じ壊れ方が既に2度
+    // （裁定82 の GroupEditScreen、裁定85 の SettingsScreen）実機で計測されて
+    // いる。将来この画面へ文言を1つ足すだけで再発しうるので、裁定85 が
+    // SettingsScreen に施したのと同じ1行を先に入れておく。
+    // この画面の内容はすべて固定長（可変長のリストを持たない）ので、裁定82 の
+    // LazyColumn + weight(1f) 構成にする理由は無い。Compose はフォーカス移動に
+    // 追従してこの ScrollState をスクロールするため、裁定77 の
+    // `downTarget = saveButtonFocus` による `保存` への着地も、裁定70 の
+    // 「テキスト欄自身に初期フォーカスを置かない」もそのまま維持される
+    // （verticalScroll はスクロール可能にするだけで、初期フォーカスの位置や
+    // フォーカス探索の経路を変えない）。
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 48.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
     ) {
