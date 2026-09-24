@@ -349,9 +349,19 @@ class FailoverService : Service() {
      *
      * これで足りるかどうかは実機で測る。足りなければ
      * `AlarmManager.setExactAndAllowWhileIdle()` による起床へ設計変更する。
+     *
+     * 裁定88（Low 1）: 保持の条件を `state !is Idle` から
+     * [FailoverController.requiresCpuAwake] に移した。裁定86（H2）以降、
+     * 「前進できないと分かっている `FailingOver`（下層ネットが無い）」に
+     * 留まったまま wake lock を握り続ける状態が日常操作から作れるように
+     * なったためである（理由と S2 を壊していない根拠は
+     * [FailoverController.requiresCpuAwake] の KDoc を参照）。判断そのものを
+     * 状態機械側に置くのは、ここが「状態機械が動いているあいだ」という
+     * 意味をそのまま尋ねる場所であり、条件を Android 側に写し取ると
+     * 両者がずれるから。
      */
     private fun syncWakeLock() {
-        val shouldHold = controller.state !is FailoverState.Idle
+        val shouldHold = controller.requiresCpuAwake()
         val lock = wakeLock ?: return
         if (shouldHold && !lock.isHeld) {
             runCatching { lock.acquire() }

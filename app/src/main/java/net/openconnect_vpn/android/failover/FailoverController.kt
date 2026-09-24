@@ -316,6 +316,57 @@ class FailoverController(
     }
 
     /**
+     * 裁定88（Low 1）: 呼び出し側（`FailoverService`）が CPU を起こし続けるべきか
+     * （裁定43 の `PARTIAL_WAKE_LOCK` を保持すべきか）の判定。
+     * [shouldProbeNow] と同じ「状態機械への読み取り専用の問い合わせ」であり、
+     * ここで状態遷移は起こさない（Android API も参照しない）。
+     *
+     * 裁定43 の条件は `state !is Idle` だった。その意図は「監視しているあいだは
+     * 起きている／監視していないなら起きていない」である。裁定86（H2）以降、
+     * その条件では意図から外れる状態が日常的に作れるようになった:
+     *
+     * - [unconfirmedAbandonedUuid] がラッチしたまま（[onFailingOverTimeout] が
+     *   [DISCONNECT_WAIT_MS] で諦めるたびに立て直されるので、対応する
+     *   `Disconnected` が二度と届かなければ実質ずっと非 null のまま）の端末で
+     *   画面が点灯すると、[onAutoConnect] が [stopBeforeStarting] を通って
+     *   [FailoverState.FailingOver] に入る。
+     * - そのとき下層ネットワークが無いと [advanceAfterFailingOver] の S2 ゲートで
+     *   前進できず、`Exhausted` のバックオフにも入らないまま `FailingOver` に
+     *   留まる。`Idle` ではないので wake lock は保持され続ける——
+     *   **前進できないと分かっている状態で CPU を起こし続ける**ことになる。
+     *
+     * そこで「`FailingOver` かつ下層ネットワークが無い」あいだは保持しない。
+     * この状態の状態機械にできることは何も無いことを数え上げて確認している:
+     * `onTick` の `FailingOver` 分岐は [onFailingOverTimeout] しか呼ばず、
+     * その先は必ず [advanceAfterFailingOver] の `hasUnderlyingNetwork()` ゲートで
+     * 止まる。`Disconnected` の確認が届いた場合も同じゲートを通るので
+     * `FailingOver` のまま返る。つまりネットワークが戻るまで**どのイベントでも
+     * 状態は変わらない。**
+     *
+     * 安全策 S2（下層ネットが無いときは切り替えない）は壊していない。ここは
+     * `FailoverService` の副作用（wake lock）の条件だけを変えるもので、
+     * [advanceAfterFailingOver] のゲートにも `vpn.connect()` の呼び出し条件にも
+     * 触れていない。むしろ「S2 で保留されている間は細かく tick しない」という
+     * `FailoverService` 側の既存の判断（`TICK_INTERVAL_SWITCHING_MS` を使わず
+     * 待機間隔に戻す）と同じ方向の整理である。
+     *
+     * ネットワークが戻ったことに気づけなくなることも無い: 復帰の検知は
+     * ティックループの `hasUnderlyingNetwork()` の監視（→
+     * [FailoverEvent.UnderlyingNetworkChanged]）と、`VpnStatusBridge` の
+     * ブロードキャスト受信であり、どちらもこの wake lock に依存しない
+     * （ブロードキャスト配送は OS 側が起こす）。加えて裁定44 により画面消灯中は
+     * 必ず `Idle`（＝wake lock は元から解放されている）なので、この分岐が
+     * 効くのは画面が点いている＝端末が interactive で CPU が動いている場面に
+     * 限られる。次の tick か次のイベントで `FailoverService.dispatch` が走れば
+     * `syncWakeLock()` が再評価して取り直す。
+     */
+    fun requiresCpuAwake(): Boolean = when (state) {
+        FailoverState.Idle -> false
+        is FailoverState.FailingOver -> network.hasUnderlyingNetwork()
+        else -> true
+    }
+
+    /**
      * 裁定59: 生きている可能性のある候補（`Connecting`/`Verifying`/`Healthy`）が
      * ある状態からの切替は、必ず Ruling 25 の2段階（切断要求 → 完了確認 →
      * 次を起動）を経由させる。これを呼び出し側（UI）の規律に依存させると、
