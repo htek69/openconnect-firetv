@@ -122,6 +122,23 @@ class FailoverController(
      */
     private var pendingConnectGroupId: String? = null
 
+    /**
+     * 裁定72-fix(F2): [onFailingOverTimeout] が確認を諦めて先へ進んだときの
+     * `awaitingUuid`。確認が来ないまま次候補（またはグループの巡回終了）へ
+     * 進んだだけであり、諦めた候補のスレッドが実際に終了した保証は無い
+     * （[DISCONNECT_WAIT_MS] の KDoc が説明する、認証ダイアログで
+     * `UserDialog.waitForResponse()` にブロックしたスレッドのケース）。
+     *
+     * したがって、この値が非 null の間は [FailoverState.Idle] /
+     * [FailoverState.Exhausted] に対して「生きている候補が無い」という前提を
+     * 信用してはならない。対応する `Disconnected` が実際に届いたら
+     * （[onVpnState] 冒頭）null に戻す。二度と届かなければ非 null のまま残り
+     * 続けるが、それは「まだ生きているかもしれない」が偽であることを一度も
+     * 確認できていないという事実をそのまま表しているだけであり、根拠の無い
+     * 楽観に倒すよりは安全である。
+     */
+    private var unconfirmedAbandonedUuid: String? = null
+
     fun handle(event: FailoverEvent) {
         // 裁定72a: どのイベントを処理する前にも、まず現在の候補の添字が
         // 最新のグループ構成とまだ整合しているかを確認する。理由は
@@ -177,7 +194,38 @@ class FailoverController(
         val groupId = groupIdOf(s) ?: return s
         val index = candidateIndexOf(s) ?: return s
         val uuid = currentCandidateUuid ?: return s
-        val group = groupOf(groupId) ?: return s
+        val group = groupOf(groupId)
+
+        if (group == null) {
+            // 裁定72-fix(F1): グループそのものが丸ごと削除された（例: 最後の
+            // メンバーだったプロファイルが消え GroupStore.loadGroups が
+            // グループごと落とした）。供給関数化する前はこの分岐に到達すること
+            // 自体が無かった（グループ一覧はサービスの生存期間中不変だった）ため、
+            // 「トンネルはまだ生きているかもしれないが、もう誰も追跡しない」まま
+            // Idle を騙ってはならない、という考慮がここには元々無かった。
+            return if (s is FailoverState.FailingOver) {
+                // この状態に入った時点で既に vpn.disconnect() を awaitingUuid 宛に
+                // 要求済みである（failOver または onUserConnect の生存候補分岐）。
+                // advanceAfterFailingOver 自身が groupOf(...) == null を Idle として
+                // 正しく処理し、pendingConnectGroupId の消費もそこで行う。ここで
+                // 先回りして Idle に落とすと、その消費を経由せず
+                // pendingConnectGroupId が迷子になる（F6 と同じ形の罠）ので、
+                // 確認到着または DISCONNECT_WAIT_MS のタイムアウトによる通常の
+                // 前進に任せる。
+                s
+            } else {
+                // Connecting/Verifying/Healthy: まだ生きている可能性のある候補を
+                // 誰も切断要求していない。ここで初めて気づいたので、S3 のフラグを
+                // 立てたうえで切断を要求してから Idle へ落ちる。これをせずに
+                // 単に Idle を返すと、トンネルは張られたまま誰にも監視されず、
+                // 次の onUserConnect が Idle からの「即座に起動してよい」経路
+                // （生きている候補が無い前提）を取ってしまい、欠陥13/欠陥15 と
+                // 同じ事故（画面は新グループ、実際のトラフィックは旧グループ）が
+                // 設定変更という経路から再来する。
+                disconnectIfStillUp(alreadyDown = false)
+                FailoverState.Idle
+            }
+        }
 
         if (group.memberUuids.getOrNull(index) == uuid) return s
 
@@ -248,12 +296,33 @@ class FailoverController(
 
         val current = state
         if (current is FailoverState.Idle || current is FailoverState.Exhausted) {
-            // 裁定35/M1 の回帰条件: Exhausted は全候補が試行済み（除外済みか、
-            // vpn.connect() が同期的に Failed を返した）のうえで到達する状態で、
-            // 生きている可能性のある候補が無い。Exhausted に至る前の切替は
-            // すべて failOver（Ruling 25 の2段階）を経ているため、ここで
-            // 待つべき相手が無い。Idle と同じく即座に起動してよい
-            // （待たせると「除外がクリアされたのに何も繋がらない」空回りの
+            // 裁定72-fix(F2): 以前のコメントは「Exhausted に至る前の切替はすべて
+            // failOver（Ruling 25 の2段階）を経ているため、ここで待つべき相手が
+            // 無い」と主張していたが、これは偽である。failOver を*経由した*こと
+            // と、その切断が*確認された*ことは別で、onFailingOverTimeout が
+            // DISCONNECT_WAIT_MS の確認待ちを諦めて先へ進む経路では、諦めた
+            // 候補のスレッドが実際に終了した保証が無い（[unconfirmedAbandonedUuid]
+            // 参照）。その値が立っている間は「生きている候補が無い」という
+            // 前提を信用せず、Ruling 25 と同じ2段階（切断要求 → 確認 or
+            // 再タイムアウト → 起動）を Idle/Exhausted からでも踏む。
+            val abandonedUuid = unconfirmedAbandonedUuid
+            if (abandonedUuid != null) {
+                pendingConnectGroupId = groupId
+                currentCandidateUuid = abandonedUuid
+                vpn.disconnect()
+                return FailoverState.FailingOver(
+                    groupId = groupId,
+                    // pendingConnectGroupId が非 null な限り advanceAfterFailingOver は
+                    // これを一切読まない（pendingConnectGroupId 分岐が必ず先に評価
+                    // される）。ここでは「不明」を表す -1 を置くだけでよい。
+                    failedIndex = -1,
+                    awaitingUuid = abandonedUuid,
+                    startedAtMs = clock.nowMs(),
+                )
+            }
+
+            // ここまで来れば、待つべき生きている候補は本当に無い。即座に起動して
+            // よい（待たせると「除外がクリアされたのに何も繋がらない」空回りの
             // 時間が延びるだけで、安全性は上がらない）。
             val group = groupOf(groupId) ?: return FailoverState.Idle
             return startCandidateFrom(group, fromIndex = 0, unattended = false)
@@ -295,6 +364,16 @@ class FailoverController(
      */
     private fun onAutoConnect(groupId: String): FailoverState {
         exhaustionAttempt = 0
+        // 裁定72-fix(F6): このイベントの唯一の現在の呼び出し元
+        // （FailoverService の起動時復帰・画面点灯時の再接続）はどちらも
+        // controller.state が Idle のときにしか呼ばないので、今日
+        // pendingConnectGroupId が非 null のままここへ来ることは無い。しかし
+        // その安全性は「別ファイルの呼び出し側の規律」に依存しており、この
+        // フィールド自身には無い。将来 Idle 以外から AutoConnectGroup を投げる
+        // 呼び出し元が増えたとき、ここで消さないと無関係な保留先が新しい候補へ
+        // 持ち越されてしまう（onUserConnect と onUserDisconnect は既にここを
+        // 消している。ここだけ抜けていた）。
+        pendingConnectGroupId = null
         val group = groupOf(groupId) ?: return FailoverState.Idle
         needsUserConsent = false
         return startCandidateFrom(group, fromIndex = 0, unattended = true)
@@ -355,6 +434,16 @@ class FailoverController(
     }
 
     private fun onVpnState(core: VpnCoreState, uuid: String?): FailoverState {
+        // 裁定72-fix(F2): 諦めた候補の確認が遅れて届いた。currentCandidateUuid が
+        // 既に別の候補を指している場合、このあとの Ruling 13 のガードで
+        // 状態機械としては無視される（意図通り）が、「まだ生きているかもしれ
+        // ない」という疑いはここで晴らしてよい。ガードより前に見るのは、この
+        // 確認はどのみち「もう追っていない候補」のものであり、Ruling13 の対象
+        // そのものだから。
+        if (core == VpnCoreState.Disconnected && uuid != null && uuid == unconfirmedAbandonedUuid) {
+            unconfirmedAbandonedUuid = null
+        }
+
         val s = state
 
         // 切替前の古い通知は無視する。遅れて届いた切断通知を
@@ -536,7 +625,19 @@ class FailoverController(
      * 対象が無く、直接次候補へ進む）。
      */
     private fun failOver(groupId: String, failedIndex: Int, alreadyDown: Boolean): FailoverState {
-        val group = groupOf(groupId) ?: return FailoverState.Idle
+        val group = groupOf(groupId) ?: run {
+            // 裁定72-fix(F1): グループが丸ごと削除されていた場合も、他の
+            // 「諦めて Idle へ戻る」経路（!autoFailoverEnabled の直後）と同じく
+            // disconnectIfStillUp を経由する。alreadyDown = false（＝まだ生きて
+            // いる候補を諦める呼び出し）でここに来た場合、切断要求を出さずに
+            // Idle を返すとトンネルが誰にも監視されないまま残る。今日この分岐は
+            // reconcileCandidateIdentity が呼び出し元で先に同じ状況を捕まえる
+            // ため到達しないはずだが、その前提（グループ一覧が1回の handle()
+            // 呼び出し内で安定していること）はここでは検証できない値なので、
+            // 単独でも安全なように防御的に直す。
+            disconnectIfStillUp(alreadyDown)
+            return FailoverState.Idle
+        }
 
         if (!group.autoFailoverEnabled) {
             disconnectIfStillUp(alreadyDown)
@@ -651,6 +752,11 @@ class FailoverController(
     /** Ruling 25: 切断完了の確認が来ないまま [DISCONNECT_WAIT_MS] を過ぎたら先へ進む。 */
     private fun onFailingOverTimeout(s: FailoverState.FailingOver): FailoverState {
         if (clock.nowMs() - s.startedAtMs < DISCONNECT_WAIT_MS) return s
+        // 裁定72-fix(F2): 確認を諦めて先へ進む。s.awaitingUuid のスレッドが実際に
+        // 終了した保証はまだ無い（DISCONNECT_WAIT_MS の KDoc 参照）。この先
+        // Idle/Exhausted に至っても、対応する Disconnected が届くまではその
+        // 前提を信用しない（unconfirmedAbandonedUuid のドキュメント参照）。
+        unconfirmedAbandonedUuid = s.awaitingUuid
         return advanceAfterFailingOver(s)
     }
 

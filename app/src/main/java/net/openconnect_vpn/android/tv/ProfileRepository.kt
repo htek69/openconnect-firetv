@@ -57,13 +57,26 @@ class ProfileRepository(private val context: Context) {
     }
 
     /**
-     * @return 対象プロファイルが見つかり、名前を変更できたら true。
-     *         見つからなければ false（存在しない UUID、または削除済みのプロファイル）。
+     * F9（レビュー）: [displayName] が空白のみなら [profileNameOrNull] により
+     * `profile_name` への書き込み自体を省く。[create] は既にこのガードを
+     * 通していた（`ProfileManager.create` のホスト名由来の既定名を空欄で
+     * 上書きしないため）が、こちらは無条件に書き込んでいたため、編集画面で
+     * 表示名欄を空にして保存すると `profile_name=""` が書き込まれていた。
+     * `VpnProfile.isValid()` は `null` しか拒否しないので空文字は「有効な
+     * プロファイル」として通り、名前の無い行が [sortSummaries] で先頭に
+     * ソートされ、`ProfileManager.getProfileByName` や [create] の一意性判定にも
+     * `""` として参加してしまう不具合があった。
+     *
+     * @return 対象プロファイルが見つかれば true（表示名が空白で書き込みを
+     *         省いた場合も含む）。見つからなければ false（存在しない UUID、
+     *         または削除済みのプロファイル）。
      */
     fun rename(uuid: String, displayName: String): Boolean {
         ProfileManager.init(context)
         val profile = ProfileManager.get(uuid) ?: return false
-        profile.mPrefs.edit().putString("profile_name", displayName).apply()
+        profileNameOrNull(displayName)?.let { name ->
+            profile.mPrefs.edit().putString("profile_name", name).apply()
+        }
         return true
     }
 

@@ -49,12 +49,15 @@ object FailoverStateHolder {
 
     /**
      * 裁定65（指摘8・Low）: [state] が指す候補（`candidateIndex`）の名前解決に
-     * 使うべき、状態機械が実際に使ったグループのスナップショット
-     * （[FailoverService] が保持する、`onCreate` 時点で固定された `groups` から
-     * 取り出したもの）。UI 側の `GroupStore` から読んだグループ一覧は
-     * 編集操作のたびに再読込されうるため世代がずれることがあり、ずれたまま
-     * `candidateIndex` を UI 側のグループへ当てはめると「別の候補が接続済み」と
-     * 誤表示しうる。対象グループが無ければ null（`Idle` など）。
+     * 使うべき、状態機械が実際に使ったグループ（[FailoverService] が保持する
+     * `groups` から取り出したもの）。裁定72-fix(F4): `groups` はもう
+     * `onCreate` 時点で固定ではなく、`FailoverService.reloadGroupsAndProbeTarget`
+     * が SharedPreferences の変更を検知するたびに読み直す。UI 側の
+     * `GroupStore` から読んだグループ一覧は編集操作のたびに再読込されうるため、
+     * 両者は別々のタイミングで更新される2つのスナップショットであり、世代が
+     * ずれることがある。ずれたまま `candidateIndex` を UI 側のグループへ
+     * 当てはめると「別の候補が接続済み」と誤表示しうる。対象グループが無ければ
+     * null（`Idle` など）。
      */
     val activeGroup: StateFlow<FailoverGroup?> = mutableActiveGroup.asStateFlow()
 

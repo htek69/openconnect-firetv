@@ -31,7 +31,6 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import net.openconnect_vpn.android.failover.FailoverGroup
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.FailoverStateHolder
 import net.openconnect_vpn.android.failover.GroupStore

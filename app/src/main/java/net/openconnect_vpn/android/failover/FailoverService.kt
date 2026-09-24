@@ -85,9 +85,12 @@ class FailoverService : Service() {
         }
 
     /**
-     * onCreate で読み込んだグループ一覧。Ruling 5 のプローブタイムアウト解決のために、
-     * 現在の状態が指す groupId からここを引いて config を取り出す。
-     * FailoverController には新しい公開APIを足さない。
+     * 裁定72-fix(F4): onCreate で最初に読み込み、以後は [reloadGroupsAndProbeTarget]
+     * が SharedPreferences の変更を検知するたびに読み直す、生きているグループ一覧
+     * （もう「onCreate 時点で固定」ではない）。Ruling 5 のプローブタイムアウト解決
+     * のために、現在の状態が指す groupId からここを引いて config を取り出す。
+     * FailoverController にはこのフィールド専用の新しい公開APIを足さない
+     * （`groupsProvider = { groups }` としてコンストラクタに渡すだけでよい）。
      */
     private var groups: List<FailoverGroup> = emptyList()
 
@@ -404,9 +407,10 @@ class FailoverService : Service() {
         // UI に接続状態が届かない。同一プロセス内の読み取り専用投影へ、
         // 状態機械（真実）が変わるたびに publish する。
         // 裁定65（指摘8）: 現在対象のグループも、このサービスが実際に使っている
-        // スナップショット（`groups`。onCreate 時点で固定）から一緒に publish する。
-        // UI 側で GroupStore から読み直した一覧と世代がずれても、名前解決を
-        // このスナップショットと照合できるようにするため。
+        // 一覧（`groups`。裁定72-fix(F4): onCreate 時点で固定ではなく、
+        // reloadGroupsAndProbeTarget が読み直すたびに更新される）から一緒に
+        // publish する。UI 側で GroupStore から読み直した一覧と世代がずれても、
+        // 名前解決をこの一覧と照合できるようにするため。
         FailoverStateHolder.publish(controller.state, currentGroup())
         syncWakeLock()
         updateForegroundText()
@@ -491,11 +495,15 @@ class FailoverService : Service() {
     }
 
     /**
-     * 裁定65（指摘8）: [FailoverStateHolder] へ publish する、現在対象のグループの
-     * スナップショット。このサービスが実際に [controller] へ渡した [groups]
-     * （onCreate 時点で固定、まだ再読込されない）から引く。UI 側が
-     * `GroupStore` から独自に読み直した一覧と食い違いうるのはこちらではなく
-     * UI 側なので、参照元として信頼できるのはこちらである。
+     * 裁定65（指摘8）: [FailoverStateHolder] へ publish する、現在対象のグループ。
+     * このサービスが実際に [controller] へ供給関数経由で渡している [groups]
+     * （裁定72-fix(F4): onCreate 時点で固定ではなく、
+     * [reloadGroupsAndProbeTarget] が読み直すたびに更新される）から引く。
+     * `dispatch` 内で `controller.handle` の直後・`publish` の直前に呼ばれ、
+     * `groups` の再代入はメインスレッドの `prefsListener` からしか起きないので、
+     * この呼び出しの間に差し替わることはない。UI 側が `GroupStore` から独自に
+     * 読み直した一覧と世代がずれることはあっても、それはこちらではなく UI 側の
+     * 問題なので、参照元として信頼できるのはこちらである。
      */
     private fun currentGroup(): FailoverGroup? =
         currentGroupId()?.let { id -> groups.firstOrNull { it.id == id } }

@@ -159,10 +159,15 @@ object HomeRows {
      * 裁定65（指摘8）: [build] の `memberName` は、UI 側が読んだ [rows] 生成時点の
      * グループ定義（`memberUuids` の並び）に対して `candidateIndex` を当てはめて
      * 解決している。一方、状態機械（[FailoverStateHolder.activeGroup]）が実際に
-     * 使っているグループ定義は `FailoverService.onCreate` 時点で固定されたもので、
-     * 別経路（グループ編集など）で UI 側の定義だけが更新されると世代がずれる。
-     * ずれたまま同じ index を当てはめると、「実際に繋いでいるのとは別の候補」を
-     * 確信ありげに表示してしまう（[HomeRow.GroupRow.memberName] の契約が壊れる）。
+     * 使っているグループ定義は `FailoverService` が保持する `groups` から取った
+     * ものである。裁定72-fix(F4): この `groups` はもう `onCreate` 時点で固定では
+     * なく `FailoverService.reloadGroupsAndProbeTarget` がその都度読み直すが、
+     * それでも UI 側が [rows] を作った時点の読み直しとは別のタイミングの
+     * スナップショットであることに変わりはなく、両者の世代がずれる余地は残る
+     * （UI 側の再読込と、サービス側の SharedPreferences リスナ経由の再読込は
+     * 別々の契機で走る）。ずれたまま同じ index を当てはめると、「実際に
+     * 繋いでいるのとは別の候補」を確信ありげに表示してしまう
+     * （[HomeRow.GroupRow.memberName] の契約が壊れる）。
      *
      * [engineGroup] は [FailoverStateHolder.activeGroup] からそのまま渡す。対象
      * グループの `memberUuids` が [uiGroups] 側の同じ ID のグループと一致しない
