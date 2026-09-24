@@ -22,10 +22,9 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import net.openconnect_vpn.android.MainActivity
-import net.openconnect_vpn.android.failover.FailoverConfig
-import net.openconnect_vpn.android.failover.FailoverGroup
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.GroupStore
+import net.openconnect_vpn.android.failover.ProbeSchedule
 import net.openconnect_vpn.android.failover.ProbeTarget
 
 /**
@@ -47,48 +46,38 @@ import net.openconnect_vpn.android.failover.ProbeTarget
  * [TvFieldRow] を使う。ソフトキーボードの実機挙動は Task 6 の時点で未確認のまま
  * であり、ここで別実装を作って回避しない。
  *
- * ## プローブ間隔・失敗閾値の永続化について
+ * ## プローブ間隔・失敗閾値の永続化について（裁定74）
  *
- * [FailoverConfig] はデータ上グループ単位（[FailoverGroup.config]）に持たせて
- * いるが、この画面にグループを個別に選ばせる UI は無い（グループ編集画面
- * （Task 7 の `GroupEditScreen`）も config を編集させない。常に既定値
- * [FailoverConfig] のまま作成される）。よってこの画面は「プローブ間隔・失敗閾値は
- * 全グループ共通」という運用を前提に、保存時に**保存済みの全グループへ同じ値を
- * 書き込み** `groupStore.saveGroups(...)` を呼ぶ。これは Task 6.5（裁定48/72）が
- * 既に用意している「`GroupStore` のグループ保存キーが変われば `FailoverService` が
- * 読み直す」経路をそのまま使うだけであり、新しいシグナリング経路は増やさない。
+ * `FailoverConfig` はデータ上グループ単位（`FailoverGroup.config`）に持たせて
+ * いるが、それを個別に編集させる UI は無く、この画面はプローブ間隔・失敗閾値を
+ * 「アプリ全体で1つの設定」として見せている。ストアの形が UI の見せ方と食い違うと
+ * 「設定画面が表示した値がどのグループにも効いていない」という嘘が生まれる
+ * （実際、保存済みの全グループへ書き込む前の版はこの嘘を持っていた——設定変更後に
+ * 新しいグループを作ると、そのグループだけコンパイル時既定値のまま取り残された）。
  *
- * 既知の制約: この画面を開いた時点で1件もグループが無ければ、変更を書き込む先が
- * 無いので何も保存されない（既定値 30秒 / 3回のまま何もできない）。また、この
- * 画面で値を変えた**後に** `GroupEditScreen` で新しいグループを作ると、そちらは
- * 常にコンパイル時既定値 [FailoverConfig] で作成されるため、新グループだけ
- * この画面の値から一時的に外れる（次にこの画面を開いて保存し直せば全グループに
- * 揃う）。グループ単位の config 編集 UI か、真にグループ非依存の保存先を
- * `GroupStore` に足す設計変更は Task 8 の範囲外なので行わない（範囲は
- * `SettingsScreen.kt` / `VpnConsent.kt` の作成と `Placeholders.kt` の削除）。
+ * そこでこの画面は [GroupStore.loadProbeSchedule] / [GroupStore.saveProbeSchedule]
+ * が持つグローバルな1本の設定（[ProbeSchedule]）だけを読み書きし、グループには
+ * 一切触れない。[GroupStore.loadGroups] 側がこの設定を読み込んだ**すべての**
+ * グループの `config` に適用するため（新しく作られたグループも含む）、
+ * `FailoverController` / `FailoverService` は変更不要で今まで通り
+ * `FailoverGroup.config` だけを読めばよい。保存は `saveProbeSchedule` が書く
+ * キーも Task 6.5（裁定48/72）の再読込対象に含めてあるので、既存のシグナリング
+ * 経路のまま稼働中のサービスに反映される。
  */
 @Composable
 fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
     val context = LocalContext.current
 
-    // グループ一覧はプローブ間隔・失敗閾値の初期値取得と保存の両方に使う。
-    // GroupStore.loadGroups は「今も存在するプロファイルの UUID」を渡さないと
-    // メンバーを削除済みとみなして落としてしまうため、既存の ProfileRepository
-    // （ProfileManager への薄いアダプタ、Task 6 で導入済み）から取得する。
-    val knownProfileUuids = remember {
-        ProfileRepository(context).list().map { it.uuid }.toSet()
-    }
-    val storedGroups = remember { groupStore.loadGroups(knownProfileUuids) }
-
     val storedTarget = remember { groupStore.loadProbeTarget() }
     var host by remember { mutableStateOf(storedTarget.host) }
     var port by remember { mutableStateOf(storedTarget.port.toString()) }
 
+    val storedSchedule = remember { groupStore.loadProbeSchedule() }
     var probeIntervalSec by remember {
-        mutableStateOf(SettingsStepper.initialProbeIntervalSec(storedGroups))
+        mutableStateOf(SettingsStepper.clampProbeInterval(storedSchedule.probeIntervalSec))
     }
     var failureThreshold by remember {
-        mutableStateOf(SettingsStepper.initialFailureThreshold(storedGroups))
+        mutableStateOf(SettingsStepper.clampFailureThreshold(storedSchedule.failureThreshold))
     }
 
     var message by remember { mutableStateOf<String?>(null) }
@@ -170,9 +159,8 @@ fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
 
                 else -> {
                     groupStore.saveProbeTarget(ProbeTarget(host.trim(), portValue))
-                    groupStore.saveGroups(
-                        SettingsStepper.applyProbeSchedule(
-                            groups = storedGroups,
+                    groupStore.saveProbeSchedule(
+                        ProbeSchedule(
                             probeIntervalSec = probeIntervalSec,
                             failureThreshold = failureThreshold,
                         ),
@@ -245,15 +233,18 @@ private fun TvStepperRow(
 }
 
 /**
- * プローブ間隔・失敗閾値のステッパーが使う範囲・刻み幅と、保存/初期値取得の
- * 純粋ロジック（裁定73）。Android に依存しないので Robolectric 無しでテストできる。
+ * プローブ間隔・失敗閾値のステッパーが使う範囲・刻み幅の純粋ロジック（裁定73）。
+ * Android に依存しないので Robolectric 無しでテストできる。
  *
  * 範囲の選び方: 積（[PROBE_INTERVAL_MAX_SEC] × [FAILURE_THRESHOLD_MAX]）が
  * 「利用者が明らかにおかしいと分かる」組み合わせを作れないよう、両端を
  * 個別に抑える設計にした（積そのものを制約するより、行を見ただけで両端の値が
  * 分かるほうが TV では発見しやすい）。
  *
- * 最悪ケース（両方を最大にした場合）: 120秒 × 5回 = 600秒（10分）気づくまでかかる。
+ * **最悪ケース（両方を最大にした場合）: 120秒 × 5回 = 600秒（10分）気づくまで
+ * かかる。** この2つの定数のどちらかを広げるときは、この10分という数字が
+ * 一緒に動くことを忘れないこと。
+ *
  * 最良ケース（両方を最小にした場合）: 10秒 × 1回 = 10秒で気づく
  * （1回のプローブ失敗だけで即ダウン扱いになるので、瞬断を拾って過敏に切り替わる
  * リスクとの引き換えではある。既定値 30秒・3回 = 90秒はその中間）。
@@ -279,29 +270,4 @@ object SettingsStepper {
 
     fun stepFailureThreshold(current: Int, steps: Int): Int =
         clampFailureThreshold(current + steps * FAILURE_THRESHOLD_STEP)
-
-    /** 保存済みグループが無ければ [FailoverConfig] の既定値を使う。 */
-    fun initialProbeIntervalSec(groups: List<FailoverGroup>): Int =
-        clampProbeInterval(groups.firstOrNull()?.config?.probeIntervalSec ?: FailoverConfig().probeIntervalSec)
-
-    fun initialFailureThreshold(groups: List<FailoverGroup>): Int =
-        clampFailureThreshold(groups.firstOrNull()?.config?.failureThreshold ?: FailoverConfig().failureThreshold)
-
-    /**
-     * 保存済みの全グループへ同じプローブ間隔・失敗閾値を書き込む。
-     * config の他フィールド（probeTimeoutMs 等）とグループ自体（メンバー・
-     * 自動切替 ON/OFF）はそのまま保つ。
-     */
-    fun applyProbeSchedule(
-        groups: List<FailoverGroup>,
-        probeIntervalSec: Int,
-        failureThreshold: Int,
-    ): List<FailoverGroup> = groups.map { group ->
-        group.copy(
-            config = group.config.copy(
-                probeIntervalSec = probeIntervalSec,
-                failureThreshold = failureThreshold,
-            ),
-        )
-    }
 }

@@ -117,4 +117,84 @@ class GroupStoreTest {
 
         assertNull(store.loadActiveGroupId())
     }
+
+    // --- 裁定74: プローブ間隔・失敗閾値のグローバル設定 ---
+
+    @Test
+    fun `未保存のプローブ設定は既定値を返す`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+
+        val schedule = store.loadProbeSchedule()
+
+        assertEquals(FailoverConfig().probeIntervalSec, schedule.probeIntervalSec)
+        assertEquals(FailoverConfig().failureThreshold, schedule.failureThreshold)
+    }
+
+    @Test
+    fun `プローブ設定を保存して読み戻せる`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        store.saveProbeSchedule(ProbeSchedule(probeIntervalSec = 90, failureThreshold = 5))
+
+        val schedule = store.loadProbeSchedule()
+
+        assertEquals(90, schedule.probeIntervalSec)
+        assertEquals(5, schedule.failureThreshold)
+    }
+
+    @Test
+    fun `壊れたプローブ設定のJSONは既定値として扱う`() {
+        val kv = InMemoryKeyValueStore()
+        kv.putString("failover_probe_schedule_v1", "{ this is not json")
+
+        val schedule = GroupStore(kv).loadProbeSchedule()
+
+        assertEquals(FailoverConfig().probeIntervalSec, schedule.probeIntervalSec)
+        assertEquals(FailoverConfig().failureThreshold, schedule.failureThreshold)
+    }
+
+    @Test
+    fun `保存済みグループの config はグローバル設定で上書きされて読み込まれる`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        store.saveGroups(
+            listOf(group("uuid-a").copy(config = FailoverConfig(probeIntervalSec = 20, failureThreshold = 1))),
+        )
+        store.saveProbeSchedule(ProbeSchedule(probeIntervalSec = 60, failureThreshold = 4))
+
+        val loaded = store.loadGroups(allKnown)
+
+        assertEquals(60, loaded[0].config.probeIntervalSec)
+        assertEquals(4, loaded[0].config.failureThreshold)
+    }
+
+    @Test
+    fun `グローバル設定の上書きはプローブ間隔と失敗閾値以外のフィールドを変えない`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+        val original = FailoverConfig(probeTimeoutMs = 1_234, graceAfterConnectSec = 7, connectTimeoutSec = 12)
+        store.saveGroups(listOf(group("uuid-a").copy(config = original)))
+        store.saveProbeSchedule(ProbeSchedule(probeIntervalSec = 60, failureThreshold = 4))
+
+        val config = store.loadGroups(allKnown).single().config
+
+        assertEquals(1_234, config.probeTimeoutMs)
+        assertEquals(7, config.graceAfterConnectSec)
+        assertEquals(12, config.connectTimeoutSec)
+    }
+
+    @Test
+    fun `裁定74 グローバル設定を保存した後に作られた新しいグループにも適用される`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+
+        // 設定画面での操作を模す: 先に既定値ではないグローバル設定を保存する。
+        store.saveProbeSchedule(ProbeSchedule(probeIntervalSec = 90, failureThreshold = 5))
+
+        // その後に新しいグループを作る。GroupEditScreen は常にコンパイル時既定値
+        // FailoverConfig()（30秒・3回）でグループを作るので、config には
+        // グローバル設定と異なる値が入っている。
+        store.saveGroups(listOf(group("uuid-a").copy(config = FailoverConfig())))
+
+        val loaded = store.loadGroups(allKnown)
+
+        assertEquals(90, loaded[0].config.probeIntervalSec)
+        assertEquals(5, loaded[0].config.failureThreshold)
+    }
 }

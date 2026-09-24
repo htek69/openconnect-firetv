@@ -1,19 +1,14 @@
 package net.openconnect_vpn.android.tv
 
-import net.openconnect_vpn.android.failover.FailoverConfig
-import net.openconnect_vpn.android.failover.FailoverGroup
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
+/**
+ * [SettingsStepper] は裁定74以降、範囲・刻み幅の純粋ロジックだけを持つ
+ * （初期値取得・保存は [net.openconnect_vpn.android.failover.GroupStore] の
+ * グローバル設定スロットに一本化した。そちらのテストは `GroupStoreTest` にある）。
+ */
 class SettingsStepperTest {
-
-    private fun group(id: String, config: FailoverConfig) = FailoverGroup(
-        id = id,
-        name = "group-$id",
-        memberUuids = listOf("uuid-$id"),
-        autoFailoverEnabled = true,
-        config = config,
-    )
 
     // --- clampProbeInterval / stepProbeInterval ---
 
@@ -105,81 +100,5 @@ class SettingsStepperTest {
     fun `両端の積が報告した検知遅延と一致する`() {
         assertEquals(600, SettingsStepper.PROBE_INTERVAL_MAX_SEC * SettingsStepper.FAILURE_THRESHOLD_MAX)
         assertEquals(10, SettingsStepper.PROBE_INTERVAL_MIN_SEC * SettingsStepper.FAILURE_THRESHOLD_MIN)
-    }
-
-    // --- initialProbeIntervalSec / initialFailureThreshold ---
-
-    @Test
-    fun `グループが無ければ既定値を初期値にする`() {
-        assertEquals(FailoverConfig().probeIntervalSec, SettingsStepper.initialProbeIntervalSec(emptyList()))
-        assertEquals(FailoverConfig().failureThreshold, SettingsStepper.initialFailureThreshold(emptyList()))
-    }
-
-    @Test
-    fun `グループがあれば先頭グループの値を初期値にする`() {
-        val groups = listOf(
-            group("g1", FailoverConfig(probeIntervalSec = 90, failureThreshold = 4)),
-            group("g2", FailoverConfig(probeIntervalSec = 20, failureThreshold = 1)),
-        )
-        assertEquals(90, SettingsStepper.initialProbeIntervalSec(groups))
-        assertEquals(4, SettingsStepper.initialFailureThreshold(groups))
-    }
-
-    @Test
-    fun `保存済みの値が範囲外でも初期値は範囲内に丸める`() {
-        val groups = listOf(group("g1", FailoverConfig(probeIntervalSec = 9_999, failureThreshold = 0)))
-        assertEquals(SettingsStepper.PROBE_INTERVAL_MAX_SEC, SettingsStepper.initialProbeIntervalSec(groups))
-        assertEquals(SettingsStepper.FAILURE_THRESHOLD_MIN, SettingsStepper.initialFailureThreshold(groups))
-    }
-
-    // --- applyProbeSchedule ---
-
-    @Test
-    fun `全グループへ同じ間隔と閾値を書き込む`() {
-        val groups = listOf(
-            group("g1", FailoverConfig(probeIntervalSec = 30, failureThreshold = 3)),
-            group("g2", FailoverConfig(probeIntervalSec = 90, failureThreshold = 5)),
-        )
-
-        val updated = SettingsStepper.applyProbeSchedule(groups, probeIntervalSec = 60, failureThreshold = 2)
-
-        assertEquals(listOf(60, 60), updated.map { it.config.probeIntervalSec })
-        assertEquals(listOf(2, 2), updated.map { it.config.failureThreshold })
-    }
-
-    @Test
-    fun `applyProbeSchedule は間隔と閾値以外のフィールドを保つ`() {
-        val original = FailoverConfig(
-            probeIntervalSec = 30,
-            probeTimeoutMs = 1_234,
-            failureThreshold = 3,
-            graceAfterConnectSec = 7,
-            connectTimeoutSec = 12,
-        )
-        val groups = listOf(group("g1", original))
-
-        val updated = SettingsStepper.applyProbeSchedule(groups, probeIntervalSec = 60, failureThreshold = 2)
-
-        val config = updated.single().config
-        assertEquals(1_234, config.probeTimeoutMs)
-        assertEquals(7, config.graceAfterConnectSec)
-        assertEquals(12, config.connectTimeoutSec)
-    }
-
-    @Test
-    fun `applyProbeSchedule はグループ自体（メンバー・自動切替）を変えない`() {
-        val groups = listOf(group("g1", FailoverConfig()))
-
-        val updated = SettingsStepper.applyProbeSchedule(groups, probeIntervalSec = 60, failureThreshold = 2)
-
-        assertEquals(groups.single().id, updated.single().id)
-        assertEquals(groups.single().name, updated.single().name)
-        assertEquals(groups.single().memberUuids, updated.single().memberUuids)
-        assertEquals(groups.single().autoFailoverEnabled, updated.single().autoFailoverEnabled)
-    }
-
-    @Test
-    fun `applyProbeSchedule は空リストなら空リストを返す`() {
-        assertEquals(emptyList<FailoverGroup>(), SettingsStepper.applyProbeSchedule(emptyList(), 60, 2))
     }
 }
