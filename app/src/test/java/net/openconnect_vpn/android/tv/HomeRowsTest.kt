@@ -4,6 +4,7 @@ import net.openconnect_vpn.android.failover.FailoverConfig
 import net.openconnect_vpn.android.failover.FailoverGroup
 import net.openconnect_vpn.android.failover.FailoverState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -317,8 +318,22 @@ class HomeRowsTest {
     }
 
     @Test
-    fun `AddProfile の focusKey は常に同じ値`() {
-        assertEquals(HomeRow.AddProfile.focusKey(), HomeRow.AddProfile.focusKey())
+    fun `AddProfile の focusKey は build の呼び出しをまたいで一致する`() {
+        // 裁定86（L5）: 以前は `HomeRow.AddProfile.focusKey()` を2回呼んで比べる
+        // だけで、`data object` に対する純関数なので定義上失敗しえなかった。
+        // 押さえたい性質は「行の再生成（HomeScreen の reloadToken++ や
+        // failoverState の変化で build が呼び直される）をまたいでキーが安定して
+        // いること」なので、実際に2回 build して取り出したものを比べる
+        // （FocusRequester のキャッシュがこの安定性に依存している: 裁定84 fix8）。
+        val first = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+        val connectedState = FailoverState.Healthy("g1", candidateIndex = 0, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val second = HomeRows.build(listOf(group), emptyList(), connectedState)
+
+        val firstKey = first.filterIsInstance<HomeRow.AddProfile>().single().focusKey()
+        val secondKey = second.filterIsInstance<HomeRow.AddProfile>().single().focusKey()
+
+        assertNotNull(firstKey)
+        assertEquals(firstKey, secondKey)
     }
 
     // --- 裁定84（fix8）: HomeRows.targetKeyAfterConfirmedDelete ---

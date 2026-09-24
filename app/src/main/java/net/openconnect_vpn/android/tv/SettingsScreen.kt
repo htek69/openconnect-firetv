@@ -186,14 +186,31 @@ fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
                             failureThreshold = failureThreshold,
                         ),
                     )
-                    message = "保存しました。次回のサービス起動から反映されます"
+                    // 裁定86（M4）: 以前は「次回のサービス起動から反映されます」と
+                    // 出していたが、これは裁定48/72/74 以前の文言が取り残された
+                    // ものであり、同じファイルの KDoc（上）と実装の両方に矛盾して
+                    // いた。saveProbeTarget / saveProbeSchedule が書くキーはどちらも
+                    // GroupStore.isReloadTriggerKey に含まれており、
+                    // PrefsKeyValueStore は apply() で書くのでリスナはメインスレッドで
+                    // 即座に発火し、稼働中のサービスが reloadGroupsAndProbeTarget() で
+                    // 読み直す。利用者に不要な再起動・強制停止を促していた。
+                    message = "保存しました。すぐに反映されます"
                 }
             }
         }) {
             Text("設定を保存")
         }
 
-        Card(onClick = { requestConsent() }) {
+        // 裁定86（L4）: 許可済みのときは許可画面が出ない（それが正常）。
+        // 以前はそれを伝える手段が無く、押しても完全な無反応だったため
+        // 「壊れている」ように見えた。
+        Card(onClick = {
+            message = if (requestConsent()) {
+                null
+            } else {
+                "すでに許可されています"
+            }
+        }) {
             Text("VPN の許可を取得する", modifier = Modifier.padding(20.dp))
         }
 
