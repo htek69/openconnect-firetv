@@ -32,6 +32,14 @@ package net.openconnect_vpn.android.tv
  *
  * Android の `KeyEvent` には依存しない純粋なクラスなので JVM 単体テストで検証できる。
  * `TvMainActivity.dispatchKeyEvent` から呼び出して使う。
+ *
+ * **守備範囲は `TvMainActivity` の Window に限る**（裁定81）。`ConfirmDialog` が使う
+ * `androidx.compose.ui.window.Dialog` は独立した別の Window を作るため、
+ * `dispatchKeyEvent` はそのダイアログの Window に届く `ACTION_UP` を一切見られず、
+ * このクラスは無力である。ダイアログの Window の中の誤爆対策には、別の判定基準
+ * （新しい Window は長押しの DOWN をそもそも見ていないので「孤児の UP を捨てる」で
+ * 正しく機能する）を使う [DialogOrphanUpFilter] を使うこと。詳細は
+ * [DialogOrphanUpFilter] の KDoc（両者の守備範囲の違いの節）を参照。
  */
 class LongPressKeyUpFilter(private val trackedKeyCodes: Set<Int>) {
 
