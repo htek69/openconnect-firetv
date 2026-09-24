@@ -74,6 +74,23 @@ class FailoverController(
      * フラグの値に関わらず確実に本人のものであり、捨てると本物の切断イベントに
      * よる即時切替（仕様書 §8 R5 系統1）が黙って死に、検知がプローブ（系統2）
      * 任せになる。
+     *
+     * 裁定86（L1）: このフラグが立つのは [startCandidateFrom]（＝候補の接続を
+     * 開始した経路）で false に落としたあと、その候補の `Connecting` を実際に
+     * 観測したときだけである。したがって
+     * **`FailingOver` 中に必ず true だとは限らない。**
+     * [stopBeforeStarting] が作る `FailingOver`（放棄候補の確認待ち、および
+     * 生きている候補を止めてからの切替）は [startCandidateFrom] を通らないので、
+     * この値は**直前の別の候補についての観測結果**がそのまま残っている。
+     * その値が false だった場合（例: 直前の候補の `vpn.connect()` が
+     * `NeedsUserConsent` を返して `Idle` に落ち、`Connecting` を一度も
+     * 観測しなかった）、待っている候補の `Disconnected` がこのガードに
+     * 捨てられる。影響は [onFailingOverTimeout] が [DISCONNECT_WAIT_MS]
+     * （3秒）で先へ進めるまでの遅延と、[unconfirmedAbandonedUuid] がそこで
+     * 再び立つこと（＝「まだ生きているかもしれない」という悲観の持ち越し）に
+     * 留まる。悲観の側に倒れるので安全側の誤りであり、ここで
+     * `sawCoreConnecting = true` を置いて回るより、成立条件を正確に書いておく
+     * ほうが将来の誤読が少ないと判断した。
      */
     private var sawCoreConnecting = false
 
@@ -109,18 +126,34 @@ class FailoverController(
     private var probeImmediatelyOnNetworkRecovery = false
 
     /**
-     * 裁定59: ユーザーが「生きている可能性のある候補がある状態から」別グループへの
-     * 接続を指示した際の保留先（`Idle`/`Exhausted` からの指示は即座に起動するので
-     * ここを経由しない）。Ruling 25 の2段階切替（切断要求 → 完了確認 → 次を起動）を
-     * 経てから、このグループを先頭候補から開始する。
+     * 裁定59: 「生きている可能性のある候補がある状態から」別グループへの接続を
+     * 指示された際の保留先。Ruling 25 の2段階切替（切断要求 → 完了確認 →
+     * 次を起動）を経てから、このグループを先頭候補から開始する。
      *
      * これが無いと [onUserConnect] が現在の候補を止めずに新しい候補を起動してしまい、
      * 放棄したはずの候補のスレッドが `killVPNThread` の1秒 join を生き延びて後から
      * tun を取る、という計画1 で欠陥13・欠陥15 として潰した事故が UI 起点の切替で
      * 再現する（レビュー指摘1・裁定59）。自動切替の [failOver] は最初からこの規律を
      * 守っているが、ユーザー操作による切替はこのフィールドが無いと素通りしていた。
+     *
+     * 裁定86（H2）: 以前は `String?`（グループ ID だけ）だった。接続開始の3経路
+     * （[onUserConnect] / [onAutoConnect] / [onExhaustedRetry]）が共通の前処理
+     * [stopBeforeStarting] を通るようになり、この保留が**有人・無人のどちらの
+     * 経路から来たのか**を覚えておく必要が生じたため、[PendingConnect] にした。
+     * 「切断を待ってから起動する」という保留の性質そのものであって新しい規則では
+     * ない——ここを落とすと、無人経路（画面点灯時の再接続・枯渇後の再試行）から
+     * 保留された接続が有人として起動してしまい、裁定30 の「`UserPrompt` から
+     * 進まなければ除外して次へ」が働かず、認証ダイアログの前で無期限に止まる
+     * （裁定36 が防いでいる事故）。
      */
-    private var pendingConnectGroupId: String? = null
+    private var pendingConnect: PendingConnect? = null
+
+    /**
+     * 裁定86（H2）: [pendingConnect] の中身。[unattended] は
+     * [startCandidateFrom] にそのまま渡す値で、Ruling 21 の「人が見ている保証が
+     * あるか」を保留の前後で失わないために持つ。
+     */
+    private data class PendingConnect(val groupId: String, val unattended: Boolean)
 
     /**
      * 裁定72-fix(F2): [onFailingOverTimeout] が確認を諦めて先へ進んだときの
@@ -131,7 +164,15 @@ class FailoverController(
      *
      * したがって、この値が非 null の間は [FailoverState.Idle] /
      * [FailoverState.Exhausted] に対して「生きている候補が無い」という前提を
-     * 信用してはならない。対応する `Disconnected` が実際に届いたら
+     * 信用してはならない。
+     *
+     * 裁定86（H2）: この契約を守る場所は [stopBeforeStarting] の1か所だけで
+     * あり、候補の起動を始める3経路（[onUserConnect] / [onAutoConnect] /
+     * [onExhaustedRetry]）はすべてそこを通る。以前は [onUserConnect] しか
+     * この値を読んでおらず、残る2経路は契約を破っていた。**新しい経路を
+     * 足すときも必ず [stopBeforeStarting] を通すこと。**
+     *
+     * 対応する `Disconnected` が実際に届いたら
      * （[onVpnState] 冒頭）null に戻す。二度と届かなければ非 null のまま残り
      * 続けるが、それは「まだ生きているかもしれない」が偽であることを一度も
      * 確認できていないという事実をそのまま表しているだけであり、根拠の無い
@@ -207,9 +248,9 @@ class FailoverController(
                 // この状態に入った時点で既に vpn.disconnect() を awaitingUuid 宛に
                 // 要求済みである（failOver または onUserConnect の生存候補分岐）。
                 // advanceAfterFailingOver 自身が groupOf(...) == null を Idle として
-                // 正しく処理し、pendingConnectGroupId の消費もそこで行う。ここで
+                // 正しく処理し、pendingConnect の消費もそこで行う。ここで
                 // 先回りして Idle に落とすと、その消費を経由せず
-                // pendingConnectGroupId が迷子になる（F6 と同じ形の罠）ので、
+                // pendingConnect が迷子になる（F6 と同じ形の罠）ので、
                 // 確認到着または DISCONNECT_WAIT_MS のタイムアウトによる通常の
                 // 前進に任せる。
                 s
@@ -294,7 +335,43 @@ class FailoverController(
         _excludedUuids.clear()
         needsUserConsent = false
 
+        stopBeforeStarting(groupId, unattended = false)?.let { return it }
+
+        val group = groupOf(groupId) ?: return FailoverState.Idle
+        return startCandidateFrom(group, fromIndex = 0, unattended = false)
+    }
+
+    /**
+     * 裁定86（H2）: 「候補を起動する前に、まだ生きているかもしれない候補の切断を
+     * 先に済ませる必要があるか」という前処理。[onUserConnect] だけが守っていた
+     * 契約を、接続を開始する3経路（[onUserConnect] / [onAutoConnect] /
+     * [onExhaustedRetry]）で共有するために切り出したものであり、判断内容は
+     * 以前の [onUserConnect] とまったく同じである（新しい規則は足していない）。
+     *
+     * 非 null を返したら、それが新しい状態（切断の完了を待つ
+     * [FailoverState.FailingOver]、または既に待っている状態そのもの）であり、
+     * 呼び出し側は**候補を起動してはならない**。起動は切断確認または
+     * [DISCONNECT_WAIT_MS] のタイムアウトのあと [advanceAfterFailingOver] が
+     * [pendingConnect] を消費して行う。null を返したら、待つべき相手は本当に
+     * 無いのでそのまま [startCandidateFrom] してよい。
+     *
+     * 分けて扱う理由（3経路それぞれで実際に踏める事故）:
+     *
+     * - [onAutoConnect]: 裁定44 により TV の画面が消えるたびに `UserDisconnect`
+     *   → `Idle` になり、点灯で `AutoConnectGroup` が飛ぶ。直前の切替が
+     *   [onFailingOverTimeout] で確認を諦めていた場合（[unconfirmedAbandonedUuid]
+     *   が非 null）、ここを通さないと放棄した候補のスレッドが生きているまま
+     *   新しい候補を起動することになり、**TV の電源を切って点けるだけで**
+     *   Ruling 25 と裁定72-fix(F2) が防いでいる事故（旧スレッドが後から tun を
+     *   取る）を踏む。
+     * - [onExhaustedRetry]: バックオフ満了時の自動再試行。同じく `Exhausted` に
+     *   至る直前がタイムアウト経由なら放棄候補が残っている。ここは遅延コストが
+     *   実質ゼロ（既に数十秒待っている）。
+     * - [onUserConnect]: 裁定72-fix(F2) で既に守っていた分。
+     */
+    private fun stopBeforeStarting(groupId: String, unattended: Boolean): FailoverState? {
         val current = state
+
         if (current is FailoverState.Idle || current is FailoverState.Exhausted) {
             // 裁定72-fix(F2): 以前のコメントは「Exhausted に至る前の切替はすべて
             // failOver（Ruling 25 の2段階）を経ているため、ここで待つべき相手が
@@ -306,35 +383,37 @@ class FailoverController(
             // 前提を信用せず、Ruling 25 と同じ2段階（切断要求 → 確認 or
             // 再タイムアウト → 起動）を Idle/Exhausted からでも踏む。
             val abandonedUuid = unconfirmedAbandonedUuid
-            if (abandonedUuid != null) {
-                pendingConnectGroupId = groupId
-                currentCandidateUuid = abandonedUuid
-                vpn.disconnect()
-                return FailoverState.FailingOver(
-                    groupId = groupId,
-                    // pendingConnectGroupId が非 null な限り advanceAfterFailingOver は
-                    // これを一切読まない（pendingConnectGroupId 分岐が必ず先に評価
-                    // される）。ここでは「不明」を表す -1 を置くだけでよい。
-                    failedIndex = -1,
-                    awaitingUuid = abandonedUuid,
-                    startedAtMs = clock.nowMs(),
-                )
-            }
-
-            // ここまで来れば、待つべき生きている候補は本当に無い。即座に起動して
-            // よい（待たせると「除外がクリアされたのに何も繋がらない」空回りの
-            // 時間が延びるだけで、安全性は上がらない）。
-            val group = groupOf(groupId) ?: return FailoverState.Idle
-            return startCandidateFrom(group, fromIndex = 0, unattended = false)
+                ?: run {
+                    // 待つべき相手は本当に無い。即座に起動してよい（待たせると
+                    // 「除外がクリアされたのに何も繋がらない」空回りの時間が
+                    // 延びるだけで、安全性は上がらない）。ここで古い保留先を
+                    // 消すのは裁定72-fix(F6) と同じ理由——直前の保留が何らかの
+                    // 経路で残っていた場合、次の切替でこの起動と無関係な
+                    // グループへ横取りされる。
+                    pendingConnect = null
+                    return null
+                }
+            pendingConnect = PendingConnect(groupId, unattended)
+            currentCandidateUuid = abandonedUuid
+            vpn.disconnect()
+            return FailoverState.FailingOver(
+                groupId = groupId,
+                // pendingConnect が非 null な限り advanceAfterFailingOver は
+                // これを一切読まない（pendingConnect 分岐が必ず先に評価
+                // される）。ここでは「不明」を表す -1 を置くだけでよい。
+                failedIndex = -1,
+                awaitingUuid = abandonedUuid,
+                startedAtMs = clock.nowMs(),
+            )
         }
 
         if (current is FailoverState.FailingOver) {
-            // 既に切断待ちの最中（自動切替由来・前回のユーザー切替由来を問わず）。
+            // 既に切断待ちの最中（自動切替由来・前回の切替指示由来を問わず）。
             // 裁定26: DISCONNECT_WAIT_MS という上限は起点の startedAtMs が変わらない
             // 限りにおいて有界である。ここで vpn.disconnect() を再送したり
-            // startedAtMs を更新したりすると、ユーザーが連打するたびに上限が
+            // startedAtMs を更新したりすると、指示が繰り返されるたびに上限が
             // 延び続け、上限が上限でなくなる。保留先だけを差し替える。
-            pendingConnectGroupId = groupId
+            pendingConnect = PendingConnect(groupId, unattended)
             return current
         }
 
@@ -342,7 +421,7 @@ class FailoverController(
         // を先に止め、完了を待ってから新グループを起動する（Ruling 25 と同じ2段階。
         // expectingDisconnect は立てない — この Disconnected は S3 で捨てるのでは
         // なく、advanceAfterFailingOver への合図として観測する必要がある）。
-        pendingConnectGroupId = groupId
+        pendingConnect = PendingConnect(groupId, unattended)
         val awaitingUuid = currentCandidateUuid
         val currentGroupId = groupIdOf(current) ?: groupId
         val currentIndex = candidateIndexOf(current) ?: 0
@@ -361,21 +440,22 @@ class FailoverController(
      * 開始するので、裁定30 の「`UserPrompt` から進まなければ除外」が働く。
      * 除外集合はクリアしない（無人で除外を落とすと、失効した認証情報を無期限に
      * 再試行してサーバ側のアカウントロックを招く。S1 が存在する理由そのもの）。
+     *
+     * 裁定86（H2）: [stopBeforeStarting] を通す。以前はこの経路が
+     * [unconfirmedAbandonedUuid] を一度も読まずに [startCandidateFrom] を直接
+     * 呼んでいたため、**TV の画面を消して点けるだけで**（裁定44 により消灯で
+     * 切断・点灯で `AutoConnectGroup`）放棄候補のスレッドが生きているまま次の
+     * `vpn.connect()` が走り、Ruling 25 が防いでいる事故を日常操作から踏めた。
+     * 裁定72-fix(F6) の「古い保留先を持ち越さない」も、同じ前処理の中
+     * （待つ相手が無いと判った分岐）で行うようになった。
      */
     private fun onAutoConnect(groupId: String): FailoverState {
         exhaustionAttempt = 0
-        // 裁定72-fix(F6): このイベントの唯一の現在の呼び出し元
-        // （FailoverService の起動時復帰・画面点灯時の再接続）はどちらも
-        // controller.state が Idle のときにしか呼ばないので、今日
-        // pendingConnectGroupId が非 null のままここへ来ることは無い。しかし
-        // その安全性は「別ファイルの呼び出し側の規律」に依存しており、この
-        // フィールド自身には無い。将来 Idle 以外から AutoConnectGroup を投げる
-        // 呼び出し元が増えたとき、ここで消さないと無関係な保留先が新しい候補へ
-        // 持ち越されてしまう（onUserConnect と onUserDisconnect は既にここを
-        // 消している。ここだけ抜けていた）。
-        pendingConnectGroupId = null
-        val group = groupOf(groupId) ?: return FailoverState.Idle
         needsUserConsent = false
+
+        stopBeforeStarting(groupId, unattended = true)?.let { return it }
+
+        val group = groupOf(groupId) ?: return FailoverState.Idle
         return startCandidateFrom(group, fromIndex = 0, unattended = true)
     }
 
@@ -386,7 +466,7 @@ class FailoverController(
         // 裁定59: 切断を指示したのに保留先が残っていると、切断確認の後で
         // 勝手に別グループへ繋ぎ始めてしまう。ユーザーは「止めろ」と言ったのであり
         // 「別のグループへ繋ぎ直せ」とは言っていない。
-        pendingConnectGroupId = null
+        pendingConnect = null
         vpn.disconnect()
         return FailoverState.Idle
     }
@@ -484,9 +564,12 @@ class FailoverController(
             // 状態にだけ適用する。Connected を観測済みの候補（Verifying / Healthy）の
             // Disconnected は確実にその候補のものであり、捨てると R5 の系統1
             // （切断イベントによる即時切替）が死んで検知がプローブ任せになる
-            // （仕様書 §8）。FailingOver 中は切断を待っている候補自身が既に
-            // Connecting を出しているのでこのフラグは true であり、確認の受け取りを
-            // 妨げない。
+            // （仕様書 §8）。
+            // 裁定86（L1）: FailingOver 中にこのフラグが必ず true になる、とは
+            // 限らない（成立条件の正確な説明は sawCoreConnecting の KDoc を
+            // 参照）。false のまま入った場合は確認の受け取りを妨げるが、その
+            // 代償は onFailingOverTimeout が先へ進めるまでの3秒の遅延だけで、
+            // 悲観（まだ生きているかもしれない）の側に倒れる誤りである。
             core == VpnCoreState.Disconnected &&
                 !sawCoreConnecting &&
                 (s is FailoverState.Connecting || s is FailoverState.FailingOver) -> s
@@ -688,13 +771,17 @@ class FailoverController(
     private fun advanceAfterFailingOver(s: FailoverState.FailingOver): FailoverState {
         if (!network.hasUnderlyingNetwork()) return s
 
-        // 裁定59: ユーザーが切替先を指示していれば、自動切替の続き（次候補）より
+        // 裁定59: 切替先が保留されていれば、自動切替の続き（次候補）より
         // そちらを優先する。
-        pendingConnectGroupId?.let { target ->
-            pendingConnectGroupId = null
-            val group = groupOf(target) ?: return FailoverState.Idle
-            // ユーザー操作起点なので有人（unattended = false）で先頭から開始する。
-            return startCandidateFrom(group, fromIndex = 0, unattended = false)
+        // 裁定86（H2）: 有人・無人は保留した経路のものをそのまま使う
+        // （[PendingConnect.unattended]）。以前は `false` 固定だったが、
+        // 保留を作る経路が [onUserConnect] だけではなくなったので、固定すると
+        // 無人経路（画面点灯時の再接続・枯渇後の再試行）から保留された接続が
+        // 有人として起動し、裁定30 の除外が働かなくなる。
+        pendingConnect?.let { pending ->
+            pendingConnect = null
+            val group = groupOf(pending.groupId) ?: return FailoverState.Idle
+            return startCandidateFrom(group, fromIndex = 0, unattended = pending.unattended)
         }
 
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
@@ -776,6 +863,12 @@ class FailoverController(
         return failOver(s.groupId, s.candidateIndex, alreadyDown = false)
     }
 
+    /**
+     * 裁定86（H2）: 再試行の前に [stopBeforeStarting] を通す。この経路も
+     * [unconfirmedAbandonedUuid] を一度も読まずに [startCandidateFrom] を
+     * 直接呼んでいた（`Exhausted` に至る直前が [onFailingOverTimeout] だった
+     * 場合、放棄した候補のスレッドが生きている可能性がある）。
+     */
     private fun onExhaustedRetry(s: FailoverState.Exhausted): FailoverState {
         if (clock.nowMs() < s.retryAtMs) return s
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
@@ -793,7 +886,13 @@ class FailoverController(
         // 再試行時は認証失敗による除外を維持したまま先頭から試す。
         // 次に枯渇したときの attempt を1つ進める。ここでリセットしてはならない
         // （リセットすると2回目の枯渇でも attempt が 0 に戻り、バックオフが伸びない）。
+        // 裁定86（H2）: 進めるのは stopBeforeStarting の前でよい。切断待ちを挟んだ
+        // 場合も、その後 advanceAfterFailingOver が起動して次に枯渇したときの
+        // attempt は同じ値になる（バックオフは伸び続ける）。
         exhaustionAttempt = s.attempt + 1
+
+        stopBeforeStarting(s.groupId, unattended = true)?.let { return it }
+
         return startCandidateFrom(group, fromIndex = 0, unattended = true)
     }
 
