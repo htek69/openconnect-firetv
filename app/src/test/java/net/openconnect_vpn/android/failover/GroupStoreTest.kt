@@ -180,6 +180,70 @@ class GroupStoreTest {
         assertEquals(12, config.connectTimeoutSec)
     }
 
+    // --- 裁定86（H1）: 接続先の作成・削除を既存の再読込トリガに載せる ---
+
+    @Test
+    fun `グループ定義とプローブ設定のキーは再読込トリガである`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+
+        assertTrue(store.isReloadTriggerKey("failover_groups_v1"))
+        assertTrue(store.isReloadTriggerKey("failover_probe_target_v1"))
+        assertTrue(store.isReloadTriggerKey("failover_probe_schedule_v1"))
+    }
+
+    @Test
+    fun `アクティブグループIDと無関係なキーは再読込トリガではない`() {
+        val store = GroupStore(InMemoryKeyValueStore())
+
+        // どのグループへ繋ぐかの記録はグループ定義そのものではない（裁定48/72）。
+        assertEquals(false, store.isReloadTriggerKey("failover_active_group_id_v1"))
+        assertEquals(false, store.isReloadTriggerKey("something_else"))
+        assertEquals(false, store.isReloadTriggerKey(null))
+    }
+
+    @Test
+    fun `bumpProfileGeneration が書くキーは再読込トリガである`() {
+        val kv = InMemoryKeyValueStore()
+        val store = GroupStore(kv)
+
+        store.bumpProfileGeneration()
+
+        // ProfileRepository の作成・削除がこのキーを進めることで、
+        // FailoverService の既存のリスナが groups を読み直す。ここが
+        // トリガに入っていないと、接続先を削除してもエンジンには永久に
+        // 届かない（H1）。
+        val key = kv.writtenKeys.single()
+        assertTrue(store.isReloadTriggerKey(key))
+    }
+
+    @Test
+    fun `bumpProfileGeneration は呼ぶたびに違う値を書く`() {
+        val kv = InMemoryKeyValueStore()
+        val store = GroupStore(kv)
+
+        store.bumpProfileGeneration()
+        val key = kv.writtenKeys.single()
+        val first = kv.getString(key)
+        store.bumpProfileGeneration()
+        val second = kv.getString(key)
+
+        // SharedPreferences のリスナは値が変わらないと発火しないので、
+        // 同じ値を書き直すだけでは再読込が起きない。
+        assertEquals("1", first)
+        assertEquals("2", second)
+    }
+
+    @Test
+    fun `壊れた世代の値からでも必ず別の値へ進む`() {
+        val kv = InMemoryKeyValueStore()
+        kv.putString("failover_profile_generation_v1", "not a number")
+        val store = GroupStore(kv)
+
+        store.bumpProfileGeneration()
+
+        assertEquals("1", kv.getString("failover_profile_generation_v1"))
+    }
+
     @Test
     fun `裁定74 グローバル設定を保存した後に作られた新しいグループにも適用される`() {
         val store = GroupStore(InMemoryKeyValueStore())

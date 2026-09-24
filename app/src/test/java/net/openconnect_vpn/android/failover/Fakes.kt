@@ -44,17 +44,29 @@ class FakeNetworkGate(var available: Boolean = true) : NetworkGate {
     override fun hasUnderlyingNetwork(): Boolean = available
 }
 
-/** メモリ上の KeyValueStore。 */
+/**
+ * メモリ上の KeyValueStore。
+ *
+ * 裁定86（H1）: 書き込まれたキーを記録する。`FailoverService` は
+ * `SharedPreferences.OnSharedPreferenceChangeListener` が渡してくるキーを
+ * `GroupStore.isReloadTriggerKey` に掛けて再読込するかを決めるので、
+ * その配線をテストから再現するには「どのキーが書かれたか」が要る。
+ */
 class InMemoryKeyValueStore : KeyValueStore {
     private val map = mutableMapOf<String, String>()
+
+    private val _writtenKeys = mutableListOf<String>()
+    val writtenKeys: List<String> get() = _writtenKeys
 
     override fun getString(key: String): String? = map[key]
 
     override fun putString(key: String, value: String) {
         map[key] = value
+        _writtenKeys.add(key)
     }
 
     override fun remove(key: String) {
         map.remove(key)
+        _writtenKeys.add(key)
     }
 }

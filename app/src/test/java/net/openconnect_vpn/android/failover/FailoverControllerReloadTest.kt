@@ -224,4 +224,85 @@ class FailoverControllerReloadTest {
         assertTrue(controller.state is FailoverState.FailingOver)
         assertEquals(2, vpn.disconnectCalls)
     }
+
+    /**
+     * 裁定86（H1）: 接続先（プロファイル）の削除が、稼働中のエンジンへ届くこと。
+     *
+     * ここでは `FailoverService` の配線をそのまま再現する:
+     *
+     * - `groups` は `GroupStore.loadGroups(knownUuids)` の結果を保持する
+     *   フィールドで、コントローラには `{ groups }` を供給関数として渡す。
+     * - 既定 `SharedPreferences` に書かれたキーが
+     *   `GroupStore.isReloadTriggerKey` に該当したときだけ読み直す
+     *   （`prefsListener` と同じ判定）。
+     *
+     * 修正前は `ProfileManager.delete()` が既定 prefs に何も書かないため
+     * この再読込が一度も起きず、削除済みプロファイルのトンネルが `Healthy` を
+     * 名乗って残り続けた。修正後は `ProfileRepository.delete()` が
+     * `GroupStore.bumpProfileGeneration()` を進め、そのキーがトリガに
+     * 含まれるので読み直しが起き、あとは裁定72a の既存経路
+     * （候補が一覧から消えた → 障害として次候補へ）に合流する。
+     */
+    @Test
+    fun `裁定86 接続先の削除が世代キー経由で再読込され、外れた候補から切り替わる`() {
+        val kv = InMemoryKeyValueStore()
+        val store = GroupStore(kv)
+        store.saveGroups(
+            listOf(
+                FailoverGroup(
+                    id = "g1",
+                    name = "自宅優先",
+                    memberUuids = listOf("uuid-a", "uuid-b"),
+                    autoFailoverEnabled = true,
+                ),
+            ),
+        )
+
+        // FailoverService.onCreate 相当。
+        var knownUuids = setOf("uuid-a", "uuid-b")
+        var groups = store.loadGroups(knownUuids)
+        val controller = FailoverController(
+            groupsProvider = { groups },
+            clock = clock,
+            vpn = vpn,
+            network = network,
+        )
+        // FailoverService.prefsListener + reloadGroupsAndProbeTarget 相当。
+        var handledWrites = 0
+        fun deliverPrefsChanges() {
+            while (handledWrites < kv.writtenKeys.size) {
+                val key = kv.writtenKeys[handledWrites++]
+                if (store.isReloadTriggerKey(key)) groups = store.loadGroups(knownUuids)
+            }
+        }
+        deliverPrefsChanges()
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        clock.advance(16_000L)
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        assertTrue(controller.state is FailoverState.Healthy)
+
+        // 利用者がホーム画面で接続中の接続先（uuid-a）を長押し削除する。
+        // ProfileManager.delete() はプロファイルの XML を消すだけなので、
+        // エンジンへ届く合図はこの世代カウンタだけである。
+        knownUuids = setOf("uuid-b")
+        store.bumpProfileGeneration()
+        deliverPrefsChanges()
+
+        // 読み直しが起きていれば、グループのメンバーから uuid-a が落ちている。
+        assertEquals(listOf("uuid-b"), groups.single().memberUuids)
+
+        // 以降は裁定72a の経路。Tick で現在の候補が一覧から消えていることに
+        // 気づき、障害として Ruling 25 の2段階へ入る。
+        controller.handle(FailoverEvent.Tick)
+        assertEquals(1, vpn.disconnectCalls)
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
 }

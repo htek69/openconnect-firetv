@@ -203,6 +203,19 @@ fun ProfileEditScreen(
             downTarget = saveButtonFocus,
         )
 
+        // 裁定86（L3）: 表示名を空にして保存したときの挙動を先に伝える。
+        // 以前はここが無言の no-op で、空にして保存すると成功として画面が
+        // 閉じるのに名前は変わらなかった（[ProfileRepository.rename] の
+        // 裁定86 の節を参照）。現在は空欄を「既定の名前に戻す」意味に解釈して
+        // サーバ URL から導出した名前を書き込むので、その規則を画面に出す。
+        // 保存は成功すると即座に画面を閉じるため、事後のメッセージでは
+        // 利用者に届かない（TV では特に）。
+        Text(
+            "表示名を空にして保存すると、サーバ URL から作った既定の名前" +
+                "（例: vpn.example.com なら Example）に戻ります。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
         error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
         Text(

@@ -96,6 +96,38 @@ class GroupStore(private val store: KeyValueStore) {
         store.putString(KEY_PROBE_SCHEDULE, json.encodeToString(schedule))
     }
 
+    /**
+     * 裁定86（H1）: 接続先（プロファイル）の集合が変わったことを、**既存の再読込
+     * トリガ**（[isReloadTriggerKey]）に載せるための世代カウンタ。
+     *
+     * `ProfileManager.delete()` はプロファイルの XML を消すだけで既定
+     * `SharedPreferences` には一切書かない（既存 Java であり変更しない）。そのため
+     * 接続先を削除しても `FailoverService` の変更リスナは発火せず、エンジン側の
+     * `groups` は削除済み UUID をメンバーに含んだままになり、
+     * [FailoverController.reconcileCandidateIdentity] が「候補が外された」ことに
+     * 気づけない——**削除済みプロファイルのトンネルが `Healthy` を名乗って
+     * 残り続ける**（計画1 の欠陥13・欠陥15 と同じ「画面の言う接続先と実際の
+     * トンネルが違う」事故）。
+     *
+     * ここで既定 prefs のキーを1つ進めることで、`ProfileRepository` の
+     * 作成・削除が**そのまま既存の再読込経路**（`prefsListener` →
+     * `reloadGroupsAndProbeTarget()` → `loadGroups(最新の knownUuids)`）に乗る。
+     * 新しいシグナリング経路は作らないし、`FailoverService` が
+     * `ProfileManager` を直接監視することもない。
+     *
+     * 削除で候補が消えたあとの挙動は裁定72a が既に規定しており
+     * （`currentCandidateUuid` が新しい一覧に無ければ障害として次候補へ）、
+     * ここは「その判定をいつ走らせるか」だけを直している。
+     *
+     * 値そのものは誰も読まない（[KeyValueStore] は文字列しか扱えないので
+     * 10進数の文字列として持つ）。壊れた値・未保存はどちらも 0 として扱い、
+     * 必ず「前と違う値」になるようにする。
+     */
+    fun bumpProfileGeneration() {
+        val current = store.getString(KEY_PROFILE_GENERATION)?.toLongOrNull() ?: 0L
+        store.putString(KEY_PROFILE_GENERATION, (current + 1).toString())
+    }
+
     private fun defaultProbeSchedule(): ProbeSchedule {
         val defaults = FailoverConfig()
         return ProbeSchedule(
@@ -130,14 +162,21 @@ class GroupStore(private val store: KeyValueStore) {
      * 裁定74: `KEY_PROBE_SCHEDULE`（プローブ間隔・失敗閾値のグローバル設定）も
      * ここに含める。設定画面での保存が既存の `FailoverService` の再読込経路に
      * そのまま乗るために必要（新しいシグナリング経路は増やさない）。
+     *
+     * 裁定86（H1）: `KEY_PROFILE_GENERATION`（接続先の作成・削除の世代）も
+     * ここに含める。理由は [bumpProfileGeneration] を参照。
      */
     fun isReloadTriggerKey(key: String?): Boolean =
-        key == KEY_GROUPS || key == KEY_PROBE_TARGET || key == KEY_PROBE_SCHEDULE
+        key == KEY_GROUPS ||
+            key == KEY_PROBE_TARGET ||
+            key == KEY_PROBE_SCHEDULE ||
+            key == KEY_PROFILE_GENERATION
 
     private companion object {
         const val KEY_GROUPS = "failover_groups_v1"
         const val KEY_PROBE_TARGET = "failover_probe_target_v1"
         const val KEY_ACTIVE_GROUP_ID = "failover_active_group_id_v1"
         const val KEY_PROBE_SCHEDULE = "failover_probe_schedule_v1"
+        const val KEY_PROFILE_GENERATION = "failover_profile_generation_v1"
     }
 }

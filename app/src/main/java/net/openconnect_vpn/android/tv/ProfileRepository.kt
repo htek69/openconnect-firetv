@@ -1,7 +1,9 @@
 package net.openconnect_vpn.android.tv
 
 import android.content.Context
+import net.openconnect_vpn.android.VpnProfile
 import net.openconnect_vpn.android.core.ProfileManager
+import net.openconnect_vpn.android.failover.GroupStore
 
 data class ProfileSummary(
     val uuid: String,
@@ -14,8 +16,18 @@ data class ProfileSummary(
  *
  * プロファイル作成時に batch_mode を "empty_only" にするのが最も重要な役目である。
  * これが無いと再接続ごとに認証ダイアログが出て自動フェイルオーバーが止まる（仕様書 9.2）。
+ *
+ * 裁定86（H1）: [groupStore] は保存の読み書きのためではなく、**接続先の集合が
+ * 変わったことを稼働中の `FailoverService` へ届けるため**だけに受け取る
+ * （[GroupStore.bumpProfileGeneration] の KDoc 参照）。`ProfileManager` は
+ * プロファイルの XML しか触らないので、これを経由しないと削除がエンジンへ
+ * 永久に届かない。ここ（唯一の作成・削除の通り道）で進めることで、
+ * 呼び出し側（画面）の規律に依存せずに済む。
  */
-class ProfileRepository(private val context: Context) {
+class ProfileRepository(
+    private val context: Context,
+    private val groupStore: GroupStore,
+) {
 
     fun list(): List<ProfileSummary> {
         ProfileManager.init(context)
@@ -53,6 +65,9 @@ class ProfileRepository(private val context: Context) {
             .putString("batch_mode", BATCH_MODE_EMPTY_ONLY)
         profileNameOrNull(displayName)?.let { name -> editor.putString("profile_name", name) }
         editor.commit()
+        // 裁定86（H1）: 既知プロファイルの集合が変わった。稼働中の
+        // FailoverService に読み直させる（GroupStore.bumpProfileGeneration 参照）。
+        groupStore.bumpProfileGeneration()
         return profile.getUUIDString()
     }
 
@@ -67,17 +82,52 @@ class ProfileRepository(private val context: Context) {
      * ソートされ、`ProfileManager.getProfileByName` や [create] の一意性判定にも
      * `""` として参加してしまう不具合があった。
      *
-     * @return 対象プロファイルが見つかれば true（表示名が空白で書き込みを
-     *         省いた場合も含む）。見つからなければ false（存在しない UUID、
-     *         または削除済みのプロファイル）。
+     * 裁定86（L3）: F9 の修正で「空欄なら書き込まない」にした結果、一度付けた
+     * 表示名を消す手段が無くなり、編集画面で空にして保存すると成功として
+     * 画面を閉じるのに名前が変わらない（無言の no-op）という別の嘘が生まれた。
+     * 空欄は「既定の名前に戻す」意味に解釈し、`ProfileManager.create` が
+     * ホスト名から導出するのと同じ既定名（[defaultNameFor]）を書き込む。
+     * `profile_name` を `remove()` しないのは、`VpnProfile.isValid()` が
+     * `profile_name` の無いプロファイルを無効と判定し、次の
+     * `ProfileManager.init()` の走査でプロファイルが一覧から消えてしまう
+     * （＝削除と区別できない事故になる）ため。編集画面はこの挙動を
+     * 表示名欄の下に明記している。
+     *
+     * @return 対象プロファイルが見つかれば true（空欄から既定名に戻した場合、
+     *         および既定名を導出できず名前を変えなかった場合も含む）。
+     *         見つからなければ false（存在しない UUID、または削除済みの
+     *         プロファイル）。
      */
     fun rename(uuid: String, displayName: String): Boolean {
         ProfileManager.init(context)
         val profile = ProfileManager.get(uuid) ?: return false
-        profileNameOrNull(displayName)?.let { name ->
+        val name = profileNameOrNull(displayName) ?: uniqueDefaultName(profile)
+        if (name != null && name != profile.mPrefs.getString("profile_name", null)) {
             profile.mPrefs.edit().putString("profile_name", name).apply()
         }
         return true
+    }
+
+    /**
+     * 裁定86（L3）: [profile] の `server_address` から導出した既定名のうち、
+     * 他のプロファイルと衝突しないものを返す。導出できなければ null
+     * （その場合、呼び出し側は名前を変えない）。
+     *
+     * 衝突の回避規則は `ProfileManager.create` と同じ（`" (1)"`, `" (2)"` …）に
+     * 揃える。既存 Java の `makeProfName` は private なので呼べないが、
+     * `getProfileByName` は public なので一意性の判定だけは既存コアの
+     * 実装をそのまま使える（自分自身の現在の名前は衝突とみなさない）。
+     */
+    private fun uniqueDefaultName(profile: VpnProfile): String? {
+        val base = defaultNameFor(profile.mPrefs.getString("server_address", null) ?: "")
+            ?: return null
+        var index = 0
+        while (true) {
+            val candidate = if (index == 0) base else "$base ($index)"
+            val holder = ProfileManager.getProfileByName(candidate)
+            if (holder == null || holder.getUUIDString() == profile.getUUIDString()) return candidate
+            index++
+        }
     }
 
     /**
@@ -161,10 +211,20 @@ class ProfileRepository(private val context: Context) {
         return true
     }
 
-    /** @return `ProfileManager.delete()` の結果をそのまま返す。false は対象が見つからなかったことを示す。 */
+    /**
+     * @return `ProfileManager.delete()` の結果をそのまま返す。false は対象が見つからなかったことを示す。
+     *
+     * 裁定86（H1）: 削除できたときは [GroupStore.bumpProfileGeneration] を進める。
+     * これが無いと、接続中の接続先を削除しても `FailoverService` は
+     * `groups` を読み直さず、削除済みプロファイルのトンネルが `Healthy` を
+     * 名乗って残り続ける（詳細は同メソッドの KDoc）。false（対象が見つからない）
+     * のときは既知プロファイルの集合が変わっていないので進めない。
+     */
     fun delete(uuid: String): Boolean {
         ProfileManager.init(context)
-        return ProfileManager.delete(uuid)
+        val deleted = ProfileManager.delete(uuid)
+        if (deleted) groupStore.bumpProfileGeneration()
+        return deleted
     }
 
     companion object {
@@ -195,6 +255,88 @@ class ProfileRepository(private val context: Context) {
          */
         fun needsBatchModeUpdate(current: String?): Boolean =
             current != BATCH_MODE_EMPTY_ONLY
+
+        /**
+         * 裁定86（L3）: サーバアドレスから既定の表示名を導出する。
+         * `ProfileManager.makeProfName(hostname, 0)` ＋ `capitalize()` の移植
+         * （既存 Java は変更しないという制約のもとで、`private static` である
+         * あちらを呼べないため。挙動を揃えることが目的であり、規則を変えては
+         * ならない）。実機で `test.example.com` → `Example` になることが
+         * 確認されている（進捗記録 裁定80 の節）。
+         *
+         * 規則（あちらと同じ順序で判定する）:
+         * 1. IPv4/IPv6 リテラルはそのまま返す。
+         * 2. `/` を含む（＝パス付き）ならホスト部だけを取り出す。
+         * 3. ドットで分割し、2要素未満ならそれを [capitalize] して返す。
+         * 4. 末尾が国別コードらしい（2文字以下）で、その手前が 2文字以下か
+         *    `com` なら1つ内側をドメインとみなす。
+         * 5. その1つ手前の要素（＝FQDN のうち最初の私的な部分）を
+         *    [capitalize] して返す。2文字未満なら元のアドレスを返す。
+         *
+         * 既存 Java との差異: 手順2 であちらは `Uri.parse().getHost()` を使う
+         * （Android API）。ここは JVM 単体テストで検証できる純関数に保つため、
+         * スキーム・資格情報・ポートを文字列操作で落とす。`ServerAddressValidator`
+         * が資格情報入りのアドレスを弾き、スキームは `https://` だけを許して
+         * `normalize` が剥がすので、実際に保存されている `server_address` に
+         * 対しては同じ結果になる。
+         *
+         * @return 導出した既定名。[serverAddress] が空白のみ、またはホスト部が
+         *         取り出せない場合は null（呼び出し側は名前を変えない）。
+         */
+        fun defaultNameFor(serverAddress: String): String? {
+            val original = serverAddress.trim()
+            if (original.isEmpty()) return null
+
+            // 1. IP アドレスはそのまま（あちらの "leave IP addresses alone"）。
+            if ((original.matches(Regex("[0-9.]+")) && original.contains('.')) ||
+                (original.matches(Regex("[0-9a-fA-F:]+")) && original.contains(':'))
+            ) {
+                return original
+            }
+
+            // 2. パス付きならホスト部だけを見る。
+            val host = if (original.contains('/')) {
+                original.substringAfter("://", original)
+                    .substringBefore('/')
+                    .substringAfterLast('@')
+                    .substringBefore(':')
+                    .ifBlank { return original }
+            } else {
+                original
+            }
+
+            val parts = host.split('.')
+            // 3. FQDN になっていない（ドットが無い）場合。
+            if (parts.size < 2) return capitalize(host)
+
+            // 4. 末尾が国別コードらしいときは1つ内側をドメインとみなす。
+            var i = parts.size - 1
+            if (parts[i].length <= 2 && i > 1) {
+                val sld = parts[i - 1]
+                if (sld.length <= 2 || sld == "com") i--
+            }
+
+            // 5. ドメインの1つ手前（最初の私的な部分）。
+            val label = parts[i - 1]
+            return if (label.length < 2) original else capitalize(label)
+        }
+
+        /**
+         * 裁定86（L3）: `ProfileManager.capitalize` の移植。
+         * 4文字以下は略語とみなして全部大文字、それより長ければ先頭だけ大文字。
+         *
+         * 意図的な差異が1つある: あちらは `Locale.getDefault()` で大文字化するが、
+         * ここは Kotlin の `uppercase()`（ロケール非依存）を使う。ホスト名は
+         * ASCII であり、既定ロケールに依存させると端末の言語設定によって
+         * 同じアドレスから違う名前が出る（トルコ語の `i` など）。導出結果が
+         * 端末設定で変わらないほうが、この関数の用途（既定名の復元）には正しい。
+         */
+        private fun capitalize(value: String): String =
+            if (value.length <= 4) {
+                value.uppercase()
+            } else {
+                value.substring(0, 1).uppercase() + value.substring(1)
+            }
 
         /**
          * 裁定67: [key] が、サーバアドレス変更時に消すべき資格情報・証明書承認の

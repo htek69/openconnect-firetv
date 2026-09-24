@@ -152,11 +152,21 @@ object HomeRows {
     /**
      * 接続先の削除確認に添える警告文。
      *
-     * [GroupStore.loadGroups] は既知のプロファイル UUID に無いメンバーを毎回
-     * 自動的にふるい落とし、メンバーが0件になったグループ自体も落とすため、
-     * 削除後にグループが存在しない接続先を指したままになることはない。
-     * ただしその挙動をユーザーは知らないので、削除前にどのグループへ
+     * [GroupStore.loadGroups] は既知のプロファイル UUID に無いメンバーを
+     * **読み込みのたびに**ふるい落とし、メンバーが0件になったグループ自体も
+     * 落とす。ユーザーはその挙動を知らないので、削除前にどのグループへ
      * 影響するかをここで案内する。対象がどのグループにも属していなければ null。
+     *
+     * 裁定86（H1）: 以前ここには「削除後にグループが存在しない接続先を指したまま
+     * になることはない」と書いてあったが、それは**この画面が読み直した写しに
+     * ついてだけ**真であり、稼働中の `FailoverService` が持つ写しには当てはまら
+     * なかった。エンジン側が読み直すのは既定 `SharedPreferences` の
+     * [GroupStore.isReloadTriggerKey] に該当するキーが変わったときだけで、
+     * `ProfileManager.delete()` はそのどれにも書かないためである
+     * （接続中の接続先を削除してもトンネルが `Healthy` のまま残っていた）。
+     * 現在は [ProfileRepository.delete] が [GroupStore.bumpProfileGeneration] を
+     * 進め、その既存の再読込経路を通してエンジン側の一覧にも同じふるい落としが
+     * 届く（そこから先の切替は裁定72a の経路に合流する）。
      */
     fun groupDeletionWarning(uuid: String, groups: List<FailoverGroup>): String? {
         val affected = groups.filter { uuid in it.memberUuids }

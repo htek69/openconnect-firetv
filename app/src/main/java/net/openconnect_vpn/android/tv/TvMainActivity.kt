@@ -54,10 +54,16 @@ class TvMainActivity : ComponentActivity() {
         // プロセスと寿命が一致するので安全。ProfileManager.init が使うのは
         // getSharedPreferences と getApplicationInfo().dataDir だけで、
         // Activity 固有の機能は使わない。
-        val profiles = ProfileRepository(applicationContext)
+        // 裁定86（H1）: ProfileRepository は接続先の作成・削除のたびに
+        // GroupStore.bumpProfileGeneration() を進める（既定 SharedPreferences の
+        // キーが変わることで、稼働中の FailoverService が既存の再読込経路で
+        // グループを読み直す）。そのため同じ GroupStore インスタンスを渡す
+        // ——2つ作っても書き先の既定 prefs は同じだが、保存先が1つであることを
+        // 構造で示しておく。
         val groupStore = GroupStore(
             PrefsKeyValueStore(PreferenceManager.getDefaultSharedPreferences(this)),
         )
+        val profiles = ProfileRepository(applicationContext, groupStore)
 
         setContent {
             TvTheme {

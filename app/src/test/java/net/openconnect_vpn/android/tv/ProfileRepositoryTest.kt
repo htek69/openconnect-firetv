@@ -82,6 +82,57 @@ class ProfileRepositoryTest {
         assertEquals(false, ProfileRepository.isCredentialOrCertKey("profile_uuid"))
     }
 
+    // --- 裁定86（L3）: 表示名を空にしたときに戻す既定名の導出 ---
+
+    @Test
+    fun `既定名は実機で確認した通り test_example_com から Example になる`() {
+        // 進捗記録（裁定80 の節）で ProfileManager.create が実機でこの名前を
+        // 付けたことを確認済み。移植した defaultNameFor が同じ値を返すことが
+        // L3 の前提なので、これを基準点として固定する。
+        assertEquals("Example", ProfileRepository.defaultNameFor("test.example.com"))
+    }
+
+    @Test
+    fun `4文字以下のラベルは略語とみなして全部大文字になる`() {
+        // ProfileManager.capitalize の規則（length <= 4 なら uppercase）。
+        assertEquals("ACME", ProfileRepository.defaultNameFor("vpn.acme.com"))
+    }
+
+    @Test
+    fun `国別コードの手前が co や2文字なら1つ内側をドメインとみなす`() {
+        assertEquals("Example", ProfileRepository.defaultNameFor("vpn.example.co.jp"))
+        assertEquals("Example", ProfileRepository.defaultNameFor("vpn.example.com.au"))
+    }
+
+    @Test
+    fun `ドットの無いホスト名はそれ自体を大文字化の規則にかける`() {
+        // 5文字以上なので先頭だけ大文字。
+        assertEquals("Firewall", ProfileRepository.defaultNameFor("firewall"))
+        // 4文字以下なので全部大文字。
+        assertEquals("HOME", ProfileRepository.defaultNameFor("home"))
+    }
+
+    @Test
+    fun `IPアドレスは既定名にしない`() {
+        assertEquals("192.168.1.1", ProfileRepository.defaultNameFor("192.168.1.1"))
+        assertEquals("2001:db8::1", ProfileRepository.defaultNameFor("2001:db8::1"))
+    }
+
+    @Test
+    fun `パスやポートが付いていてもホスト部から導出する`() {
+        assertEquals("Example", ProfileRepository.defaultNameFor("vpn.example.com/portal"))
+        assertEquals("Example", ProfileRepository.defaultNameFor("https://vpn.example.com/portal"))
+        assertEquals("Example", ProfileRepository.defaultNameFor("vpn.example.com:8443"))
+    }
+
+    @Test
+    fun `空のアドレスからは既定名を導出しない`() {
+        // null を返すと rename は名前を変えない（無効な profile_name を
+        // 書き込まない）。
+        assertNull(ProfileRepository.defaultNameFor(""))
+        assertNull(ProfileRepository.defaultNameFor("   "))
+    }
+
     @Test
     fun `接頭辞を含むだけで先頭一致でないキーは判定されない`() {
         // startsWith であって contains ではないことを確認する。
