@@ -4,6 +4,7 @@ import android.content.Context
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.util.Log
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -31,6 +32,20 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import kotlinx.coroutines.delay
+
+private const val TAG = "TvFieldRow"
+
+/**
+ * `showSoftInput` の呼び直しを何回まで試すか。実機の dumpsys では単発呼び出しが
+ * `mShowInputRequested=false` のまま（＝要求が通っていない）ことが確認された
+ * ため、フォーカス確定との競合を見越して間隔を空けて複数回試す。無限リトライは
+ * しない（フォーカス移動先が既におかしい等の異常時に走り続けるのを避けるため）。
+ * 5回 x 100ms = 最大500ms 待ってから諦め、`toggleSoftInput(SHOW_FORCED, 0)` に
+ * フォールバックする。
+ */
+private const val SHOW_SOFT_INPUT_MAX_ATTEMPTS = 5
+private const val SHOW_SOFT_INPUT_RETRY_DELAY_MS = 100L
 
 /**
  * TV 向けの1行テキスト入力。ラベルと現在値を表示する「ボタンのように振る舞う行」と、
@@ -69,6 +84,15 @@ import androidx.tv.material3.Text
  * `EditText` へフォーカスを奪わない」という性質（＝画面を開いた瞬間に罠に
  * ならない性質）は、`EditText` に置き換えた後もこの手動フォーカス制御で
  * そのまま保たれている。
+ *
+ * 裁定71（続き・実機で発見）: `EditText` に切り替えた直後の版は単発の
+ * `showSoftInput()` しか呼んでおらず、実機の dumpsys では
+ * `mShowInputRequested=false`（要求そのものが通っていない）のままだった。
+ * フォーカス確定のタイミングと競合している可能性が高いため、
+ * `InputMethodManager.isActive(editText)` が true になるまで
+ * [SHOW_SOFT_INPUT_MAX_ATTEMPTS] 回を上限に間隔を空けて呼び直し、それでも
+ * 効かなければ `toggleSoftInput(SHOW_FORCED, 0)` に1回だけフォールバックする
+ * （詳細は編集中分岐内の `LaunchedEffect` のコメントを参照）。
  *
  * フィールドごとのキーボード種別の使い分け（サーバ URL は ASCII/URI 系、表示名は
  * 既定）は `KeyboardType` ではなく `EditText.inputType`（[inputType] パラメータ）
@@ -210,16 +234,47 @@ fun TvFieldRow(
 
             // isEditing が true になった直後（＝この分岐が新たにコンポジションに
             // 入ったとき）に一度だけ EditText へフォーカスを移し、明示的に
-            // ソフトキーボードを要求する。View.requestFocus() だけでは
-            // プログラム的なフォーカス移動でキーボードが出ないことがあるため、
-            // InputMethodManager.showSoftInput を併用する。
+            // ソフトキーボードを要求する。
+            //
+            // 裁定71（続き・実機で発見）: 単発の `showSoftInput` は「呼んだ」だけで
+            // 「効いた」とは限らない。実機の dumpsys では
+            // `mShowInputRequested=false` のまま（＝要求そのものが通っていない）
+            // ことが確認された。フォーカス確定のタイミングと競合している可能性が
+            // 高いため、`InputMethodManager.isActive(editText)` が true になるまで
+            // 短い間隔を空けて何度か呼び直す。無限に粘るとフォーカス移動先の
+            // View が既に無い等の異常時に延々と走り続けかねないので、
+            // 試行回数に上限（[SHOW_SOFT_INPUT_MAX_ATTEMPTS]）を設ける。
+            // それでも `isActive` にならなければ最後の手段として
+            // `toggleSoftInput(SHOW_FORCED, 0)` を1回だけ呼ぶ。
+            //
+            // このリトライは `LaunchedEffect` のコルーチンとして実装しているため、
+            // 編集終了（`isEditing = false`）でこの分岐がコンポジションから
+            // 外れれば構造化された形で自動的にキャンセルされる（すでに無くなった
+            // `EditText` に向けて `postDelayed` が後から発火する、といった
+            // 心配をする必要が無い）。
             LaunchedEffect(Unit) {
                 val editText = editTextRef.value ?: return@LaunchedEffect
                 editText.requestFocus()
-                editText.post {
-                    val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE)
-                        as? InputMethodManager
-                    imm?.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+                val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                    as? InputMethodManager ?: return@LaunchedEffect
+
+                var activated = false
+                for (attempt in 1..SHOW_SOFT_INPUT_MAX_ATTEMPTS) {
+                    imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+                    delay(SHOW_SOFT_INPUT_RETRY_DELAY_MS)
+                    if (imm.isActive(editText)) {
+                        activated = true
+                        break
+                    }
+                }
+                if (!activated) {
+                    Log.d(
+                        TAG,
+                        "showSoftInput did not activate after $SHOW_SOFT_INPUT_MAX_ATTEMPTS " +
+                            "attempts (${SHOW_SOFT_INPUT_MAX_ATTEMPTS * SHOW_SOFT_INPUT_RETRY_DELAY_MS}ms); " +
+                            "falling back to toggleSoftInput(SHOW_FORCED)",
+                    )
+                    imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
                 }
             }
 
