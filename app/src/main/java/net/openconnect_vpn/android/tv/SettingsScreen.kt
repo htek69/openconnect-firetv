@@ -1,6 +1,5 @@
 package net.openconnect_vpn.android.tv
 
-import android.content.Intent
 import android.text.InputType
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -23,7 +22,6 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
-import net.openconnect_vpn.android.MainActivity
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.ProbeSchedule
@@ -67,7 +65,11 @@ import net.openconnect_vpn.android.failover.ProbeTarget
  * 経路のまま稼働中のサービスに反映される。
  */
 @Composable
-fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
+fun SettingsScreen(
+    groupStore: GroupStore,
+    onDone: () -> Unit,
+    onOpenLegacyUi: () -> Unit,
+) {
     val context = LocalContext.current
 
     val storedTarget = remember { groupStore.loadProbeTarget() }
@@ -218,9 +220,14 @@ fun SettingsScreen(groupStore: GroupStore, onDone: () -> Unit) {
             Text("VPN を切断する", modifier = Modifier.padding(20.dp))
         }
 
-        Card(onClick = {
-            context.startActivity(Intent(context, MainActivity::class.java))
-        }) {
+        // 裁定88（Medium 1）: 旧 UI は接続先の作成・削除の経路を持つ（既存 Java な
+        // ので ProfileRepository を通らず、世代カウンタが進まない）。この Card から
+        // 1操作で開けるため、裁定86（H1）の事故がこの経路に残っていた。起動を
+        // TvMainActivity に委ね、旧 UI から戻ってきた時点で世代を1回進める
+        // （TvMainActivity.visitedLegacyUi の KDoc 参照）。ここで startActivity を
+        // 直接呼ばないのは、戻ってきたことを観測できる場所が Activity 側しか
+        // 無いためである。
+        Card(onClick = onOpenLegacyUi) {
             Column(Modifier.padding(20.dp)) {
                 Text("詳細設定とログ（従来の画面）")
                 Text(

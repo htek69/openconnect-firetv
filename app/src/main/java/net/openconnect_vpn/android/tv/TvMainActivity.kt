@@ -1,5 +1,6 @@
 package net.openconnect_vpn.android.tv
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -10,10 +11,37 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import android.preference.PreferenceManager
+import net.openconnect_vpn.android.MainActivity
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.PrefsKeyValueStore
 
 class TvMainActivity : ComponentActivity() {
+
+    /**
+     * 裁定88（Medium 1）: 旧 UI（`MainActivity` → `VPNProfileList` →
+     * `ConnectionEditorActivity` / `TokenImportActivity`）は接続先を作成・削除する
+     * 経路を持っており、そこは既存 Java なので [ProfileRepository] を通らない
+     * （＝[GroupStore.bumpProfileGeneration] が進まない）。旧 UI は
+     * [SettingsScreen] の「詳細設定とログ（従来の画面）」から1操作で開けるため、
+     * そこで接続中の接続先を削除すると裁定86（H1）の事故——削除済み
+     * プロファイルのトンネルが `Healthy` を名乗って残り続ける——がそのまま
+     * 再現する。
+     *
+     * 旧画面の起動はこのアクティビティが行う Kotlin 側の処理なので、既存 Java を
+     * 変更せずに閉じられる: 旧画面を開いたことを覚えておき、**戻ってきたときに
+     * 1回だけ世代を進める**。旧画面で何が起きたか（作成・削除・何もしなかった）は
+     * **推測しない**。戻り時に必ず1回進めれば、`FailoverService` が
+     * `ProfileManager.getProfiles()` を引き直して最新の UUID 集合で
+     * `loadGroups` をやり直すので、旧画面で何をされていてもエンジンの一覧は
+     * 追いつく（そのあとの処理は裁定72a に合流する）。
+     *
+     * 復帰1回につき1回しか進まないので再読込ストームにはならない（既定 prefs の
+     * リスナは `FailoverService` の1本だけで、`reloadGroupsAndProbeTarget` は
+     * prefs を書かないのでフィードバックループも無い）。
+     */
+    private var visitedLegacyUi = false
+
+    private lateinit var groupStore: GroupStore
 
     // 裁定80（裁定78 の判定基準の差し替え。詳細は LongPressKeyUpFilter の KDoc 参照）:
     // このアプリは単一 Activity で画面は Compose のコンポーザブルが入れ替わるだけなので、
@@ -45,8 +73,50 @@ class TvMainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /**
+     * 裁定88（Medium 1）: 旧 UI を開く。戻ってきたときに世代を進めるための印を
+     * 先に立ててから `startActivity` する（詳細は [visitedLegacyUi]）。
+     */
+    private fun openLegacyUi() {
+        visitedLegacyUi = true
+        startActivity(Intent(this, MainActivity::class.java))
+    }
+
+    /**
+     * 裁定88（Medium 1）: 旧 UI から戻ってきたら世代を1回進める。
+     *
+     * `onResume` を使う理由: 旧 UI は `MainActivity` から `VPNProfileList` /
+     * `ConnectionEditorActivity` / `TokenImportActivity` へ進む複数画面の集合で
+     * あり、「どの画面がいつ終わるか」を当てにできない。`ActivityResult` は
+     * `MainActivity` が finish したときしか届かず、ホーム経由で戻ってきた場合を
+     * 拾えない。この Activity が再び前面に来たという事実だけを使うのが、
+     * 旧画面の内部を推測しない最も単純な条件である。
+     *
+     * 印を先に false へ戻すので、旧 UI を1回開くごとに1回しか進まない
+     * （TV UI 内での通常の `onResume`——起動直後・設定画面からの復帰・
+     *  VPN 許可ダイアログからの復帰など——では進まない）。
+     */
+    override fun onResume() {
+        super.onResume()
+        if (!visitedLegacyUi) return
+        visitedLegacyUi = false
+        groupStore.bumpProfileGeneration()
+    }
+
+    /**
+     * 裁定88（Medium 1）: 旧 UI を表示している間にこの Activity が破棄されても
+     * （メモリ不足・設定変更）、戻ってきたときの世代更新を落とさない。
+     */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(STATE_VISITED_LEGACY_UI, visitedLegacyUi)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 裁定88（Medium 1）: 旧 UI 滞在中に破棄された場合の復元（[visitedLegacyUi]）。
+        visitedLegacyUi = savedInstanceState?.getBoolean(STATE_VISITED_LEGACY_UI) == true
 
         // 裁定64: Activity（this）を渡すと ProfileManager の静的 mContext に
         // 破棄済みの Activity が残り続ける（ProfileRepository の全メソッドが
@@ -60,7 +130,7 @@ class TvMainActivity : ComponentActivity() {
         // グループを読み直す）。そのため同じ GroupStore インスタンスを渡す
         // ——2つ作っても書き先の既定 prefs は同じだが、保存先が1つであることを
         // 構造で示しておく。
-        val groupStore = GroupStore(
+        groupStore = GroupStore(
             PrefsKeyValueStore(PreferenceManager.getDefaultSharedPreferences(this)),
         )
         val profiles = ProfileRepository(applicationContext, groupStore)
@@ -103,9 +173,18 @@ class TvMainActivity : ComponentActivity() {
                     TvScreen.Settings -> SettingsScreen(
                         groupStore = groupStore,
                         onDone = { screen = TvScreen.Home },
+                        // 裁定88（Medium 1）: 旧 UI の起動はこのアクティビティが
+                        // 引き受ける（戻り時に世代を進めるため。visitedLegacyUi の
+                        // KDoc 参照）。
+                        onOpenLegacyUi = ::openLegacyUi,
                     )
                 }
             }
         }
+    }
+
+    private companion object {
+        /** 裁定88（Medium 1）: [visitedLegacyUi] の保存キー。 */
+        const val STATE_VISITED_LEGACY_UI = "visited_legacy_ui"
     }
 }

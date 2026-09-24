@@ -21,8 +21,29 @@ data class ProfileSummary(
  * 変わったことを稼働中の `FailoverService` へ届けるため**だけに受け取る
  * （[GroupStore.bumpProfileGeneration] の KDoc 参照）。`ProfileManager` は
  * プロファイルの XML しか触らないので、これを経由しないと削除がエンジンへ
- * 永久に届かない。ここ（唯一の作成・削除の通り道）で進めることで、
- * 呼び出し側（画面）の規律に依存せずに済む。
+ * 永久に届かない。
+ *
+ * 裁定88（再レビューの指摘。前の版の誤りの訂正）: ここには
+ * 「ここ（**唯一**の作成・削除の通り道）で進めることで、呼び出し側（画面）の
+ * 規律に依存せずに済む」と書いてあったが、これは**偽である**。
+ * `ProfileManager.create` / `ProfileManager.delete` の呼び出し元は、このクラスの
+ * ほかに旧 UI（既存 Java。この計画では変更しない）に3か所ある:
+ *
+ * - `ConnectionEditorActivity.java:84`（`askProfileRemoval()` → `delete`）
+ * - `fragments/VPNProfileList.java:265`（`create`）
+ * - `TokenImportActivity.java:347`（`create`）
+ *
+ * しかもその旧 UI は TV の設定画面（`SettingsScreen` の
+ * 「詳細設定とログ（従来の画面）」）から1操作で開ける。そこで作成・削除しても
+ * この世代カウンタは進まないので、**このクラスを通らない作成・削除は存在する**。
+ *
+ * その穴は「旧 UI を開いたあと TV UI に戻ってきた時点で1回だけ世代を進める」
+ * ことで閉じてある（[net.openconnect_vpn.android.tv.TvMainActivity] の
+ * `onResume`。旧画面で何が起きたかは推測せず、戻ってきたら必ず1回進める）。
+ * したがって稼働中のエンジンへ届かない経路は残っていないが、
+ * **このクラスが唯一の通り道だからではない。** 新しい作成・削除の経路を
+ * Kotlin 側に足すときは、ここと同じく [GroupStore.bumpProfileGeneration] を
+ * 通すこと（呼び出し側の規律は依然として必要である）。
  */
 class ProfileRepository(
     private val context: Context,
@@ -191,6 +212,23 @@ class ProfileRepository(
      * この競合が起きる条件を満たさない。[rename] / [ensureBatchMode] と全く同じ
      * 状況なので、それらと同じく `apply()` で足りる。
      *
+     * 裁定88（再レビューの指摘 Low 3）: アドレスが実際に変わったときは
+     * [create] / [delete] と同じく [GroupStore.bumpProfileGeneration] を進める。
+     * UUID は変わらないので裁定72a の候補同一性照合（`reconcileCandidateIdentity`）は
+     * 何も検知せず、**いま接続中のトンネルはそのまま（古いアドレスのまま）残る。**
+     * 世代を進めることで得られるのは、稼働中の `FailoverService` が
+     * `reloadGroupsAndProbeTarget()` で `ProfileManager.getProfiles()` を引き直し、
+     * **次に `vpn.connect()` する時点で新しいアドレスが使われることが保証される**
+     * ことである（`OpenVpnService` は接続のたびにプロファイルを読むので、実際には
+     * 読み直しが無くても新アドレスで繋がるが、`groups` の再読込を通しておくことで
+     * 「画面が保存した内容とエンジンが持っている一覧が食い違っている時間」を
+     * 作らない）。
+     *
+     * 「アドレスが変わったら現在の候補を張り直す」という**新しい規則は足さない**
+     * （裁定86 が明示的に禁じた方向であり、裁定88 でも求められていない）。
+     * つまり接続中にアドレスを変えた場合、次に繋ぎ直すまで実際のトンネルは
+     * 古いアドレスのままである。
+     *
      * @return 対象プロファイルが見つかり、アドレスを変更できたら true。
      *         見つからなければ false。
      */
@@ -201,13 +239,17 @@ class ProfileRepository(
         val previous = profile.mPrefs.getString("server_address", null)
         val editor = profile.mPrefs.edit().putString("server_address", serverAddress)
 
-        if (previous != serverAddress) {
+        val addressChanged = previous != serverAddress
+        if (addressChanged) {
             profile.mPrefs.all.keys
                 .filter { isCredentialOrCertKey(it) }
                 .forEach { editor.remove(it) }
         }
 
         editor.apply()
+        // 裁定88（Low 3）: 変わっていないときは進めない（書き込みを増やさない、
+        // という裁定66 の判断と同じ理由。既知プロファイルの内容が変わっていない）。
+        if (addressChanged) groupStore.bumpProfileGeneration()
         return true
     }
 
