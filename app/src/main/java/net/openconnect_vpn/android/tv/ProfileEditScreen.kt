@@ -16,7 +16,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Button
@@ -91,13 +90,38 @@ import androidx.tv.material3.Text
  * 矩形の重なり・距離だけで機械的に選ぶことで、「意味的にどのボタンが
  * 既定であるべきか」という情報を一切持たないため。ボタンの並び順を
  * 保存→キャンセルにしていても、それだけでは探索結果を保証できない。
- * 対策として、ボタン行に `Modifier.focusGroup()` と
- * `Modifier.focusProperties { enter = ... }`（[FocusRequester] で「保存」を
- * 指す）を付け、このボタン行に**どの方向から**入っても常に「保存」へ
- * 着地するようにした（`enter` はグループへの進入時に呼ばれ、方向を問わない
- * ため、`DOWN` 以外の経路で将来ボタンより上の要素が増減しても壊れにくい）。
- * `LEFT`/`RIGHT` によるボタン間移動と、ボタン行から `UP` で入力行へ戻る
- * 動作は `enter`/`exit` のどちらも上書きしていないので既定のまま維持される。
+ * 最初の対策として、ボタン行に `Modifier.focusGroup()` と
+ * `Modifier.focusProperties { enter = ... }` を付けたが、これは**実機では
+ * 効かなかった**（裁定77参照）。
+ *
+ * 裁定77（実機で計測、裁定76の修正が効かないことを確認）: 裁定76の
+ * `enter` を実機にインストールして計測したところ、`DOWN` は依然
+ * 「キャンセル」に着地した。`FocusProperties.enter` は `FocusDirection.Enter`
+ * （明示的な「グループへ入れ」という要求）に対してのみ参照される
+ * プロパティであり、上下左右の2次元フォーカス探索がグループ内の要素を
+ * 直接選ぶ経路（今回の `DOWN` はまさにこれ）では一切参照されない。
+ * 2次元探索はあくまで `focusGroup()` の内側の候補を幾何的に評価して
+ * 「キャンセル」を選び続けていた。
+ *
+ * 直し方を、グループへの「進入時」を横取りする方式（`enter`）から、
+ * **ボタン行の直前の要素の `DOWN` を名指しで固定する方式**（`down`）に
+ * 変えた。表示名 の行（[TvFieldRow]）に `downTarget = saveButtonFocus` を
+ * 渡し、[TvFieldRow] 内部でその行の実際のフォーカス対象である `Card` に
+ * `Modifier.focusProperties { down = saveButtonFocus }` を適用させている
+ * （`FocusProperties.down` は `enter`/`exit` と違って素の [FocusRequester]
+ * プロパティであり、2次元探索の `DOWN` から直接参照される。理由の詳細は
+ * [TvFieldRow] の `downTarget` パラメータの KDoc を参照）。
+ *
+ * `focusGroup()` はボタン行に残した。`down` の指定は表示名の行という
+ * **入る側**のノードに付けたものであり、ボタン行自身の `focusProperties`
+ * には触れていないため、`focusGroup()` があってもなくても `down` の解決には
+ * 影響しない。`LEFT`/`RIGHT`（ボタン間移動）・`UP`（ボタン行から表示名の行へ
+ * 戻る）はいずれも実機で既に正しいと確認済みであり、このラウンドでは
+ * `up`/`left`/`right` のいずれも一切変更していないので、既定の2次元探索の
+ * ままそれらは維持される。`focusGroup()` 自体は方向探索の結果を書き換える
+ * ものではなく（Tab 的な走査順序やフォーカスの進入/離脱点の境界を示すだけ）、
+ * 今回 `enter` を外したこと以外に振る舞いを変える要素が無いことからも、
+ * LEFT/RIGHT/UP には影響しないと判断した。
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -114,7 +138,7 @@ fun ProfileEditScreen(
     var displayName by remember { mutableStateOf(existing?.name ?: "") }
     var error by remember { mutableStateOf<String?>(null) }
 
-    // 裁定76: ボタン行への既定の進入先を「保存」に固定するための FocusRequester。
+    // 裁定76/77: ボタン行への DOWN の着地先を「保存」に固定するための FocusRequester。
     val saveButtonFocus = remember { FocusRequester() }
 
     val isEditing = editingUuid != null
@@ -174,6 +198,9 @@ fun ProfileEditScreen(
             onValueChange = { displayName = it },
             label = "表示名（任意）",
             modifier = Modifier.fillMaxWidth(),
+            // 裁定77: この行がボタン行の直前の入力行。DOWN の着地先を「保存」に
+            // 名指しで固定する（詳細は上のクラス KDoc の裁定77参照）。
+            downTarget = saveButtonFocus,
         )
 
         error?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
@@ -186,12 +213,12 @@ fun ProfileEditScreen(
 
         Row(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
-            // 裁定76: 既定の2次元フォーカス探索はこの行に「キャンセル」で
-            // 着地しうる（実機で確認済み）。`focusGroup()` + `focusProperties`
-            // でこの行に入るときの既定を常に「保存」へ固定する。
-            modifier = Modifier
-                .focusGroup()
-                .focusProperties { enter = { saveButtonFocus } },
+            // 裁定77: DOWN の着地先固定は、この行に入る `enter` ではなく、
+            // 直前の表示名の行（上の TvFieldRow の downTarget）側の `down` で
+            // 行っている（`enter` は2次元探索の DOWN では参照されないため、
+            // 実機で効かなかった。詳細はクラス KDoc の裁定77参照）。
+            // `focusGroup()` は LEFT/RIGHT/UP の挙動を変えないので残す。
+            modifier = Modifier.focusGroup(),
         ) {
             Button(
                 onClick = {
@@ -228,8 +255,8 @@ fun ProfileEditScreen(
                         }
                     }
                 },
-                // 裁定76: このボタンがボタン行の既定の進入先になる（上の
-                // focusProperties { enter = ... } 参照）。
+                // 裁定77: このボタンが、表示名の行（TvFieldRow の downTarget）に
+                // 付けた `focusProperties { down = saveButtonFocus }` の着地先になる。
                 modifier = Modifier.focusRequester(saveButtonFocus),
             ) {
                 Text("保存")

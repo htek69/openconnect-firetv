@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
@@ -146,6 +147,18 @@ import androidx.tv.material3.Text
  *   （TV では「フォーカスがどこにも無い」状態を作ってはいけない一方、
  *   複数の行が同時に初期フォーカスを取り合うと結果が不定になる）。
  * @param placeholder [value] が空のときに行に表示する文言。
+ * @param downTarget 裁定77: この行から `DPAD_DOWN` で移動する先を名指しで固定したい
+ *   場合に渡す。`null`（既定）なら既定の2次元フォーカス探索に任せる。
+ *   この行の実体（フォーカス対象）は呼び出し側が渡す [modifier] が付く外側の
+ *   `Column` ではなく**内部の `Card`**（下の非編集時分岐）なので、
+ *   `focusProperties { down = ... }` は呼び出し側の `modifier` に頼らず、
+ *   この `Card` 自身に直接適用する。呼び出し側の `Modifier.focusProperties`
+ *   が外側の `Column` に付いていても、`down` は「現在フォーカスを持つノード」
+ *   から見て最も近い `FocusProperties` 修飾子が優先されるため、`Column` に
+ *   付けても内部の `Card`（実際にフォーカスされるノード）には届かない
+ *   （＝ `enter` が2次元探索の経路で参照されないのと同種の、実体とフォーカス
+ *   対象のずれの問題）。`Card` に直接付けることで、この行が実際に
+ *   フォーカスされた状態から `DOWN` を押したときに必ず参照される。
  */
 @Composable
 fun TvFieldRow(
@@ -156,6 +169,7 @@ fun TvFieldRow(
     inputType: Int = InputType.TYPE_CLASS_TEXT,
     placeholder: String = "未設定",
     requestInitialFocus: Boolean = false,
+    downTarget: FocusRequester? = null,
 ) {
     var isEditing by remember { mutableStateOf(false) }
     val rowFocus = remember { FocusRequester() }
@@ -314,9 +328,19 @@ fun TvFieldRow(
         } else {
             Card(
                 onClick = { isEditing = true },
+                // 裁定77: downTarget が指定されていれば、この Card（＝この行の
+                // 実際のフォーカス対象）自身に focusProperties { down = ... } を
+                // 適用する。上の @param downTarget のコメント参照。
                 modifier = Modifier
                     .fillMaxWidth()
-                    .focusRequester(rowFocus),
+                    .focusRequester(rowFocus)
+                    .then(
+                        if (downTarget != null) {
+                            Modifier.focusProperties { down = downTarget }
+                        } else {
+                            Modifier
+                        },
+                    ),
             ) {
                 Text(
                     value.ifBlank { placeholder },
