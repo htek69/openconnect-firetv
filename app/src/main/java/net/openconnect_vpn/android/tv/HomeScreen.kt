@@ -110,8 +110,16 @@ fun HomeScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("接続先", style = MaterialTheme.typography.headlineMedium)
-            Card(onClick = { onNavigate(TvScreen.Settings) }) {
-                Text("設定", modifier = Modifier.padding(16.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                // 既存のグループ行は長押しでしか編集画面へ入れず、グループが
+                // 1つも無い最初の状態ではそもそも長押しできる行が無い
+                // （Task 7）。新規作成への導線をここに独立して置く。
+                Card(onClick = { onNavigate(TvScreen.EditGroup(null)) }) {
+                    Text("グループを作成", modifier = Modifier.padding(16.dp))
+                }
+                Card(onClick = { onNavigate(TvScreen.Settings) }) {
+                    Text("設定", modifier = Modifier.padding(16.dp))
+                }
             }
         }
 
