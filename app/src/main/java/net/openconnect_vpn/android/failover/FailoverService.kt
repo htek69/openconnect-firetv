@@ -159,7 +159,7 @@ class FailoverService : Service() {
      */
     private fun onScreenOff() {
         if (controller.state is FailoverState.Idle) return
-        Log.d(HARNESS_TAG, "screen off -> disconnect")
+        Log.d(LOG_TAG, "screen off -> disconnect")
         dispatchExternal(FailoverEvent.UserDisconnect)
     }
 
@@ -180,7 +180,7 @@ class FailoverService : Service() {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
             return
         }
-        Log.d(HARNESS_TAG, "screen on -> reconnect $activeGroupId")
+        Log.d(LOG_TAG, "screen on -> reconnect $activeGroupId")
         dispatchExternal(FailoverEvent.AutoConnectGroup(activeGroupId))
     }
 
@@ -276,35 +276,8 @@ class FailoverService : Service() {
                 groupStore.saveActiveGroupId(null)
                 dispatchExternal(FailoverEvent.UserDisconnect)
             }
-
-            // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの分岐も削除すること。
-            ACTION_SET_PROBE_TARGET -> {
-                val host = intent.getStringExtra(EXTRA_PROBE_HOST)
-                val port = intent.getIntExtra(EXTRA_PROBE_PORT, -1)
-                if (host != null && port in 1..65535) {
-                    val target = ProbeTarget(host = host, port = port)
-                    groupStore.saveProbeTarget(target)
-                    probeTarget = target
-                    Log.d(HARNESS_TAG, "probeTarget set to $target")
-                } else {
-                    Log.w(HARNESS_TAG, "ignored invalid SET_PROBE_TARGET host=$host port=$port")
-                }
-                logHarnessState()
-            }
         }
         return START_STICKY
-    }
-
-    /**
-     * Task 13 検証ハーネス用。コントローラの状態とプローブ宛先を distinctive tag で
-     * ログに出す。FailoverDebugReceiver 削除時にこのメソッドと呼び出し箇所も削除すること。
-     */
-    private fun logHarnessState() {
-        Log.d(
-            HARNESS_TAG,
-            "state=${controller.state} excludedUuids=${controller.excludedUuids} " +
-                "needsUserConsent=${controller.needsUserConsent} probeTarget=$probeTarget",
-        )
     }
 
     /**
@@ -327,7 +300,7 @@ class FailoverService : Service() {
         // 起動時に、消灯中の端末で勝手に繋ぎ始めないようにする。点灯時に
         // onScreenOn() が繋ぎ直す。
         if (!screenOn) {
-            Log.d(HARNESS_TAG, "restore skipped: screen is off")
+            Log.d(LOG_TAG, "restore skipped: screen is off")
             return
         }
         if (VpnService.prepare(this) == null) {
@@ -362,7 +335,8 @@ class FailoverService : Service() {
      * 裁定43（欠陥17）: 状態機械が動いているあいだ CPU を起こしておく。
      *
      * 実機で観測した欠陥17: 画面消灯後、**68分間 tick が1度も走らなかった**
-     * （`logHarnessState()` は dispatch のたびに呼ばれるので、ログ0行＝tick 0回）。
+     * （当時は Task 13 の検証ハーネスが dispatch のたびに状態をログへ出していた
+     * ので、ログ0行＝tick 0回と読めた。ハーネスは裁定86（L2）で削除済み）。
      * コルーチンの `delay` は端末が深いスリープに入ると発火しない。つまり
      * 画面消灯中はフェイルオーバー機能が丸ごと停止し、トンネルが落ちても
      * 復旧しない。Fire TV はほとんどの時間眠っている機器なので、実運用時間の
@@ -381,10 +355,10 @@ class FailoverService : Service() {
         val lock = wakeLock ?: return
         if (shouldHold && !lock.isHeld) {
             runCatching { lock.acquire() }
-            Log.d(HARNESS_TAG, "wakeLock acquired")
+            Log.d(LOG_TAG, "wakeLock acquired")
         } else if (!shouldHold && lock.isHeld) {
             runCatching { lock.release() }
-            Log.d(HARNESS_TAG, "wakeLock released")
+            Log.d(LOG_TAG, "wakeLock released")
         }
     }
 
@@ -424,8 +398,6 @@ class FailoverService : Service() {
                 FailoverNotifications.cancelAlert(this)
             }
         }
-        // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの行も削除すること。
-        logHarnessState()
     }
 
     /**
@@ -547,12 +519,19 @@ class FailoverService : Service() {
         const val ACTION_DISCONNECT = "net.openconnect_vpn.android.failover.DISCONNECT"
         const val EXTRA_GROUP_ID = "net.openconnect_vpn.android.failover.GROUP_ID"
 
-        // Task 13 検証ハーネス用の一時的なアクション。FailoverDebugReceiver とセットで
-        // ブランチ完了前に削除すること。
-        const val ACTION_SET_PROBE_TARGET = "net.openconnect_vpn.android.failover.SET_PROBE_TARGET"
-        const val EXTRA_PROBE_HOST = "net.openconnect_vpn.android.failover.PROBE_HOST"
-        const val EXTRA_PROBE_PORT = "net.openconnect_vpn.android.failover.PROBE_PORT"
-        private const val HARNESS_TAG = "FailoverTask13Harness"
+        /**
+         * 裁定86（L2）: Task 13 の検証ハーネス（`FailoverDebugReceiver`・
+         * `ACTION_SET_PROBE_TARGET`・`logHarnessState`・`setProbeTarget`）は
+         * 削除した。ハーネス自身の KDoc が「TV UI が `connectGroup` /
+         * `disconnect` を呼べるようになったら削除する」と約束しており、その条件が
+         * このブランチで満たされたため。
+         *
+         * このタグは残す。ハーネスと同時に導入したが、ハーネス専用ではなく
+         * 画面の消灯・点灯、プロセス kill からの復帰、wake lock の取得・解放
+         * （裁定43・裁定44 で実機の挙動を追うのに使った）を記録しているため。
+         * ハーネスを指す名前のままでは誤読を招くので、名前と値を実体に合わせた。
+         */
+        private const val LOG_TAG = "FailoverService"
 
         private const val TICK_INTERVAL_MS = 5_000L
 
@@ -574,19 +553,6 @@ class FailoverService : Service() {
         fun disconnect(context: Context) {
             val intent = Intent(context, FailoverService::class.java).apply {
                 action = ACTION_DISCONNECT
-            }
-            startCompat(context, intent)
-        }
-
-        /**
-         * Task 13 検証ハーネス用。FailoverDebugReceiver からのみ呼ばれる想定。
-         * FailoverDebugReceiver 削除時にこのメソッドとその呼び出し元も削除すること。
-         */
-        fun setProbeTarget(context: Context, host: String, port: Int) {
-            val intent = Intent(context, FailoverService::class.java).apply {
-                action = ACTION_SET_PROBE_TARGET
-                putExtra(EXTRA_PROBE_HOST, host)
-                putExtra(EXTRA_PROBE_PORT, port)
             }
             startCompat(context, intent)
         }
