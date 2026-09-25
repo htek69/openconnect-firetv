@@ -14,6 +14,7 @@ import android.preference.PreferenceManager
 import net.openconnect_vpn.android.MainActivity
 import net.openconnect_vpn.android.core.OpenVpnService
 import net.openconnect_vpn.android.core.VPNConnector
+import net.openconnect_vpn.android.failover.DialogHostRegistry
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.PrefsKeyValueStore
 
@@ -146,6 +147,12 @@ class TvMainActivity : ComponentActivity() {
             }
         }
 
+        // 裁定93: bind 要求と同時に「人が答えられる」と申告する。
+        // bindService は非同期なので、実際に `mActivityConnections` が増えるのは
+        // onServiceConnected（数ミリ秒後）である。その隙間で true を返すことに
+        // なるが、true 側の効果は「候補を除外しない」＝安全な向きだけである。
+        DialogHostRegistry.tracker.onHostAttached()
+
         bumpProfileGenerationIfBackFromLegacyUi()
     }
 
@@ -164,12 +171,24 @@ class TvMainActivity : ComponentActivity() {
      * `unbind()` が `updateActivityRefcount(-1)` を行う。
      */
     override fun onPause() {
-        vpnConnector?.let {
-            it.stopActiveDialog()
-            it.unbind()
-        }
-        vpnConnector = null
+        releaseDialogHost()
         super.onPause()
+    }
+
+    /**
+     * 裁定92/93: bind とダイアログ描画先の申告を解除する。
+     *
+     * [vpnConnector] が非 null のときだけ動くので、`onResume` の1回に対して
+     * 必ず1回しか実行されない（[DialogHostRegistry] の増減が 1:1 で対応する）。
+     * `onResume` では `VPNConnector` を作ってから `onHostAttached()` を呼ぶので、
+     * 「申告済みなのに connector が null」という組み合わせは生じない。
+     */
+    private fun releaseDialogHost() {
+        val connector = vpnConnector ?: return
+        vpnConnector = null
+        connector.stopActiveDialog()
+        connector.unbind()
+        DialogHostRegistry.tracker.onHostDetached()
     }
 
     /**
@@ -180,11 +199,7 @@ class TvMainActivity : ComponentActivity() {
      * 負になり、`updateNotification` の判定が狂う）。
      */
     override fun onDestroy() {
-        vpnConnector?.let {
-            it.stopActiveDialog()
-            it.unbind()
-        }
-        vpnConnector = null
+        releaseDialogHost()
         super.onDestroy()
     }
 

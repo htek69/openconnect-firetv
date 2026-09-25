@@ -211,6 +211,11 @@ class FailoverService : Service() {
             clock = SystemClock(),
             vpn = OpenConnectVpnController(this),
             network = networkGate,
+            // 裁定93: 「人が認証ダイアログに答えられるか」を供給する。Android API を
+            // 参照するのはこちら側の責任で、FailoverController は真偽値だけを見る。
+            // 値の実体は OpenVpnService.mActivityConnections > 0 に相当する
+            // （なぜ直接読まないかは DialogHostTracker の KDoc 参照）。
+            dialogHostAttachedProvider = { DialogHostRegistry.tracker.attached },
         )
 
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }

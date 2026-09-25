@@ -752,6 +752,68 @@ Error obtaining cookie
 場合だけである。実際の認証フォームは接続直後に届くため実務上はほぼ常に成立するが、
 無条件の保証ではない。
 
+#### 裁定92 — ダイアログには描画先が必要である（実機で確定）
+
+利用者の報告「接続先を削除して再登録したがパスワード設定画面が表示されない」を
+実機で追跡した結果、**TV 画面（`TvMainActivity`）にダイアログの表示先が無い**ことが
+1つ目の原因と判明した。`OpenVpnService.promptUser()` は `mDialog` を立てて
+`wakeUpActivity()`（＝状態ブロードキャスト）を呼ぶだけで Activity を起動しない。
+実際に描画されるのは、**サービスに bind した Activity が
+`startActiveDialog(this)` を呼んだとき**だけであり、その呼び出し元は旧
+`MainActivity.updateUI`（85-88行）しか存在しなかった。`TvMainActivity` は
+`VPNConnector` を使っておらず、`mActivityConnections == 0` のまま
+`notification_input_needed` の通知が出るだけだった。**Fire TV には通知シェードが
+無い**（§2.2）ので、これは実質不可視である。VPN コア側は正しく入力を要求している
+（同じ接続先に旧画面から繋ぐと `Certificate warning` が出る）。
+
+対処: `TvMainActivity` を旧 `MainActivity` と同じ形にする——`onResume` で
+`VPNConnector(this, true)` を作り、その `onUpdate(service)` で
+`service.startActiveDialog(this)` を呼び、`onPause` で `stopActiveDialog()` →
+`unbind()` する。既存 Java は変更しない。
+
+`VPNConnector` は `BIND_AUTO_CREATE` で bind するため、TV 画面が前面にある間
+`stopService` ではサービスが破棄されない。切断は既に裁定39 の
+`startService(ACTION_STOP_VPN)` に置き換わっており bind の有無に依存しないので、
+裁定39・裁定44（消灯で切断）はこの変更の影響を受けない。
+
+#### 裁定93 — 除外の条件は「人が答えられるか」である
+
+裁定92 を直してダイアログが実際に出るようになると、**利用者がパスワードを
+打っている最中に `USER_PROMPT_WAIT_MS`（10秒）で候補が切り替わり、ダイアログごと
+消える。** 裁定30 の設計意図は最初から「**無人運用の候補が**…誰も答えられないので」
+だったのに、実装は有人かどうかを見ていなかった（`FailoverState` にも
+そのような情報は無い）。現状ダイアログが出ないため表面化していなかっただけである。
+
+判定条件に「いま人が答えられる状態か」を加える。その実体は
+`OpenVpnService.mActivityConnections > 0`（＝ダイアログを描画できる Activity が
+bind されている）であり、裁定92 の修正によりこれは「TV 画面が前面にある」と一致する。
+
+- `FailoverController` は `dialogHostAttachedProvider: () -> Boolean` を1つ受け取る
+  （`groupsProvider`（裁定72）と同じ「参照のたびに呼ぶ供給関数」の形。
+  **`FailoverController` は Android API を参照しない**という原則は不変）
+- `onUnattendedPromptTimeout` はそれが true の間 null を返す（＝除外しない。
+  呼び出し側の判定を続けさせる）
+- 値は `FailoverService` が供給する
+
+**無限に待つ状態は作らない**（`onTick` の各分岐が別に上限を持つ）:
+
+| 状態 | null を返した後 | 上限 |
+|---|---|---|
+| `Connecting` | `onConnectTimeout` が続けて評価される | Ruling 22（既定45秒、`Connecting.startedAtMs` 起点）。**除外は伴わない** |
+| `Verifying` / `Healthy` | 元々 `s` を返すだけ | トンネル確立後の状態。疎通が失われれば `onProbeResult` が `failureThreshold` 回で切替える |
+| `FailingOver` / `Exhausted` / `Idle` | この判定を経由しない | 各分岐の既存の上限 |
+
+S1（認証失敗した候補を自動再試行から外す）は変わらない。変えたのは「人が
+答えられるのに勝手に諦める」経路だけであり、**誰も見ていないときの除外は
+従来どおり**である。描画先が離れれば供給関数は false に戻り、そのとき既に
+待ち時間を過ぎていれば次の tick で即座に除外される（＝「ダイアログを出したまま
+人が居なくなった」＝まさに裁定30 が想定した状況）。
+
+**既知の限界**: 旧 UI（`MainActivity` ほか）が前面にある間も
+`mActivityConnections > 0` になりダイアログは出せるが、旧 UI は既存 Java なので
+供給関数を叩けず、値は false のままになる。その場合の振る舞いは裁定93 の修正前と
+同じ（10秒で除外）であり回帰ではない。
+
 ### 9.3 既存 UI が D-pad で操作できない原因（実機で計測）
 
 同一コードベースの既存アプリ（`com.github.digitalsoftwaresolutions.openconnect` v1.15、

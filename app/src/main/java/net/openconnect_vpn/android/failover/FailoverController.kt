@@ -13,6 +13,16 @@ class FailoverController(
     private val clock: Clock,
     private val vpn: VpnController,
     private val network: NetworkGate,
+    /**
+     * 裁定93: いま認証ダイアログを描画できる（＝人が答えられる）状態か。
+     * [groupsProvider]（裁定72）と同じ「参照のたびに呼ぶ供給関数」の形で受け取る。
+     *
+     * 実体は `OpenVpnService.mActivityConnections > 0` に相当する値で、
+     * `FailoverService` が供給する。**ここから Android API は一切参照しない。**
+     * 既定値が `{ false }` なのは、供給しない呼び出し元（既存のテスト）に対して
+     * 裁定30 の従来の振る舞い＝「無人と見なして除外する」をそのまま残すため。
+     */
+    private val dialogHostAttachedProvider: () -> Boolean = { false },
 ) {
 
     /**
@@ -861,9 +871,35 @@ class FailoverController(
      * 進まない＝ダイアログが出て人の入力を待っている。誰も答えられないので
      * 認証失敗と同じ扱いにする（除外して次候補へ）。
      * 該当しなければ null を返し、呼び出し側の判定を続けさせる。
+     *
+     * 裁定93: ただし「誰も答えられない」が成り立つのは、**ダイアログの描画先が
+     * 無いとき**だけである。裁定30 の KDoc は最初から「無人運用の候補が…誰も
+     * 答えられないので」と書いていたのに、実装は有人かどうかを見ていなかった。
+     * 裁定92 で TV 画面が実際にダイアログを出せるようになると、
+     * **利用者がパスワードを打っている最中に10秒で候補が切り替わり、
+     * ダイアログごと消える。** 現状ダイアログが出ないため表面化していなかっただけ。
+     *
+     * よって [dialogHostAttachedProvider] が true の間は null を返す（＝除外しない。
+     * 呼び出し側の判定を続けさせる）。「無人運用のときの除外」は従来どおり効く
+     * ので S1（認証失敗した候補を自動再試行から外す）は壊れない。
+     *
+     * **無限に待つ状態は作らない**（`onTick` の各分岐で上限が別に存在する）:
+     * - `Connecting`: null を返せば [onConnectTimeout]（Ruling 22、既定45秒、
+     *   `Connecting.startedAtMs` 起点）が続いて評価され、そこで前進する。
+     *   このタイムアウトは候補を除外しない（＝アカウントロックを招かない）。
+     * - `Verifying` / `Healthy`: 元々 `s` を返すだけなのでこの判定は無関係。
+     *   どちらもトンネル確立後の状態であり、疎通が失われれば
+     *   [onProbeResult] が `failureThreshold` 回の失敗で切替える。
+     * - `FailingOver` / `Exhausted` / `Idle`: この関数を経由しない。
+     *
+     * さらに、描画先が離れれば（利用者が TV 画面から離れる・消灯する）供給関数は
+     * false に戻り、次の tick で従来どおり除外が効く。[userPromptSinceMs] は
+     * ここでリセットしないので、そのとき既に待ち時間を過ぎていれば即座に除外される
+     * （「ダイアログを出したまま人が居なくなった」＝まさに裁定30 が想定した状況）。
      */
     private fun onUnattendedPromptTimeout(s: FailoverState): FailoverState? {
         val since = userPromptSinceMs ?: return null
+        if (dialogHostAttachedProvider()) return null
         val waitMs = groupIdOf(s)?.let { userPromptWaitMs(it) } ?: USER_PROMPT_WAIT_MS
         if (clock.nowMs() - since < waitMs) return null
         return onUnattendedUserPrompt(s)
