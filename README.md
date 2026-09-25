@@ -8,6 +8,10 @@ operable with the TV remote alone. This is a fork of
 (GPLv2); the VPN core is upstream's, the TV UI and the failover engine are new.
 Source comments and docs are in Japanese.
 
+**Requires an Android-based Fire OS device.** It does **not** run on Fire TV
+devices that ship with Vega OS — Vega is not Android and cannot install Android
+APKs at all. See 「対応端末」 below.
+
 **The new code in this fork was written by AI** (Claude Code — Anthropic's
 Claude Opus 5 / Sonnet 5), directed and reviewed by the repository owner. The
 VPN core itself is upstream's, human-written code. No independent human security
@@ -72,6 +76,24 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 
 成果物は `app/build/outputs/apk/debug/app-debug.apk` です。詳細は
 [docs/BUILD.md](docs/BUILD.md) を参照してください。
+
+## 対応端末
+
+**Android ベースの Fire OS が載った Fire TV 専用です。**
+
+- 必要: Android 6.0（API 23）以上の Fire OS。確認は Fire TV Stick 4K
+  （第1世代 / AFTMM、Fire OS 6.7.1.1 / Android 7.1.2、API 25）で行いました
+- **Vega OS の Fire TV では動きません。** Vega OS は Android ではない別の OS で、
+  アプリの作り（React Native 系）も実行環境も異なります。**Android の APK は
+  インストールできず、本アプリも例外ではありません。** 新しい Fire TV には
+  Vega OS を載せた機種があるため、購入・移行の前に確認してください
+- 見分け方: 「設定 → My Fire TV → バージョン情報」に **Android のバージョンが
+  出るなら Fire OS（本アプリの対象）**です。出ない場合や、開発者オプションに
+  「ADB デバッグ」「不明なアプリのインストール」が見当たらない場合は、
+  Vega OS の可能性が高く、対象外です
+
+> Vega OS への対応予定はありません。本アプリは上流の ics-openconnect
+> （Android アプリ）のフォークであり、移植は事実上の作り直しになります。
 
 ## インストール（ADB でのサイドロード）
 
