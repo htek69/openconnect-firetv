@@ -21,6 +21,12 @@ class FailoverController(
      * `FailoverService` が供給する。**ここから Android API は一切参照しない。**
      * 既定値が `{ false }` なのは、供給しない呼び出し元（既存のテスト）に対して
      * 裁定30 の従来の振る舞い＝「無人と見なして除外する」をそのまま残すため。
+     *
+     * 裁定94: この値は2か所で使う。裁定93 の除外判定
+     * （[onUnattendedPromptTimeout]）と、接続タイムアウト（[onConnectTimeout]）を
+     * 止める [awaitingHumanAuthInput] である。後者は [userPromptSinceMs] との
+     * **論理積**でのみ成立する（片方だけでは足りない理由は
+     * [awaitingHumanAuthInput] の KDoc）。
      */
     private val dialogHostAttachedProvider: () -> Boolean = { false },
 ) {
@@ -113,7 +119,7 @@ class FailoverController(
     private var currentCandidateUnattended = false
 
     /**
-     * 裁定30: 無人運用中の候補が `UserPrompt`（認証フォーム処理中）に入った時刻。
+     * 現在の候補が `UserPrompt`（認証フォーム処理中）に入った時刻。
      * 次の状態へ進んだら null に戻す。
      *
      * `UserPrompt` 自体は「人の入力が必要」を意味しない。既存コアは
@@ -123,6 +129,25 @@ class FailoverController(
      * ダイアログを出さずに即 OK を返す）。区別できるのは「その後進むかどうか」だけで、
      * 自動入力なら `Authenticating` がミリ秒で続き、ダイアログが出た場合は
      * `waitForResponse()` で無期限に止まる。
+     *
+     * **どの経路で arming されるか（裁定94 の C2 で訂正した点）**:
+     * この値は**候補の有人・無人を問わず、`UserPrompt` を観測すれば必ず**立つ。
+     * つまり意味は名前どおりの「いま `UserPrompt` で止まっているか、その開始時刻」
+     * だけであり、それ以上の含みは無い。
+     *
+     * 裁定93 までは arming 自体が [currentCandidateUnattended] で絞られていた
+     * （`if (currentCandidateUnattended && userPromptSinceMs == null)`）。その形だと
+     * **ユーザーが画面から押した接続（`UserConnectGroup` 由来の候補）では
+     * この値が永久に null** であり、「`UserPrompt` が届いているか」を問う判定を
+     * ここに足しても有人経路では一切効かない。裁定94 は「人が答えている最中か」を
+     * 接続タイムアウト（[onConnectTimeout]）の条件にも使うので、有人経路で
+     * 効かないのでは目的（利用者がパスワードを打ち終わるまで待つ）を果たさない。
+     *
+     * そこで arming は無条件にし、Ruling 21 の「無人の候補だけを除外対象にする」
+     * という絞り込みは判定側（[onUnattendedPromptTimeout] の
+     * [currentCandidateUnattended] ガード）へ移した。**振る舞いは等価である**:
+     * 有人候補ではこれまで `since == null` で null が返っていたところが、
+     * これからは `!currentCandidateUnattended` で null が返る。
      */
     private var userPromptSinceMs: Long? = null
 
@@ -609,17 +634,23 @@ class FailoverController(
 
         // 裁定30: `UserPrompt` に入った時刻を覚え、次の状態へ進んだら解除する。
         // 進展の有無だけがダイアログの有無を見分ける唯一の手段である（詳細は
-        // userPromptSinceMs の説明）。無人運用の候補だけが対象で、ユーザー自身が
-        // 接続した候補（画面の前にいる）はいつまでも待たせてよい。
+        // userPromptSinceMs の説明）。
+        // 裁定94: 有人・無人を問わず立てる。「無人の候補だけを除外する」という
+        // Ruling 21 の絞り込みは onUnattendedPromptTimeout 側で行う（等価。理由は
+        // userPromptSinceMs の KDoc「どの経路で arming されるか」参照）。
+        var humanJustAnswered = false
         if (core == VpnCoreState.UserPrompt) {
-            if (currentCandidateUnattended && userPromptSinceMs == null) {
+            if (userPromptSinceMs == null) {
                 userPromptSinceMs = clock.nowMs()
             }
         } else {
+            // 裁定94: 「人が答え終わった瞬間」を捉える（この変数を読む箇所は
+            // この関数の末尾。理由はそこのコメント）。
+            humanJustAnswered = userPromptSinceMs != null && dialogHostAttachedProvider()
             userPromptSinceMs = null
         }
 
-        return when {
+        val next = when {
             // 裁定31a/37: 自分の Connecting を観測する前に届いた Disconnected は
             // 旧スレッドのものである。ただしこの門番は「まだ接続が始まっていない」
             // 状態にだけ適用する。Connected を観測済みの候補（Verifying / Healthy）の
@@ -659,6 +690,34 @@ class FailoverController(
             core == VpnCoreState.Disconnected -> onDisconnected(s)
 
             else -> s
+        }
+
+        // 裁定94: 人が答え終わった直後に Ruling 22 の期限切れで畳まれないよう、
+        // ここで**1回だけ** `Connecting` の起点を「答え終わった瞬間」へ置き直す。
+        //
+        // これが無いと裁定94 の保護は肝心なところで役に立たない: 利用者が90秒かけて
+        // パスワードを打ち、`OK` を押してコアが `Authenticating` へ進んだ瞬間に
+        // [awaitingHumanAuthInput] は false へ戻り、`Connecting.startedAtMs` 起点の
+        // 45秒は**すでに大幅に過ぎている**ので、次の tick（`TICK_INTERVAL_MS` = 5秒）で
+        // 即座に候補を畳む。**正しいパスワードを打ち終えた直後に切られる**という、
+        // 裁定94 が防ごうとしたものと実質同じ結末になる。サーバ側の認証往復に数秒
+        // かかる構成（LDAP/RADIUS/OTP）や、フォームが複数ページに分かれる構成
+        // （証明書の承認 → 認証フォーム）では確実に踏む。
+        //
+        // 置き直しても有界性は損なわれない。Ruling 22 が測りたいのは
+        // **サーバの沈黙**であって人がキーを押していた時間ではないので、起点が人の
+        // 回答時刻に移ったあとも「サーバが45秒沈黙したら諦める」は保たれる。
+        // 置き直しが起きるのは `UserPrompt` から次の状態へ進んだ観測1回につき1回
+        // だけで、その遷移は必ず人の操作（またはコアの自動入力）に対応する。
+        // 人が居なくなれば供給関数が false になり、この条件自体が成り立たない。
+        //
+        // `next` が `Connecting` になるのは「`s` のまま」か「新しい候補を起動した
+        // 直後」のどちらかで、後者の `startedAtMs` は既に `clock.nowMs()` なので
+        // この置き直しは無害である（どちらの場合も結果は同じ値になる）。
+        return if (humanJustAnswered && next is FailoverState.Connecting) {
+            next.copy(startedAtMs = clock.nowMs())
+        } else {
+            next
         }
     }
 
@@ -885,8 +944,10 @@ class FailoverController(
      *
      * **無限に待つ状態は作らない**（`onTick` の各分岐で上限が別に存在する）:
      * - `Connecting`: null を返せば [onConnectTimeout]（Ruling 22、既定45秒、
-     *   `Connecting.startedAtMs` 起点）が続いて評価され、そこで前進する。
-     *   このタイムアウトは候補を除外しない（＝アカウントロックを招かない）。
+     *   `Connecting.startedAtMs` 起点）が続いて評価される。このタイムアウトは
+     *   候補を除外しない（＝アカウントロックを招かない）。
+     *   **裁定94 により、そこにも同じ「人が答えている最中か」のガードが入った。**
+     *   その状態が有界である根拠は [awaitingHumanAuthInput] の KDoc にある。
      * - `Verifying` / `Healthy`: 元々 `s` を返すだけなのでこの判定は無関係。
      *   どちらもトンネル確立後の状態であり、疎通が失われれば
      *   [onProbeResult] が `failureThreshold` 回の失敗で切替える。
@@ -896,9 +957,18 @@ class FailoverController(
      * false に戻り、次の tick で従来どおり除外が効く。[userPromptSinceMs] は
      * ここでリセットしないので、そのとき既に待ち時間を過ぎていれば即座に除外される
      * （「ダイアログを出したまま人が居なくなった」＝まさに裁定30 が想定した状況）。
+     *
+     * 裁定94（報告書 C2 の訂正）: [currentCandidateUnattended] のガードはここに
+     * ある。以前は [userPromptSinceMs] の arming 側にあり、有人候補ではこの関数が
+     * `since == null` で必ず null を返していた。判定の結果は等価だが、
+     * [userPromptSinceMs] が「`UserPrompt` が届いているか」を素直に表すようになり、
+     * 裁定94 が [onConnectTimeout] 側でその事実を使えるようになった。
      */
     private fun onUnattendedPromptTimeout(s: FailoverState): FailoverState? {
         val since = userPromptSinceMs ?: return null
+        // Ruling 21: 除外するのは「人が見ている保証が無い」候補だけ。ユーザー自身が
+        // 画面の前で接続を指示した候補は、いつまでダイアログの前にいてもよい。
+        if (!currentCandidateUnattended) return null
         if (dialogHostAttachedProvider()) return null
         val waitMs = groupIdOf(s)?.let { userPromptWaitMs(it) } ?: USER_PROMPT_WAIT_MS
         if (clock.nowMs() - since < waitMs) return null
@@ -943,12 +1013,91 @@ class FailoverController(
      * S1 の除外はしない（10分後には繋がるかもしれない候補を焼き切らない）。
      * alreadyDown = false であり、Ruling 25 により切断を要求してから完了を
      * 待って次候補へ進む。
+     *
+     * 裁定94: ただし [awaitingHumanAuthInput] が成立している間は発火させない。
+     * Ruling 22 がここに上限を置くのは**死んだサーバの前で永久に固まらない**ため
+     * であり、人が入力欄の前で文字を打っている状態は「固まっている」ではない
+     * ——上限を課す理由がそもそも当てはまらない。Fire TV の D-pad ＋
+     * ソフトキーボードでユーザー名とパスワードを打つのに既定45秒は足りない。
+     *
+     * **この経路は「コードから到達可能」であって「実機で観測した」ではない。**
+     * 裁定92・93 を入れた実機で認証ダイアログを3秒・45秒・176秒の時点で確認した
+     * 測定が1件あるが、そこではダイアログは消えていない。ただし
+     * **ダイアログが出ていることは状態機械が諦めていないことの証拠にならない**:
+     * この上限が発火しても、画面に出ているダイアログを畳む経路は存在しないためで
+     * ある（`vpn.disconnect()`＝`ACTION_STOP_VPN` は `stopVPN()` を呼ぶだけで
+     * `OpenVpnService.mDialog` に触れず、VPN スレッドは
+     * `UserDialog.waitForResponse()` で停まったまま。`AuthFormHandler` が
+     * `mAlert.dismiss()` を呼ぶのは `onStop`＝Activity の `onPause` 経由か、
+     * 利用者自身がボタンを押したときだけ。[DISCONNECT_WAIT_MS] の KDoc の
+     * follow-up F4 と同じ事情）。次候補が `promptUser` に来れば
+     * `setDialog` で `mDialog` が差し替わり新しいダイアログが重ねて描画されるので、
+     * 外から見た「ダイアログが出ている」は**発火した場合と発火しなかった場合を
+     * 区別できない**。したがってこの観測でこの経路を否定することもできない
+     * （逆に、発火したと主張することもできない）。
      */
     private fun onConnectTimeout(s: FailoverState.Connecting): FailoverState {
+        if (awaitingHumanAuthInput()) return s
         val timeoutMs = configOf(s.groupId).connectTimeoutSec * 1_000L
         if (clock.nowMs() - s.startedAtMs < timeoutMs) return s
         return failOver(s.groupId, s.candidateIndex, alreadyDown = false)
     }
+
+    /**
+     * 裁定94: **いま人が認証ダイアログに答えている最中か。**
+     *
+     * 成立条件は2つで、**両方が同時に成り立っている間だけ**真である:
+     *
+     * 1. [dialogHostAttachedProvider]（裁定93）: ダイアログの描画先が bind されて
+     *    いる。裁定92 以降これは「TV 画面が前面にある」と一致する
+     * 2. [userPromptSinceMs] が非 null: コアが `UserPrompt` で止まっている
+     *    （＝認証フォームを処理中であり、次の状態へ進んでいない）
+     *
+     * **片方だけでは足りない**（どちらを落としても実際に事故になる）:
+     *
+     * - 1 だけで止めると、TV 画面を開いたまま**認証に到達してすらいない**
+     *   死んだサーバの前で永久に待つ。Ruling 22 が存在する理由そのものを失う
+     * - 2 だけで止めると、誰も見ていない（描画先が無い＝ダイアログは出ていない、
+     *   Fire TV には通知シェードも無い）のに永久に待つ
+     *
+     * **この状態が無限に続かない根拠**（時間しきい値を足して解決してはならない。
+     * 裁定78 で誤りと判明した手口であり、「打つのが遅い人」を切ることになる）:
+     *
+     * - 条件 2 が解ける: 利用者が答えれば `Authenticating`、間違えて切断されれば
+     *   `Disconnected` が届き、[onVpnState] が [userPromptSinceMs] を null に戻す。
+     *   そこで Ruling 22 の期限が復活する。**このとき起点は「人が答え終わった
+     *   瞬間」へ1回だけ置き直される**（[onVpnState] 末尾。理由と有界性はそこの
+     *   コメント）。以後はサーバが `connectTimeoutSec` 沈黙すれば従来どおり畳む
+     * - 条件 2 が解ける: 利用者がダイアログを閉じる（BACK / キャンセル）と
+     *   コアは認証をやめて切断へ進むので、上と同じ経路で解ける
+     * - 条件 1 が解ける: 利用者が席を離れれば必ず画面が消え、`TvMainActivity` の
+     *   `onPause` が [DialogHostTracker] を減らす。加えて裁定44 により
+     *   `ACTION_SCREEN_OFF` で `UserDisconnect` が飛び `Idle` へ落ちるので、
+     *   そもそもこの判定を通る状態が残らない（`Idle` は `onTick` でこの経路を
+     *   通らない）。ダイアログは Activity と同じウィンドウに出るので、
+     *   ダイアログを出したこと自体で `onPause` にはならない。
+     *   **こちらの経路では起点の置き直しは起きない**（置き直しの条件に
+     *   [dialogHostAttachedProvider] が入っている）ので、既に期限を過ぎていれば
+     *   次の tick で即座に前進する。「ダイアログを出したまま人が居なくなった」は
+     *   まさに上限を課すべき状況である
+     * - プロセスが死ねば状態そのものが消える（Ruling 18 の復帰は無人経路であり、
+     *   復帰後の候補は `unattended = true` で始まる）
+     *
+     * つまり**有界性の根拠は時間ではなく「人が居る」という観測そのもの**であり、
+     * 人が居なくなったことは必ず観測される（消灯 → `onPause` ＋ 裁定44）。
+     *
+     * 消費電力: この間 [requiresCpuAwake] は `Connecting` なので true を返し、
+     * 裁定43 の `PARTIAL_WAKE_LOCK` を保持し続ける。ただし条件 1 が成り立つのは
+     * 画面が点いている＝端末が interactive な場面だけであり（裁定44 により消灯中は
+     * 必ず `Idle`）、欠陥17 で問題になった「消灯中に起き続ける」形にはならない。
+     *
+     * S1 は壊れない: ここで変えたのは**除外を伴わない** Ruling 22 の経路だけで
+     * ある。認証失敗による除外（[onDisconnected] の Ruling 23 判定、および
+     * 無人候補に対する [onUnattendedPromptTimeout]）はこの値に関係なく従来どおり
+     * 効く。
+     */
+    private fun awaitingHumanAuthInput(): Boolean =
+        userPromptSinceMs != null && dialogHostAttachedProvider()
 
     /**
      * 裁定86（H2）: 再試行の前に [stopBeforeStarting] を通す。この経路も

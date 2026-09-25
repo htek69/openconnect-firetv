@@ -56,11 +56,15 @@ class FailoverControllerDialogHostTest {
     /**
      * uuid-b（無人運用で開始した候補）が `UserPrompt` で止まっている状態を作る。
      *
-     * 裁定30 の `userPromptSinceMs` は `currentCandidateUnattended` が true の
-     * 候補にしか武装しないため、ユーザーが押した接続（`UserConnectGroup`）の
-     * 第1候補では判定そのものが走らない。判定が走る形＝自動切替で到達した
-     * 第2候補を、実機と同じ順序（Healthy → プローブ失敗 → FailingOver →
+     * 裁定30 の除外は「人が見ている保証が無い」候補（Ruling 21 の
+     * `currentCandidateUnattended`）にしか適用されないため、ユーザーが押した接続
+     * （`UserConnectGroup`）の第1候補では除外判定が走らない。走る形＝自動切替で
+     * 到達した第2候補を、実機と同じ順序（Healthy → プローブ失敗 → FailingOver →
      * 切断確認 → 次候補）で作る。
+     *
+     * 裁定94 の注: 絞り込みの場所は `userPromptSinceMs` の arming から
+     * `onUnattendedPromptTimeout` へ移った（有人候補でも arming されるようになった）。
+     * このヘルパが作る状態と、この後の除外の有無は変わらない。
      *
      * 呼び出し後の時刻 = uuid-b の `Connecting.startedAtMs` = `UserPrompt` 受信時刻
      * （以降 `clock.advance` した分がそのまま両方の経過時間になる）。
@@ -125,15 +129,33 @@ class FailoverControllerDialogHostTest {
 
     // --- 3: 無限に待つ状態は作らない（Ruling 22 が上限を持ち続ける） ---
 
+    /**
+     * **裁定94 で書き換えたテストである。**
+     *
+     * 元の主張は「供給関数が true でも `Connecting` の接続タイムアウトは従来どおり
+     * 効く」だった。裁定94 はまさにそれを止める裁定であり（人が入力している最中に
+     * 45秒で畳むのは Fire TV の D-pad 入力に対して短すぎる）、主張はもう成り立たない。
+     * 裁定93 が言いたかったこと——「`Connecting` で null を返しても無期限にはならない。
+     * 上限は別に存在する」——を、裁定94 のもとで成り立つ形に直したのがこのテスト。
+     * 上限が復活する条件そのものは `FailoverControllerHumanAuthInputTest` が固定する。
+     */
     @Test
-    fun `供給関数が true でも Connecting の接続タイムアウトは従来どおり効く`() {
+    fun `供給関数が true でも UserPrompt を抜けたあとは接続タイムアウトが効く`() {
         toUnattendedUserPromptOnCandidateB()
         dialogHostAttached = true
         // ヘルパの中で Healthy → FailingOver の切替が1回 disconnect している。
         val disconnectsBefore = vpn.disconnectCalls
 
-        // Ruling 22 の期限は Connecting.startedAtMs 起点。ヘルパ直後は
-        // startedAtMs == now なので、ここで connectTimeoutSec ぶん進めれば発火する。
+        // 裁定94: `UserPrompt` で止まっている間は畳まれない。
+        clock.advance(group.config.connectTimeoutSec * 1_000L)
+        controller.handle(FailoverEvent.Tick)
+        assertTrue(controller.state is FailoverState.Connecting)
+
+        // コアが `UserPrompt` を抜けた（保存済み認証情報での自動入力が終わった、
+        // または人が答えた）。ここで裁定94 の起点の置き直しが1回だけ起きる。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating, uuid = "uuid-b"))
+
+        // 置き直した起点からさらに connectTimeoutSec 沈黙すれば従来どおり畳む。
         clock.advance(group.config.connectTimeoutSec * 1_000L)
         controller.handle(FailoverEvent.Tick)
 
