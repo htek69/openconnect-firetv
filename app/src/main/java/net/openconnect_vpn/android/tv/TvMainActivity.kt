@@ -12,6 +12,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import android.preference.PreferenceManager
 import net.openconnect_vpn.android.MainActivity
+import net.openconnect_vpn.android.core.OpenVpnService
+import net.openconnect_vpn.android.core.VPNConnector
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.PrefsKeyValueStore
 
@@ -42,6 +44,40 @@ class TvMainActivity : ComponentActivity() {
     private var visitedLegacyUi = false
 
     private lateinit var groupStore: GroupStore
+
+    /**
+     * 裁定92: 既存コアの認証ダイアログ（`AuthFormHandler` / `CertWarningDialog` など
+     * `UserDialog` 派生）を**この画面に描画させる**ための `OpenVpnService` への bind。
+     *
+     * `OpenVpnService.promptUser()` は `mDialog` を立てて `wakeUpActivity()` を
+     * 呼ぶだけで、Activity を起動しない。実際に描画されるのは、サービスに bind した
+     * Activity が `startActiveDialog(this)` を呼んだときだけである
+     * （`OpenVpnService.startActiveDialog` は `mDialog != null && mDialogContext == null`
+     * のときに `mDialog.onStart(context)` する）。`TvMainActivity` は
+     * `VPNConnector` を使っておらず `startActiveDialog` も呼んでいなかったため、
+     * `mActivityConnections == 0` のまま `notification_input_needed` の通知が
+     * 出るだけだった。**Fire TV には通知シェードが無い**（裁定58）ので、これは
+     * 実質不可視であり、利用者から見ると「パスワードを聞かれないまま次の候補へ
+     * 切り替わる」ことになる（実機で確認: 削除→再登録した myvpn には
+     * `FORMDATA-*` も `ACCEPTED-CERT-*` も無く、旧画面から同じ接続先に繋ぐと
+     * `Certificate warning` ダイアログが出た＝コアは正しく入力を要求している）。
+     *
+     * 形は旧 `MainActivity`（:85-88, :113-130）と同一にしてある。`VPNConnector` は
+     * `ACTION_VPN_STATUS` のブロードキャストを受けるたびに `onUpdate` を呼ぶので、
+     * ダイアログが後から立ち上がっても次の状態通知で拾われる（`promptUser` は
+     * `mDialog` を立ててから `wakeUpActivity()` = ブロードキャストを出す順序なので、
+     * bind 済みならこの経路で必ず1回は描画の機会が来る）。
+     *
+     * 裁定39 との関係: `VPNConnector` は `BIND_AUTO_CREATE` で bind するため、
+     * この画面が前面にある間は `stopService` ではサービスが破棄されない。
+     * しかし切断経路は既に `OpenConnectVpnController.disconnect()` =
+     * `startService(ACTION_STOP_VPN)` に置き換わっており（裁定39）、bind の有無に
+     * 依存しない。裁定44（消灯で切断）も同じ経路を使う。
+     *
+     * ここでダイアログの内容（資格情報）に触れたりログへ出したりはしない。
+     * 描画先を与えるだけである。
+     */
+    private var vpnConnector: VPNConnector? = null
 
     // 裁定80（裁定78 の判定基準の差し替え。詳細は LongPressKeyUpFilter の KDoc 参照）:
     // このアプリは単一 Activity で画面は Compose のコンポーザブルが入れ替わるだけなので、
@@ -83,9 +119,11 @@ class TvMainActivity : ComponentActivity() {
     }
 
     /**
-     * 裁定88（Medium 1）: 旧 UI から戻ってきたら世代を1回進める。
+     * 裁定92: ダイアログの描画先として `OpenVpnService` に bind する（[vpnConnector]）。
+     * 裁定88（Medium 1）: 旧 UI から戻ってきたら世代を1回進める
+     * （[bumpProfileGenerationIfBackFromLegacyUi]）。
      *
-     * `onResume` を使う理由: 旧 UI は `MainActivity` から `VPNProfileList` /
+     * 世代更新に `onResume` を使う理由: 旧 UI は `MainActivity` から `VPNProfileList` /
      * `ConnectionEditorActivity` / `TokenImportActivity` へ進む複数画面の集合で
      * あり、「どの画面がいつ終わるか」を当てにできない。`ActivityResult` は
      * `MainActivity` が finish したときしか届かず、ホーム経由で戻ってきた場合を
@@ -98,9 +136,56 @@ class TvMainActivity : ComponentActivity() {
      */
     override fun onResume() {
         super.onResume()
+
+        // 裁定92: ダイアログの描画先になる（詳細は [vpnConnector]）。
+        // onPause で必ず解除するので、ここで毎回作り直すのは旧 MainActivity と
+        // 同じ形である。
+        vpnConnector = object : VPNConnector(this, true) {
+            override fun onUpdate(service: OpenVpnService) {
+                service.startActiveDialog(this@TvMainActivity)
+            }
+        }
+
+        bumpProfileGenerationIfBackFromLegacyUi()
+    }
+
+    /** 裁定88（Medium 1）: 旧 UI から戻ってきたときの1回だけの世代更新。 */
+    private fun bumpProfileGenerationIfBackFromLegacyUi() {
         if (!visitedLegacyUi) return
         visitedLegacyUi = false
         groupStore.bumpProfileGeneration()
+    }
+
+    /**
+     * 裁定92: 旧 `MainActivity.onPause`（:126-130）と同じ順序で解除する。
+     * `stopActiveDialog()` はこの Activity が持っていたダイアログを
+     * `onStop` して `mDialogContext` を手放す（`mDialog` 自体はサービスに残るので、
+     * 次に前面へ戻ったときに `startActiveDialog` で再描画される）。
+     * `unbind()` が `updateActivityRefcount(-1)` を行う。
+     */
+    override fun onPause() {
+        vpnConnector?.let {
+            it.stopActiveDialog()
+            it.unbind()
+        }
+        vpnConnector = null
+        super.onPause()
+    }
+
+    /**
+     * 裁定92: 念のための保険。通常は `onPause` が必ず先に走って
+     * [vpnConnector] を null にしているので、ここは何もしない。
+     * 二重に `unbind()` しないよう null チェックに任せる
+     * （`updateActivityRefcount(-1)` を2回走らせると `mActivityConnections` が
+     * 負になり、`updateNotification` の判定が狂う）。
+     */
+    override fun onDestroy() {
+        vpnConnector?.let {
+            it.stopActiveDialog()
+            it.unbind()
+        }
+        vpnConnector = null
+        super.onDestroy()
     }
 
     /**
