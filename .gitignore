@@ -58,3 +58,10 @@ external/curl/
 !/app/src/main/assets/raw/x86/curl-bin
 !/app/src/main/assets/raw/x86_64/
 !/app/src/main/assets/raw/x86_64/curl-bin
+
+# 署名鍵とその設定（app/build.gradle が release.properties を読む）
+release.properties
+*.jks
+*.keystore
+*.p12
+*.pem
