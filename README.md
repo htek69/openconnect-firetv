@@ -1,84 +1,125 @@
-OpenConnect for Android
-=======================
+# OpenConnect TV — Fire TV 向け OpenConnect クライアント
 
-[<img src="https://f-droid.org/badge/get-it-on.png"
-    alt="Get it on F-Droid"
-    height="80">](https://f-droid.org/packages/net.openconnect_vpn.android)
-
-### NOTE
-
-**There are no official openconnect packages in the Google Play Store.**
-Get involved (see #1) to release the Android client.
+**English summary:** a Fire TV / Android TV front-end for the OpenConnect VPN
+client, with priority-ordered failover groups. When the current server stops
+responding, it automatically switches to the next candidate. Everything is
+operable with the TV remote alone. This is a fork of
+[openconnect/ics-openconnect](https://gitlab.com/openconnect/ics-openconnect)
+(GPLv2); the VPN core is upstream's, the TV UI and the failover engine are new.
+Source comments and docs are in Japanese.
 
 ---
 
-Multi-protocol version, based on [openconnect](http://www.infradead.org/openconnect). [XDA thread](https://xdaforums.com/t/app-6-0-v1-12-openconnect-ssl-vpn-client-for-cisco-anyconnect.2616121/)
+## これは何か
 
-This is a VPN client for Android, based on the Linux build of
-[OpenConnect](http://www.infradead.org/openconnect/).
+Fire TV のリモコンだけで OpenConnect VPN を使うためのアプリです。上流の
+[ics-openconnect](https://gitlab.com/openconnect/ics-openconnect) のフォークで、
+**VPN の中核（`external/openconnect`, `app/src/main/java/app/openconnect` など）は
+ほぼ手を加えていません。** 足したのは次の2つです。
 
-Much of the Java code was derived from [OpenVPN for Android](https://play.google.com/store/apps/details?id=de.blinkt.openvpn&hl=en) by Arne Schwabe.
+1. **優先順位つきのフェイルオーバー**
+   複数の接続先を1つのグループにまとめ、上から順に試します。接続中の接続先が
+   応答しなくなったら、次の候補へ自動で切り替えます。グループ単位で ON/OFF できます。
 
-OpenConnect for Android is released under the GPLv2 license.  For more
-information see the [COPYING](COPYING) and [doc/LICENSE.txt](misc/doc/LICENSE.txt)
-files.
+2. **TV 向けの画面**
+   リモコン（D-pad）だけで接続先の追加・編集・削除、グループの作成・並び替え、
+   接続・切断、疎通確認の設定まで行えます。
 
-Changelog: see [doc/CHANGES.txt](misc/doc/CHANGES.txt)
+## 上流からの変更点（GPLv2 §2(a) の表示）
 
-## Downloads and support
+上流のコードを変更・追加しています。主な内容:
 
-You can download the latest release from the GitLab [releases](https://gitlab.com/openconnect/ics-openconnect/-/releases) page directly, or from [F-Droid](https://f-droid.org/packages/net.openconnect_vpn.android)
+| 追加・変更 | 場所 |
+|---|---|
+| フェイルオーバーの状態機械（純 Kotlin、Android API 非依存） | `app/src/main/java/net/openconnect_vpn/android/failover/` |
+| TV 向け UI（Compose for TV） | `app/src/main/java/net/openconnect_vpn/android/tv/` |
+| VPN の状態を UI へ流すための UUID 付きブロードキャスト | `app/src/main/java/net/openconnect_vpn/android/core/OpenVpnService.java` ほか |
+| ランチャーの起動先を TV 画面へ変更、バナー・アイコン | `app/src/main/AndroidManifest.xml`, `app/src/main/res/` |
+| `applicationId` を `net.openconnect_vpn.android.firetv` に変更（上流版と併存できる） | `app/build.gradle` |
 
-## Screenshots
+上流の README は [README-upstream.md](README-upstream.md) に残してあります。
 
-|<img src="metadata/en-US/images/phoneScreenshots/screenshot-0.png" alt="screenshot-0" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-1.png" alt="screenshot-1" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-2.png" alt="screenshot-2" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-3.png" alt="screenshot-3" height="400" width="180">|<img src="metadata/en-US/images/phoneScreenshots/screenshot-4.png" alt="screenshot-4" height="400" width="180">|
-|---|---|---|---|---|
+## 仕組み（要点）
 
-## Building from source
+- 接続先の死活は**2つの経路**で判定します。ひとつは VPN コアからの切断イベント、
+  もうひとつは**トンネル越しの TCP 疎通確認**（宛先・間隔・失敗回数は設定画面で変更可）。
+- 切り替えは必ず**2段階**で行います。「切断を要求 → 完了を確認 → 次を起動」。
+  これを飛ばすと、放棄したはずの接続が後からトンネルを掴み、
+  **画面の表示と実際の通信経路が食い違う**ため、状態機械側で強制しています。
+- **認証に失敗した候補は自動再試行の対象から外します。** 無人で誤った資格情報を
+  投げ続けてサーバ側でロックされるのを避けるためです。除外はユーザー操作での
+  接続で解除されます。
+- **ネットワークが無いときは切り替えません。** 回線断を接続先の障害と誤認しないためです。
 
-### Prerequisites
+## ビルド
 
-On the host side you'll need to install:
+Docker のみでビルドします（ローカルに Android SDK は要りません）。イメージは
+ダイジェストで固定しています。
 
-* Android SDK in your $PATH (both platform-tools/ and tools/ directories)
-* $ANDROID\_HOME pointed at the Android SDK directory
-* JDK 17 and a recent version of Apache ant in your $PATH
-* Use the Android SDK Manager to install `"platform-tools" "build-tools;34.0.0" "platforms;android-35"`
-* NDK r27c, nominally unzipped under /opt/android-sdk-linux\_x86/
-* Host-side gcc, make, etc. (Red Hat "Development Tools" group or Debian build-essential)
-* git, autoconf, automake, and libtool
-
-If you encounter any issues, take a look at [`misc/Dockerfile`](https://gitlab.com/openconnect/ics-openconnect/-/blob/master/misc/Dockerfile).
-
-### Compiling the external dependencies
-
-Building OpenConnect from source requires compiling several .jar files and
-native binaries from external packages.  These commands will build the binary
-components and copy them into the appropriate library and asset directories:
-
-```sh
-git clone --recursive https://gitlab.com/openconnect/ics-openconnect
-cd ics-openconnect
-make -C external
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm \
+  -v "$PWD":/app \
+  -v "$HOME/.gradle-cache":/gradle-home \
+  -e GRADLE_USER_HOME=/gradle-home -w /app \
+  mingc/android-build-box@sha256:47a26138302605eb8a37b024e8a263af0812c14800813458bc674df47cc26331 \
+  sh gradlew :app:testDebugUnitTest assembleDebug --console=plain
 ```
 
-This procedure only runs on a Linux PC.  If you are unable to build from
-source, you can try fetching the cached artifacts from a recent [CI build](https://gitlab.com/openconnect/ics-openconnect/-/pipelines).
+成果物は `app/build/outputs/apk/debug/app-debug.apk` です。詳細は
+[docs/BUILD.md](docs/BUILD.md) を参照してください。
 
+## インストール（ADB でのサイドロード）
 
-### Compiling the app
+Fire TV の「設定 → My Fire TV → 開発者オプション」で ADB デバッグを有効にし、
 
-After the binary components are built, this compiles the Java sources into
-an APK file:
-
-```sh
-cd ics-openconnect
-./gradlew assembleDebug
+```bash
+adb connect <Fire TV の IP>:5555
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-To install the APK on a device:
+## 使い方
 
-    adb install -r app/build/outputs/apk/debug/app-debug.apk
+| したいこと | 操作 |
+|---|---|
+| 接続・切断 | 行に合わせて決定 |
+| グループを編集（並び替え・自動切替 ON/OFF・削除） | グループの行を長押し |
+| 接続先を編集 | 接続先の行に決定 |
+| 接続先を削除 | 接続先の行を長押し → 確認 |
+| 接続先を追加 | 一覧の一番下「＋ 接続先を追加」 |
+| 疎通確認の設定 | 右上の「設定」 |
 
-Logs of successful (and not-so-successful) builds can be found on this project's
-[CI page](https://gitlab.com/openconnect/ics-openconnect/-/pipelines).
+文字入力は、欄に合わせて決定するとソフトキーボードが出ます。**戻るボタンを2回**
+押すと欄から抜けます（1回目でキーボードが閉じ、2回目で欄を出ます）。
+
+## 既知の制限・注意
+
+- **画面が消灯すると VPN は切断されます。** これは意図した仕様です。Fire TV は
+  消灯中に Doze へ入ってアプリの処理を止めるため、「繋がっているつもりで
+  実際は死んでいる」状態を作るより、明示的に切る方を選びました。点灯時に繋ぎ直します。
+- **Fire TV の IME が描画しなくなることがあります。** 端末側の問題で、その場合は
+  キーボードが一切出ません。**端末を再起動すると直ります**（実機で確認）。
+- **`adb install -r` の直後は、ランチャーのタイルが空（四角＋プラス）になります。**
+  端末を再起動すると正しいアイコンに戻ります。アプリの欠陥ではありません。
+- **日本語の入力は想定していません。** サーバ URL の欄は ASCII 系の IME を要求します。
+- 実機で未検証の項目があります。[docs/MANUAL-TEST.md](docs/MANUAL-TEST.md) に
+  **確認済みと未確認を分けて**記載しています。
+
+## テスト
+
+```bash
+# 上のビルドコマンドに含まれています
+sh gradlew :app:testDebugUnitTest
+```
+
+フェイルオーバーの状態機械は Android に依存しない純 Kotlin なので、
+JVM のユニットテストで挙動を固定しています。Compose の画面はユニットテストで
+押さえられないため、実機での確認手順を [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md)
+に残しています。
+
+## ライセンス
+
+GPLv2 です。上流と同じく [COPYING](COPYING) を参照してください。
+上流のコードの著作権は各著作者に帰属します。
+
+このフォークは無保証です。VPN の設定を誤ると通信が意図しない経路を通る可能性が
+あります。自己責任でご利用ください。
