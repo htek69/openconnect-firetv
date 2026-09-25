@@ -8,6 +8,11 @@ operable with the TV remote alone. This is a fork of
 (GPLv2); the VPN core is upstream's, the TV UI and the failover engine are new.
 Source comments and docs are in Japanese.
 
+**The new code in this fork was written by AI** (Claude Code — Anthropic's
+Claude Opus 5 / Sonnet 5), directed and reviewed by the repository owner. The
+VPN core itself is upstream's, human-written code. No independent human security
+audit has been performed. See the section 「このリポジトリの成り立ち」 below.
+
 ---
 
 ## これは何か
@@ -115,6 +120,48 @@ sh gradlew :app:testDebugUnitTest
 JVM のユニットテストで挙動を固定しています。Compose の画面はユニットテストで
 押さえられないため、実機での確認手順を [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md)
 に残しています。
+
+## このリポジトリの成り立ち（AI による実装であることの明示）
+
+**このフォークで新しく書いたコードは、[Claude Code](https://claude.com/claude-code)
+（Anthropic の Claude Opus 5 / Sonnet 5）が書いています。** 利用にあたって知って
+おいていただくべきことなので、隠さず書きます。
+
+内訳は次のとおりです。
+
+| | 行数 | 誰が書いたか |
+|---|---|---|
+| TV UI とフェイルオーバー（新規 Kotlin） | 約 5,800 | **AI** |
+| そのユニットテスト | 約 4,700 | **AI** |
+| VPN の中核（Java / C、上流から継承） | 約 6,700＋ | 上流の作者（人間） |
+
+**VPN の通信そのものを担う部分は上流のコードであり、AI は書いていません。**
+`external/openconnect`（OpenConnect 本体）にも手を入れていません。
+
+### 人間が担ったこと
+
+AI が自律的に企画したものではありません。リポジトリの所有者が、
+
+- 何を作るか（複数の接続先・自動切替・リモコンだけで操作）を決め、
+- 設計上の判断（消灯時は VPN を切る、独自ソフトキーボードは作らない、
+  画面の配色など）を下し、
+- 実機を操作し、
+- **AI が「直った」と誤って結論づけたのを、画面を見て2回指摘して正しました。**
+
+2回とも AI 側の計測が不十分だったことが原因です（テレビが消灯していたのに
+気づかず回帰と誤認した件、注入したキーイベントが IME に届かない既知の制約を
+不具合と誤認した件）。**この種の間違いは起こりうる**という前提で読んでください。
+
+### 検証の範囲
+
+- ユニットテスト 258 件（フェイルオーバーの状態機械は Android 非依存の
+  純 Kotlin なので、JVM のテストで挙動を固定しています）
+- 実機（Fire TV Stick 4K）での確認。**確認済みと未確認を分けて**
+  [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md) に記載しています
+- コードレビューも AI が行っています。人間による独立した監査は受けていません
+
+**VPN クライアントは通信の経路を左右するソフトウェアです。** 上記を踏まえ、
+必要ならご自身でコードを確認したうえでご利用ください。
 
 ## ライセンス
 
