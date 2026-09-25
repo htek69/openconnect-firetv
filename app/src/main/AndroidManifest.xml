@@ -104,8 +104,17 @@
             android:uiOptions="splitActionBarWhenNarrow"
             tools:ignore="ExportedActivity" />
 
+        <!--
+            裁定89: android:banner は <application> にも指定してあるが、Fire TV の
+            ランチャーは LEANBACK_LAUNCHER を持つ**アクティビティ**の banner を読む。
+            アクティビティ側が空だとアイコンにフォールバックし、灰色地にロゴだけの
+            タイルになる（実機で確認: aapt2 の badging が
+            `leanback-launchable-activity: ... banner=''` を報告していた）。
+            ここを消すと同じ見た目に戻るので消さないこと。
+        -->
         <activity
             android:name=".tv.TvMainActivity"
+            android:banner="@drawable/banner"
             android:exported="true"
             android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
