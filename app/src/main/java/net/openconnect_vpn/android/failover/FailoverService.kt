@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
@@ -68,9 +69,28 @@ class FailoverService : Service() {
     private var probeTarget: ProbeTarget = ProbeTarget()
 
     /**
-     * onCreate で読み込んだグループ一覧。Ruling 5 のプローブタイムアウト解決のために、
-     * 現在の状態が指す groupId からここを引いて config を取り出す。
-     * FailoverController には新しい公開APIを足さない。
+     * 裁定48/72: TV UI が保存したグループ・プローブ宛先の変更を検知するための
+     * リスナ。onCreate で登録し onDestroy で解除する。[FailoverController] には
+     * `{ groups }` という供給関数を渡してあるので、このサービスが持つ [groups]
+     * を差し替えるだけでコントローラ側の次回参照から新しい値が見える。
+     * ここでは [groups]/[probeTarget] を更新して [wakeLoop] を早起こしする
+     * だけでよい（コントローラを作り直さない。作り直すと接続中の状態・
+     * 除外集合・世代カウンタを失う）。
+     */
+    private lateinit var prefs: SharedPreferences
+    private val prefsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (!groupStore.isReloadTriggerKey(key)) return@OnSharedPreferenceChangeListener
+            reloadGroupsAndProbeTarget()
+        }
+
+    /**
+     * 裁定72-fix(F4): onCreate で最初に読み込み、以後は [reloadGroupsAndProbeTarget]
+     * が SharedPreferences の変更を検知するたびに読み直す、生きているグループ一覧
+     * （もう「onCreate 時点で固定」ではない）。Ruling 5 のプローブタイムアウト解決
+     * のために、現在の状態が指す groupId からここを引いて config を取り出す。
+     * FailoverController にはこのフィールド専用の新しい公開APIを足さない
+     * （`groupsProvider = { groups }` としてコンストラクタに渡すだけでよい）。
      */
     private var groups: List<FailoverGroup> = emptyList()
 
@@ -139,7 +159,7 @@ class FailoverService : Service() {
      */
     private fun onScreenOff() {
         if (controller.state is FailoverState.Idle) return
-        Log.d(HARNESS_TAG, "screen off -> disconnect")
+        Log.d(LOG_TAG, "screen off -> disconnect")
         dispatchExternal(FailoverEvent.UserDisconnect)
     }
 
@@ -160,7 +180,7 @@ class FailoverService : Service() {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
             return
         }
-        Log.d(HARNESS_TAG, "screen on -> reconnect $activeGroupId")
+        Log.d(LOG_TAG, "screen on -> reconnect $activeGroupId")
         dispatchExternal(FailoverEvent.AutoConnectGroup(activeGroupId))
     }
 
@@ -170,7 +190,7 @@ class FailoverService : Service() {
         startForegroundCompat("待機中")
         lastForegroundText = "待機中"
 
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        prefs = PreferenceManager.getDefaultSharedPreferences(this)
         groupStore = GroupStore(PrefsKeyValueStore(prefs))
         probe = TcpHealthProbe()
         networkGate = ConnectivityNetworkGate(this)
@@ -187,7 +207,7 @@ class FailoverService : Service() {
 
         groups = groupStore.loadGroups(knownUuids)
         controller = FailoverController(
-            groups = groups,
+            groupsProvider = { groups },
             clock = SystemClock(),
             vpn = OpenConnectVpnController(this),
             network = networkGate,
@@ -196,6 +216,7 @@ class FailoverService : Service() {
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
         bridge.register()
         registerScreenReceiver()
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
         wakeLock = powerManager
@@ -255,35 +276,8 @@ class FailoverService : Service() {
                 groupStore.saveActiveGroupId(null)
                 dispatchExternal(FailoverEvent.UserDisconnect)
             }
-
-            // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの分岐も削除すること。
-            ACTION_SET_PROBE_TARGET -> {
-                val host = intent.getStringExtra(EXTRA_PROBE_HOST)
-                val port = intent.getIntExtra(EXTRA_PROBE_PORT, -1)
-                if (host != null && port in 1..65535) {
-                    val target = ProbeTarget(host = host, port = port)
-                    groupStore.saveProbeTarget(target)
-                    probeTarget = target
-                    Log.d(HARNESS_TAG, "probeTarget set to $target")
-                } else {
-                    Log.w(HARNESS_TAG, "ignored invalid SET_PROBE_TARGET host=$host port=$port")
-                }
-                logHarnessState()
-            }
         }
         return START_STICKY
-    }
-
-    /**
-     * Task 13 検証ハーネス用。コントローラの状態とプローブ宛先を distinctive tag で
-     * ログに出す。FailoverDebugReceiver 削除時にこのメソッドと呼び出し箇所も削除すること。
-     */
-    private fun logHarnessState() {
-        Log.d(
-            HARNESS_TAG,
-            "state=${controller.state} excludedUuids=${controller.excludedUuids} " +
-                "needsUserConsent=${controller.needsUserConsent} probeTarget=$probeTarget",
-        )
     }
 
     /**
@@ -306,7 +300,7 @@ class FailoverService : Service() {
         // 起動時に、消灯中の端末で勝手に繋ぎ始めないようにする。点灯時に
         // onScreenOn() が繋ぎ直す。
         if (!screenOn) {
-            Log.d(HARNESS_TAG, "restore skipped: screen is off")
+            Log.d(LOG_TAG, "restore skipped: screen is off")
             return
         }
         if (VpnService.prepare(this) == null) {
@@ -319,10 +313,30 @@ class FailoverService : Service() {
     }
 
     /**
+     * 裁定48/72: TV UI が保存したグループ一覧またはプローブ宛先が変わったときに
+     * [prefsListener] から呼ばれる。[FailoverController] を作り直さず、
+     * コンストラクタに渡した供給関数 `{ groups }` が次に参照したときに新しい
+     * 値を返せるよう、この [groups] フィールドを差し替えるだけでよい。
+     * [probeTarget] も同様に読み直す。最後に [wakeLoop] を早起こしし、次の
+     * Tick 分の遅延を待たずに新しい設定（特に R6 の自動切替 ON/OFF）を
+     * 反映させる。
+     *
+     * `ProfileManager.getProfiles()` は [onCreate] と同じ理由（既に削除された
+     * プロファイルの UUID をメンバーから除去する）で毎回引き直す。
+     */
+    private fun reloadGroupsAndProbeTarget() {
+        val knownUuids = ProfileManager.getProfiles().map { it.getUUIDString() }.toSet()
+        groups = groupStore.loadGroups(knownUuids)
+        probeTarget = groupStore.loadProbeTarget()
+        wakeLoop.trySend(Unit)
+    }
+
+    /**
      * 裁定43（欠陥17）: 状態機械が動いているあいだ CPU を起こしておく。
      *
      * 実機で観測した欠陥17: 画面消灯後、**68分間 tick が1度も走らなかった**
-     * （`logHarnessState()` は dispatch のたびに呼ばれるので、ログ0行＝tick 0回）。
+     * （当時は Task 13 の検証ハーネスが dispatch のたびに状態をログへ出していた
+     * ので、ログ0行＝tick 0回と読めた。ハーネスは裁定86（L2）で削除済み）。
      * コルーチンの `delay` は端末が深いスリープに入ると発火しない。つまり
      * 画面消灯中はフェイルオーバー機能が丸ごと停止し、トンネルが落ちても
      * 復旧しない。Fire TV はほとんどの時間眠っている機器なので、実運用時間の
@@ -335,16 +349,26 @@ class FailoverService : Service() {
      *
      * これで足りるかどうかは実機で測る。足りなければ
      * `AlarmManager.setExactAndAllowWhileIdle()` による起床へ設計変更する。
+     *
+     * 裁定88（Low 1）: 保持の条件を `state !is Idle` から
+     * [FailoverController.requiresCpuAwake] に移した。裁定86（H2）以降、
+     * 「前進できないと分かっている `FailingOver`（下層ネットが無い）」に
+     * 留まったまま wake lock を握り続ける状態が日常操作から作れるように
+     * なったためである（理由と S2 を壊していない根拠は
+     * [FailoverController.requiresCpuAwake] の KDoc を参照）。判断そのものを
+     * 状態機械側に置くのは、ここが「状態機械が動いているあいだ」という
+     * 意味をそのまま尋ねる場所であり、条件を Android 側に写し取ると
+     * 両者がずれるから。
      */
     private fun syncWakeLock() {
-        val shouldHold = controller.state !is FailoverState.Idle
+        val shouldHold = controller.requiresCpuAwake()
         val lock = wakeLock ?: return
         if (shouldHold && !lock.isHeld) {
             runCatching { lock.acquire() }
-            Log.d(HARNESS_TAG, "wakeLock acquired")
+            Log.d(LOG_TAG, "wakeLock acquired")
         } else if (!shouldHold && lock.isHeld) {
             runCatching { lock.release() }
-            Log.d(HARNESS_TAG, "wakeLock released")
+            Log.d(LOG_TAG, "wakeLock released")
         }
     }
 
@@ -363,6 +387,15 @@ class FailoverService : Service() {
 
     private fun dispatch(event: FailoverEvent) {
         controller.handle(event)
+        // 裁定58: Fire TV に通知シェードは無く、フォアグラウンド通知だけでは
+        // UI に接続状態が届かない。同一プロセス内の読み取り専用投影へ、
+        // 状態機械（真実）が変わるたびに publish する。
+        // 裁定65（指摘8）: 現在対象のグループも、このサービスが実際に使っている
+        // 一覧（`groups`。裁定72-fix(F4): onCreate 時点で固定ではなく、
+        // reloadGroupsAndProbeTarget が読み直すたびに更新される）から一緒に
+        // publish する。UI 側で GroupStore から読み直した一覧と世代がずれても、
+        // 名前解決をこの一覧と照合できるようにするため。
+        FailoverStateHolder.publish(controller.state, currentGroup())
         syncWakeLock()
         updateForegroundText()
         // 裁定41（M5）: lastNeedsUserConsent の説明を参照。
@@ -375,8 +408,6 @@ class FailoverService : Service() {
                 FailoverNotifications.cancelAlert(this)
             }
         }
-        // Task 13 検証ハーネス用。FailoverDebugReceiver 削除時にこの行も削除すること。
-        logHarnessState()
     }
 
     /**
@@ -445,6 +476,20 @@ class FailoverService : Service() {
         is FailoverState.Exhausted -> s.groupId
     }
 
+    /**
+     * 裁定65（指摘8）: [FailoverStateHolder] へ publish する、現在対象のグループ。
+     * このサービスが実際に [controller] へ供給関数経由で渡している [groups]
+     * （裁定72-fix(F4): onCreate 時点で固定ではなく、
+     * [reloadGroupsAndProbeTarget] が読み直すたびに更新される）から引く。
+     * `dispatch` 内で `controller.handle` の直後・`publish` の直前に呼ばれ、
+     * `groups` の再代入はメインスレッドの `prefsListener` からしか起きないので、
+     * この呼び出しの間に差し替わることはない。UI 側が `GroupStore` から独自に
+     * 読み直した一覧と世代がずれることはあっても、それはこちらではなく UI 側の
+     * 問題なので、参照元として信頼できるのはこちらである。
+     */
+    private fun currentGroup(): FailoverGroup? =
+        currentGroupId()?.let { id -> groups.firstOrNull { it.id == id } }
+
     private fun startForegroundCompat(text: String) {
         val notification = FailoverNotifications.foreground(this, text)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -459,11 +504,15 @@ class FailoverService : Service() {
     }
 
     override fun onDestroy() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         bridge.unregister()
         runCatching { unregisterReceiver(screenReceiver) }
         loop?.cancel()
         scope.cancel()
         wakeLock?.let { if (it.isHeld) runCatching { it.release() } }
+        // 裁定58: サービスが止まったら投影も Idle に戻す。そうしないと、
+        // 停止済みサービスの代わりに UI が存在しない接続を表示し続けてしまう。
+        FailoverStateHolder.reset()
         // wakeLoop は明示的に close しない。CONFLATED チャネルは close を必要とせず
         // サービスと一緒に回収される。一方 close すると「閉じたチャネルへ receive が
         // 再入すると ClosedReceiveChannelException が SupervisorJob 配下の launch から
@@ -480,12 +529,19 @@ class FailoverService : Service() {
         const val ACTION_DISCONNECT = "net.openconnect_vpn.android.failover.DISCONNECT"
         const val EXTRA_GROUP_ID = "net.openconnect_vpn.android.failover.GROUP_ID"
 
-        // Task 13 検証ハーネス用の一時的なアクション。FailoverDebugReceiver とセットで
-        // ブランチ完了前に削除すること。
-        const val ACTION_SET_PROBE_TARGET = "net.openconnect_vpn.android.failover.SET_PROBE_TARGET"
-        const val EXTRA_PROBE_HOST = "net.openconnect_vpn.android.failover.PROBE_HOST"
-        const val EXTRA_PROBE_PORT = "net.openconnect_vpn.android.failover.PROBE_PORT"
-        private const val HARNESS_TAG = "FailoverTask13Harness"
+        /**
+         * 裁定86（L2）: Task 13 の検証ハーネス（`FailoverDebugReceiver`・
+         * `ACTION_SET_PROBE_TARGET`・`logHarnessState`・`setProbeTarget`）は
+         * 削除した。ハーネス自身の KDoc が「TV UI が `connectGroup` /
+         * `disconnect` を呼べるようになったら削除する」と約束しており、その条件が
+         * このブランチで満たされたため。
+         *
+         * このタグは残す。ハーネスと同時に導入したが、ハーネス専用ではなく
+         * 画面の消灯・点灯、プロセス kill からの復帰、wake lock の取得・解放
+         * （裁定43・裁定44 で実機の挙動を追うのに使った）を記録しているため。
+         * ハーネスを指す名前のままでは誤読を招くので、名前と値を実体に合わせた。
+         */
+        private const val LOG_TAG = "FailoverService"
 
         private const val TICK_INTERVAL_MS = 5_000L
 
@@ -507,19 +563,6 @@ class FailoverService : Service() {
         fun disconnect(context: Context) {
             val intent = Intent(context, FailoverService::class.java).apply {
                 action = ACTION_DISCONNECT
-            }
-            startCompat(context, intent)
-        }
-
-        /**
-         * Task 13 検証ハーネス用。FailoverDebugReceiver からのみ呼ばれる想定。
-         * FailoverDebugReceiver 削除時にこのメソッドとその呼び出し元も削除すること。
-         */
-        fun setProbeTarget(context: Context, host: String, port: Int) {
-            val intent = Intent(context, FailoverService::class.java).apply {
-                action = ACTION_SET_PROBE_TARGET
-                putExtra(EXTRA_PROBE_HOST, host)
-                putExtra(EXTRA_PROBE_PORT, port)
             }
             startCompat(context, intent)
         }

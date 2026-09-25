@@ -12,7 +12,7 @@ class FailoverControllerExhaustionTest {
     private lateinit var network: FakeNetworkGate
 
     private fun controllerFor(group: FailoverGroup) =
-        FailoverController(listOf(group), clock, vpn, network)
+        FailoverController({ listOf(group) }, clock, vpn, network)
 
     private fun group(auto: Boolean = true) = FailoverGroup(
         id = "g1",

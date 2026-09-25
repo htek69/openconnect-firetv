@@ -102,11 +102,14 @@
             android:exported="true"
             android:name=".MainActivity"
             android:uiOptions="splitActionBarWhenNarrow"
-            tools:ignore="ExportedActivity" >
+            tools:ignore="ExportedActivity" />
+
+        <activity
+            android:name=".tv.TvMainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.BROWSABLE" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
@@ -129,14 +132,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn_failover_monitoring" />
         </service>
-
-        <!-- Task 13 検証ハーネス。TEMPORARY: delete before this branch is considered finished.
-             FailoverService 自体は exported="false" のまま変更しない。adb (uid 2000) からは
-             届かないため、この受信機だけを exported にして既存のコンパニオンメソッドへ転送する。 -->
-        <receiver
-            android:name=".failover.FailoverDebugReceiver"
-            android:exported="true"
-            android:permission="android.permission.DUMP" />
 <!--
         <service
             android:name=".api.ExternalOpenVPNService"

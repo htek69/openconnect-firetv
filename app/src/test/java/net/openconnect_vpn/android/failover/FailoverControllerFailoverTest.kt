@@ -26,7 +26,7 @@ class FailoverControllerFailoverTest {
         clock = FakeClock(1_000L)
         vpn = FakeVpnController()
         network = FakeNetworkGate(available = true)
-        controller = FailoverController(listOf(group), clock, vpn, network)
+        controller = FailoverController({ listOf(group) }, clock, vpn, network)
     }
 
     @Test
@@ -243,7 +243,7 @@ class FailoverControllerFailoverTest {
             autoFailoverEnabled = true,
             config = FailoverConfig(),
         )
-        val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
+        val soloController = FailoverController({ listOf(soloGroup) }, clock, vpn, network)
         soloController.handle(FailoverEvent.UserConnectGroup("g1"))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
@@ -278,7 +278,7 @@ class FailoverControllerFailoverTest {
             autoFailoverEnabled = false,
             config = FailoverConfig(),
         )
-        val manualController = FailoverController(listOf(manualGroup), clock, vpn, network)
+        val manualController = FailoverController({ listOf(manualGroup) }, clock, vpn, network)
         manualController.handle(FailoverEvent.UserConnectGroup("g1"))
         manualController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))
         clock.advance(16_000L)
@@ -501,7 +501,7 @@ class FailoverControllerFailoverTest {
             autoFailoverEnabled = true,
             config = FailoverConfig(),
         )
-        val soloController = FailoverController(listOf(soloGroup), clock, vpn, network)
+        val soloController = FailoverController({ listOf(soloGroup) }, clock, vpn, network)
         soloController.handle(FailoverEvent.UserConnectGroup("g1"))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
         soloController.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected))

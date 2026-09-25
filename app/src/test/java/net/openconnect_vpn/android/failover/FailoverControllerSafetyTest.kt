@@ -26,7 +26,7 @@ class FailoverControllerSafetyTest {
         clock = FakeClock(1_000L)
         vpn = FakeVpnController()
         network = FakeNetworkGate(available = true)
-        controller = FailoverController(listOf(group), clock, vpn, network)
+        controller = FailoverController({ listOf(group) }, clock, vpn, network)
     }
 
     // --- S1: 認証失敗した候補は再試行しない ---
@@ -241,6 +241,88 @@ class FailoverControllerSafetyTest {
         // 新しい候補は S4 期間中なので shouldProbeNow() は false のはずだが、
         // 復帰フラグが漏れていると true になってしまう。
         assertFalse(controller.shouldProbeNow())
+    }
+
+    // --- 裁定88（Low 1）: 前進できない FailingOver では CPU を起こし続けない ---
+
+    @Test
+    fun `裁定88 Idle では CPU を起こさず監視中の状態では起こす`() {
+        assertFalse(controller.requiresCpuAwake())
+
+        toHealthy()
+        assertTrue(controller.requiresCpuAwake())
+
+        controller.handle(FailoverEvent.UserDisconnect)
+        assertFalse(controller.requiresCpuAwake())
+    }
+
+    @Test
+    fun `裁定88 網がある切替中は CPU を起こす`() {
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertTrue(controller.requiresCpuAwake())
+    }
+
+    /**
+     * 裁定88（Low 1）の本題。裁定86（H2）以降に日常操作から踏めるようになった
+     * 「wake lock を握ったまま停まる」状態を再現し、握らないことを固定する。
+     * 同時に S2（網が無いときは切り替えない）が生きていること——`FailingOver`
+     * から前進せず `vpn.connect()` も増えないこと——を同じテストで見る。
+     */
+    @Test
+    fun `裁定88 放棄候補を抱えたまま網無しで点灯すると切替中に留まるが CPU は起こさない`() {
+        // 1. uuid-a で Healthy になり、プローブ失敗3回で切替に入る。
+        toHealthy()
+        repeat(3) {
+            clock.advance(31_000L)
+            controller.handle(FailoverEvent.ProbeResult(reachable = false))
+        }
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // 2. 切断の確認が届かないまま DISCONNECT_WAIT_MS が過ぎ、
+        //    onFailingOverTimeout が uuid-a を「未確認の放棄候補」として
+        //    ラッチしたうえで uuid-b へ進む。
+        clock.advance(3_000L)
+        controller.handle(FailoverEvent.Tick)
+        assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
+
+        // 3. 画面消灯（裁定44）で Idle に落ちる。
+        controller.handle(FailoverEvent.UserDisconnect)
+        assertTrue(controller.state is FailoverState.Idle)
+        assertFalse(controller.requiresCpuAwake())
+
+        // 4. 下層ネットが無い状態で点灯（裁定44 の AutoConnectGroup）。
+        //    裁定86（H2）の stopBeforeStarting が放棄候補の切断を待つため
+        //    FailingOver に入る。
+        network.available = false
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = false))
+        val callsBefore = vpn.connectCalls.size
+        controller.handle(FailoverEvent.AutoConnectGroup("g1"))
+
+        assertTrue(controller.state is FailoverState.FailingOver)
+        // S2: 網が無いので候補は起動していない。
+        assertEquals(callsBefore, vpn.connectCalls.size)
+        // 裁定88: この状態の状態機械にできることは何も無いので CPU を起こさない。
+        assertFalse(controller.requiresCpuAwake())
+
+        // 5. 待ち時間が過ぎても網が無い限り前進しない（S2）。wake lock も握らない。
+        clock.advance(3_000L)
+        controller.handle(FailoverEvent.Tick)
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals(callsBefore, vpn.connectCalls.size)
+        assertFalse(controller.requiresCpuAwake())
+
+        // 6. 網が戻ったら前進し、CPU を起こす側に戻る。
+        network.available = true
+        controller.handle(FailoverEvent.UnderlyingNetworkChanged(available = true))
+        controller.handle(FailoverEvent.Tick)
+        assertTrue(controller.requiresCpuAwake())
+        assertEquals("uuid-a", vpn.connectCalls.last())
     }
 
     private fun toHealthy() {
@@ -524,7 +606,7 @@ class FailoverControllerSafetyTest {
             autoFailoverEnabled = true,
             config = FailoverConfig(connectTimeoutSec = 8),
         )
-        val shortController = FailoverController(listOf(shortTimeoutGroup), clock, vpn, network)
+        val shortController = FailoverController({ listOf(shortTimeoutGroup) }, clock, vpn, network)
 
         // UserConnectGroup は unattended = false になり、UserPrompt タイムアウトの
         // 対象外になってしまう（画面の前にいるので待たせてよい）ので、uuid-a を
@@ -673,10 +755,27 @@ class FailoverControllerSafetyTest {
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
         controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
         assertTrue("uuid-a" in controller.excludedUuids)
+        // uuid-a が除外され、自動的に次候補（uuid-b）へ進んでいる（生きている可能性がある）。
+        assertTrue(controller.state is FailoverState.Connecting)
+        // 裁定31: uuid-b の試行についても実機同様、自分の Connecting を観測させる
+        // （でないと、この後の Disconnected 確認が「まだ Connecting を見ていない
+        // 旧スレッドのもの」として捨てられてしまう）。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
 
+        // 裁定59: このときの状態（Connecting）は「生きている可能性のある候補がある」
+        // に該当するため、同じグループへの再指示であっても Ruling 25 の2段階を
+        // 経由する（uuid-b の切断完了を待ってから uuid-a を起動する）。
+        // ここで即座に vpn.connect("uuid-a") を呼んでしまうと、uuid-b 側のスレッドが
+        // 後から tun を取る事故（裁定59 がまさに防いでいるもの）が同じグループ内でも
+        // 起こりうる。
         controller.handle(FailoverEvent.UserConnectGroup("g1"))
 
         assertTrue(controller.excludedUuids.isEmpty())
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals("uuid-b", vpn.connectCalls.last()) // まだ uuid-a へは繋いでいない
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-b"))
+
         assertEquals("uuid-a", vpn.connectCalls.last())
     }
 

@@ -9,6 +9,24 @@ data class ProbeTarget(
     val port: Int = 443,
 )
 
+/**
+ * 裁定74: プローブ間隔と失敗閾値はアプリ全体で1つだけ持つ（[FailoverGroup.config] は
+ * データ上グループ単位だが、それを個別に編集させる UI は無く、設定画面は
+ * この2値を「アプリ全体の設定」として1個だけ見せる。ストアの形が UI の見せ方と
+ * 食い違うと、設定画面が表示した値がどのグループにも効いていない、あるいは
+ * 一部のグループにしか効いていない、という嘘が生まれる）。
+ *
+ * [GroupStore.loadGroups] がこの値を読み込んだ全グループの
+ * `config.probeIntervalSec` / `config.failureThreshold` に上書きするため、
+ * [net.openconnect_vpn.android.failover.FailoverController] 側は変更なしで
+ * 引き続き `FailoverGroup.config` だけを読めばよい。
+ */
+@Serializable
+data class ProbeSchedule(
+    val probeIntervalSec: Int,
+    val failureThreshold: Int,
+)
+
 /** フェイルオーバーの挙動を決めるパラメータ。 */
 @Serializable
 data class FailoverConfig(
