@@ -95,4 +95,18 @@ public class CertWarningDialog extends UserDialog
 			mAlert.dismiss();
 		}
 	}
+
+	/* 裁定95: 取り消しでは証明書を受け入れない。呼び出し元は Integer にキャストする。 */
+	@Override
+	protected Object cancelResult() {
+		return Integer.valueOf(RESULT_NO);
+	}
+
+	@Override
+	public void dismissDialog() {
+		if (mAlert != null) {
+			mAlert.dismiss();
+			mAlert = null;
+		}
+	}
 }

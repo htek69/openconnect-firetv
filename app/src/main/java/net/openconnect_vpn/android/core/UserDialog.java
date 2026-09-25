@@ -43,16 +43,25 @@ public abstract class UserDialog {
 		mPrefs = prefs;
 	}
 
+	/*
+	 * 裁定95: mResult の検査を synchronized の外に置いていた元の形は起床を
+	 * 落としうる（検査で null を見た直後に cancel()/finish() が結果を入れて
+	 * notifyAll しても、まだ wait() に入っていないので通知が届かず、その後
+	 * 入った wait() は誰にも起こされない）。裁定95 は「取り消しは必ず
+	 * スレッドを起こす」ことを要求するので、検査と wait を同じモニタの
+	 * 中に入れた教科書どおりの形に直す。ループの本体は wait() だけであり、
+	 * wait() はモニタを解放するので、保持期間が伸びても他者を待たせない。
+	 */
 	public Object waitForResponse() {
-		while (mResult == null) {
-			synchronized (this) {
+		synchronized (this) {
+			while (mResult == null) {
 				try {
 					this.wait();
 				} catch (InterruptedException e) {
 				}
 			}
+			return mResult;
 		}
-		return mResult;
 	}
 
 	protected void finish(Object result) {
@@ -62,6 +71,52 @@ public abstract class UserDialog {
 				this.notifyAll();
 			}
 		}
+	}
+
+	/**
+	 * 裁定95: 止めると決めた候補の保留中ダイアログを畳むための公開の取り消し口。
+	 *
+	 * <p>{@link #finish(Object)} は {@code mDialogUp} に守られているため、
+	 * Activity が前面に無い間は結果が入らない。そのため候補を見捨てても VPN
+	 * スレッドは {@link #waitForResponse()} で park したままになり、
+	 * {@code AlertDialog} も画面に残り続ける（実機では見捨てた候補のダイアログが
+	 * 2枚積まれ、利用者が幽霊に認証情報を入力していた）。取り消しは
+	 * {@code mDialogUp} に関わらず結果を入れてスレッドを起こす。
+	 *
+	 * <p>呼び出し元のスレッドは問わない。Android のビューに触る後始末は
+	 * {@link #dismissDialog()} に分けてあり、そちらは UI スレッドから呼ぶこと。
+	 */
+	public final void cancel() {
+		synchronized (this) {
+			if (mResult == null) {
+				mResult = cancelResult();
+			}
+			// 以降 finish() に答えを差し替えさせない（畳んだ AlertDialog の
+			// onDismiss がこの後 UI スレッドで走るため）
+			mDialogUp = false;
+			this.notifyAll();
+		}
+	}
+
+	/**
+	 * 取り消し時に {@link #waitForResponse()} が返す値。
+	 *
+	 * <p>呼び出し元（{@code OpenConnectManagementThread}）は派生ごとに具体型へ
+	 * キャストするので、キャストされる派生は必ず上書きすること。既定値は
+	 * 非 null である（null では park したスレッドが起きない）。戻り値を読まない
+	 * {@code ErrorDialog} の通常結果と同じ Boolean に合わせてある。
+	 */
+	protected Object cancelResult() {
+		return Boolean.FALSE;
+	}
+
+	/**
+	 * 描画済みのダイアログを畳む。UI スレッドから呼ぶこと。
+	 *
+	 * <p>{@link #onStop(Context)} と違い、利用者が入力した値を保存してはならない。
+	 * 見捨てた候補のダイアログに打ち込まれた資格情報を残さないためである。
+	 */
+	public void dismissDialog() {
 	}
 
 	private abstract class DeferredPref {

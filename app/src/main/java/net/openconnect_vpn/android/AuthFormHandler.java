@@ -510,4 +510,28 @@ public class AuthFormHandler extends UserDialog
 			mAlert = null;
 		}
 	}
+
+	/**
+	 * 裁定95: 候補を止めるときの取り消し結果。onDismiss（:118）と
+	 * BATCH_MODE_ABORTED（:466）が使う「利用者が取り消した」と同じ値で、
+	 * OpenConnectManagementThread はこれを Integer にキャストする。
+	 */
+	@Override
+	protected Object cancelResult() {
+		return LibOpenConnect.OC_FORM_RESULT_CANCELLED;
+	}
+
+	/**
+	 * 裁定95: onStop() と違い saveAndStore() は呼ばない。見捨てた候補の
+	 * ダイアログに打ち込まれた値（パスワードを含む）を保存しないためである。
+	 * ここで走る onDismiss も cancel() が mDialogUp を落とした後なので
+	 * 答えを差し替えない。
+	 */
+	@Override
+	public void dismissDialog() {
+		if (mAlert != null) {
+			mAlert.dismiss();
+			mAlert = null;
+		}
+	}
 }

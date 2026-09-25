@@ -179,6 +179,16 @@ public class OpenVpnService extends VpnService {
 	}
 
 	private void killVPNThread(boolean joinThread) {
+		// 裁定95: スレッドを止めると決めた時点で、その候補の保留中ダイアログを畳む。
+		// 畳まないと (1) 見捨てた候補の AlertDialog が画面に残り、利用者が既に
+		// 別候補で接続済みであることに気づかず幽霊に認証情報を入力してしまう
+		// （実機では2枚積まれ、1枚答えると次が現れた） (2) スレッドは
+		// waitForResponse() で park したままなので、下の join も必ず空振りする。
+		//
+		// ここは「候補を止める」3経路（onStartCommand の候補切替・stopVPN・
+		// onDestroy）すべての合流点であり、通常のログイン中には通らない。
+		// 人が入力している候補はそもそも裁定94 により停止対象にならない。
+		cancelActiveDialog();
 		if (doStopVPN() && joinThread) {
 			try {
 				mVPNThread.join(1000);
@@ -416,6 +426,42 @@ public class OpenVpnService extends VpnService {
 		mDialog = dialog;
 	}
 
+	/* promptUser() の後始末。別候補が既に自分のダイアログを立てていたら触らない */
+	private synchronized void clearDialog(UserDialog dialog) {
+		if (mDialog == dialog) {
+			mDialogContext = null;
+			mDialog = null;
+		}
+	}
+
+	/**
+	 * 裁定95: 止める候補の保留中ダイアログを畳む。
+	 *
+	 * park している VPN スレッドは先にこの場で起こす（UI スレッドの都合を待たない）。
+	 * AlertDialog の dismiss は Android のビューに触るので mHandler に載せる。
+	 * mDialog を null にするので、この後 Activity が startActiveDialog() を
+	 * 呼んでも描き直されず、updateNotification() の「入力が必要です」通知も消える。
+	 */
+	private void cancelActiveDialog() {
+		final UserDialog dialog;
+		synchronized (this) {
+			dialog = mDialog;
+			mDialogContext = null;
+			mDialog = null;
+		}
+		if (dialog == null) {
+			return;
+		}
+		dialog.cancel();
+		mHandler.post(new Runnable() {
+			@Override
+			public void run() {
+				dialog.dismissDialog();
+				updateNotification();
+			}
+		});
+	}
+
 	@SuppressWarnings("deprecation")
 	private void updateNotification() {
 		if (mDialog != null && mActivityConnections == 0 && !mNotificationActive) {
@@ -493,9 +539,12 @@ public class OpenVpnService extends VpnService {
 
 		setDialog(null, dialog);
 		wakeUpActivity();
-		ret = mDialog.waitForResponse();
+		// 裁定95: 待つ相手はフィールドではなく引数の dialog である。フィールドは
+		// 別候補の promptUser() や cancelActiveDialog() が差し替える／null にするため、
+		// フィールドを読むと他候補のダイアログを待ったり NPE になる。
+		ret = dialog.waitForResponse();
 
-		setDialog(null, null);
+		clearDialog(dialog);
 		return ret;
 	}
 

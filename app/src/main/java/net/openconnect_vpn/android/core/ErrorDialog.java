@@ -74,4 +74,16 @@ public class ErrorDialog extends UserDialog
 			mAlert.dismiss();
 		}
 	}
+
+	/*
+	 * 裁定95: cancelResult() は既定の Boolean をそのまま使う。通常結果も
+	 * Boolean で、呼び出し元（OpenConnectManagementThread:660）は戻り値を読まない。
+	 */
+	@Override
+	public void dismissDialog() {
+		if (mAlert != null) {
+			mAlert.dismiss();
+			mAlert = null;
+		}
+	}
 }
