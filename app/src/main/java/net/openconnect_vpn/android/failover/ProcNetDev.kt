@@ -4,6 +4,13 @@ package net.openconnect_vpn.android.failover
 data class IfaceBytes(val rxBytes: Long, val txBytes: Long)
 
 /**
+ * 列の区切り（連続する空白）。[parseProcNetDev] は毎ティック呼ばれるので、
+ * 行ごとに [Regex] を作り直さずここで1度だけ作る。挙動は同じで、
+ * 正規表現の中身を変えていないことがこのファイルの差分で分かるようにしてある。
+ */
+private val COLUMN_SEPARATOR = Regex("\\s+")
+
+/**
  * `/proc/net/dev` の内容から [iface] の行を探し、受信・送信の累計バイト数を返す。
  *
  * 書式は「`  tun0: <rx bytes> <rx packets> ... <tx bytes> <tx packets> ...`」で、
@@ -18,7 +25,7 @@ fun parseProcNetDev(text: String, iface: String): IfaceBytes? {
         val trimmed = line.trim()
         val name = trimmed.substringBefore(':', missingDelimiterValue = "")
         if (name != iface) continue
-        val cols = trimmed.substringAfter(':').trim().split(Regex("\\s+"))
+        val cols = trimmed.substringAfter(':').trim().split(COLUMN_SEPARATOR)
         if (cols.size < 9) return null
         val rx = cols[0].toLongOrNull() ?: return null
         val tx = cols[8].toLongOrNull() ?: return null
