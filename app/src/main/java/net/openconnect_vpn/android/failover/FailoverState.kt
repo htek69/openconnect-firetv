@@ -47,6 +47,14 @@ sealed interface FailoverState {
         val failedIndex: Int,
         val awaitingUuid: String?,
         val startedAtMs: Long,
+        /**
+         * この切替の理由がスループット低下（仕様書 4-3）か。死活起因の切替では
+         * false。UI が切替の理由を表示するために状態だけから読める必要があるため
+         * ここに置く（`HomeRows` は `FailoverState` しか受け取らない純粋関数で
+         * 組み立てるので、別経路では届かない）。既定値があるので既存の構築箇所は
+         * 無改変でそのまま従来の意味（死活起因）になる。
+         */
+        val bySlowLink: Boolean = false,
     ) : FailoverState
 
     /** グループ内の全候補が一巡して全滅した。バックオフ待ち。 */
