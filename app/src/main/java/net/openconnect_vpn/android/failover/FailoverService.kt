@@ -433,18 +433,39 @@ class FailoverService : Service() {
     /**
      * 仕様書 4-2: トンネルの累計バイト数を1回採取して判定器へ渡す。
      *
+     * 機能が無効なら**何もしない**（Fix 1）。既定は無効であり、Fire TV Stick は
+     * 非力な機器なので、使っていない機能のために毎ティック `/proc/net/dev` を
+     * 読んで解析する費用を全利用者に払わせる理由が無い。ここで返る分の判定は
+     * `slowLinkProvider`（`enabled` を先に見る）と二重になるが、そちらは
+     * 「無効なら切り替えない」、こちらは「無効なら測らない」であり別の目的である。
+     *
+     * 無効の期間をまたいで古い判定が生き残らないことは、判定器を**作り直す**
+     * ことで担保している（[reloadSlowLinkSettings]）。`enabled` が変われば
+     * [SlowLinkSettings] の値が変わるので、無効化した瞬間にも有効化した瞬間にも
+     * 新しい判定器に差し替わる。したがって
+     *
+     * - 無効化した時点で、それまでに数えた「遅い」の連続は消える
+     * - 有効化した時点の判定器は空で、`isSlow()` が真になるには有効化後に
+     *   改めて 60 秒ぶんの連続が必要になる（古い窓の再開にはならない）
+     *
+     * `reset()` を足すのではなく差し替えで済ませたのは、新しいインスタンスは
+     * 定義上あらゆる内部状態が初期値であり、「消し忘れた項目」が原理的に
+     * 存在しないためである（R12 の作り直しが同時にこの保証も与えている）。
+     *
      * **読めなかったときは [SlowLinkDetector.onSample] を呼ばない。**
      * 「測れない」を「遅い」と解釈してはならない。`?.let` がその唯一の関門で、
      * このサービスの中で `onSample` を呼ぶ場所はここだけである。
      * [ProcNetDevThroughputSource] は、ファイルが読めない場合と `tun0` の行が
      * 無い場合（＝切断中の通常の状態）の両方で null を返す。
      *
-     * 接続していない間も呼ぶが、それで誤判定は起きない。tun が無ければ
-     * null で何も渡らず、万一 tun が残っていてもカウンタは進まないので
-     * 送信速度が「使おうとしている」閾値を超えず、遅いとは判定されない。
+     * 機能が有効なら接続していない間も呼ぶが、それで誤判定は起きない。tun が
+     * 無ければ null で何も渡らず、万一 tun が残っていてもカウンタは進まないので
+     * 送信速度が「使おうとしている」閾値を超えず、`SlowLinkDetector` の else 側
+     * （条件が破れたら数え直す）に入って連続が 0 に戻る。
      * さらに候補が変われば [syncSlowLinkCandidate] が測り直させる。
      */
     private fun sampleThroughput() {
+        if (!slowLinkSettings.enabled) return
         throughputSource.read()?.let { slowLinkDetector.onSample(clock.nowMs(), it) }
     }
 
@@ -459,11 +480,12 @@ class FailoverService : Service() {
      * それを呼ぶのは `dispatch` だけなので、**状態が変わる経路は必ずここを通る。**
      * 専用のフックは増やさない。
      *
-     * [slowLinkCandidateKey] が null を返す状態（`Idle`・`FailingOver`・
-     * `Exhausted`）はどれも「測る対象のトンネルが無い」ことを意味するので、
-     * 切断（利用者の切断・画面消灯による切断・障害による切替・全滅）は
-     * すべてここで測り直しになる。`Verifying` から `Healthy` への昇格では
-     * グループと候補番号が変わらないので測り直さない（同じトンネルだから）。
+     * [slowLinkCandidateKey] が null を返す状態（`Idle`・`Connecting`・
+     * `FailingOver`・`Exhausted`）はどれも「測る対象のトンネルがまだ／もう
+     * 無い」ことを意味するので、切断（利用者の切断・画面消灯による切断・
+     * 障害による切替・全滅）はすべてここで測り直しになる。
+     * `Verifying` から `Healthy` への昇格ではグループと候補番号が変わらないので
+     * 測り直さない（同じトンネルだから）。
      */
     private fun syncSlowLinkCandidate() {
         val key = slowLinkCandidateKey()
@@ -475,10 +497,28 @@ class FailoverService : Service() {
     /**
      * いま [SlowLinkDetector] が測っている対象の識別子。トンネルを持たない状態は
      * null。詳細は [syncSlowLinkCandidate]。
+     *
+     * Fix 2: `Connecting` は null である。`Connecting` はまだトンネルが張れて
+     * いない段階（コアの `Connected` 通知を待っている）なので、そこで採取した
+     * バイト数は**このトンネルの速度ではない**（前のインターフェースの残骸、
+     * あるいは別の候補が残した値でありうる）。null にしておくと、コアが
+     * `Connected` を通知して状態が `Verifying` に進んだ瞬間——`Verifying` へ
+     * 入る経路は `FailoverController` の
+     * `core == VpnCoreState.Connected && s is Connecting` だけであり、`Healthy`
+     * へ入る経路は `Verifying` からのプローブ成功だけである——にキーが
+     * null から `"<groupId>#<candidateIndex>"` へ変わり、[syncSlowLinkCandidate]
+     * が判定器を空にする。
+     *
+     * これにより「トンネルが張れる前の採取が、張れた後に下される判定の窓へ
+     * 混じらない」ことが**キーの形で明示的に保証される**。判定器の
+     * 「累計値が巻き戻ったら数え直す」という性質（インターフェース再作成時に
+     * 偶然そう振る舞う）に依存しない。`reset()` は `lastAtMs`/`lastBytes` も
+     * 消すので、`Verifying` 以後の最初の採取は差分の計算に使われず基準に
+     * なるだけであり、最初に計算される速度は完全にトンネル確立後の区間から出る。
      */
     private fun slowLinkCandidateKey(): String? = when (val s = controller.state) {
         FailoverState.Idle -> null
-        is FailoverState.Connecting -> "${s.groupId}#${s.candidateIndex}"
+        is FailoverState.Connecting -> null
         is FailoverState.Verifying -> "${s.groupId}#${s.candidateIndex}"
         is FailoverState.Healthy -> "${s.groupId}#${s.candidateIndex}"
         is FailoverState.FailingOver -> null
