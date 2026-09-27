@@ -389,5 +389,51 @@ class ProfileRepository(
          */
         fun isCredentialOrCertKey(key: String): Boolean =
             key.startsWith("FORMDATA-") || key.startsWith("ACCEPTED-CERT-")
+
+        /**
+         * このプロファイルの prefs のキー集合 [keys] に、認証フォームへの回答が
+         * 保存されている証拠があるか。`SharedPreferences` に触れない純関数として
+         * 切り出してあり、Robolectric 無しでユニットテストできる。
+         *
+         * `AuthFormHandler.getFormPrefix()`（`AuthFormHandler.java:166-173`）が
+         * 組み立てる保存キーは `"FORMDATA-" + <フォーム構造のダイジェスト> + "-"` に
+         * 各項目のダイジェストを足したものであり（`saveAndStore()` :309/:319）、
+         * 認証フォームに一度答えて保存した場合にだけ書かれる。したがって
+         * **`FORMDATA-` で始まるキーが1つも無い ⇔ 初回ログインが未完了**である。
+         *
+         * [isCredentialOrCertKey]（裁定67）と違って `ACCEPTED-CERT-` は**見ない。**
+         * 証明書の承認は証明書のハッシュを受け入れた記録に過ぎず、認証フォームに
+         * 答えた証拠にはならない（承認だけ済んで初回ログインが未完了という状態は
+         * 実際に起こりうる）。裁定67 の判定は「アドレス変更時に消すべきキー」という
+         * 別の意味を持つので、その意味は変えずに別の判定として足してある。
+         *
+         * **値は読まない。キー名の有無だけを見る。** そのため「パスワードを保存
+         * しない」を選んだ利用者は空文字の `FORMDATA-` キーを持ち、ここでは
+         * 「保存済み」と見なされる。それは利用者自身の選択であり、その後の
+         * 認証失敗は既存の安全策 S1（認証段階に到達して通らなかった候補の除外）が
+         * 扱う。個数には依存しない（フォームの構成で変わる）。
+         */
+        fun hasSavedFormData(keys: Set<String>): Boolean =
+            keys.any { it.startsWith("FORMDATA-") }
+    }
+
+    /**
+     * [uuid] のプロファイルが初回ログインを終えていないか
+     * （＝認証情報が保存されておらず、人が居なければ絶対に接続が成功しない）。
+     *
+     * 判定そのものは純関数 [hasSavedFormData] にあり、ここはそのプロファイル自身の
+     * prefs のキー集合を渡すだけである。**キー名だけを列挙し、値は1つも読まない。**
+     *
+     * プロファイルが見つからないときは false を返す。「初回ログインが必要」と
+     * 答えると自動切替がそのメンバーを飛ばす（`FailoverController` の
+     * `needsFirstLoginProvider`）ので、存在を確かめられない相手について
+     * 飛ばす側に倒すと、プロファイル一覧の読み直しと競合したときに健全な候補まで
+     * 止めてしまう。既知でないメンバーは `GroupStore.loadGroups` が読み込み時に
+     * ふるい落とすので、その経路に任せる。
+     */
+    fun needsFirstLogin(uuid: String): Boolean {
+        ProfileManager.init(context)
+        val profile = ProfileManager.get(uuid) ?: return false
+        return !hasSavedFormData(profile.mPrefs.all.keys)
     }
 }

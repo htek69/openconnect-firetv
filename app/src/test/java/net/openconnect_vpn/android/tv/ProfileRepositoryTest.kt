@@ -139,4 +139,39 @@ class ProfileRepositoryTest {
         assertEquals(false, ProfileRepository.isCredentialOrCertKey("prefix-FORMDATA-x"))
         assertEquals(false, ProfileRepository.isCredentialOrCertKey("prefix-ACCEPTED-CERT-x"))
     }
+
+    @Test
+    fun `キーが1つも無ければ認証情報は保存されていない`() {
+        assertEquals(false, ProfileRepository.hasSavedFormData(emptySet()))
+    }
+
+    @Test
+    fun `証明書の承認だけでは認証情報が保存された証拠にならない`() {
+        // ACCEPTED-CERT- は証明書のハッシュを承認した記録に過ぎず、
+        // 認証フォームに答えたことを意味しない（初回ログインは未完了）。
+        assertEquals(
+            false,
+            ProfileRepository.hasSavedFormData(
+                setOf("server_address", "batch_mode", "profile_name", "ACCEPTED-CERT-abcdef"),
+            ),
+        )
+    }
+
+    @Test
+    fun `FORMDATA のキーが1つでもあれば認証情報は保存されている`() {
+        assertEquals(
+            true,
+            ProfileRepository.hasSavedFormData(
+                setOf("server_address", "ACCEPTED-CERT-abcdef", "FORMDATA-0011-2233"),
+            ),
+        )
+    }
+
+    @Test
+    fun `FORMDATA を含むだけで先頭一致でないキーは保存済みと見なさない`() {
+        assertEquals(
+            false,
+            ProfileRepository.hasSavedFormData(setOf("prefix-FORMDATA-0011-2233")),
+        )
+    }
 }
