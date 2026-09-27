@@ -125,4 +125,67 @@ class SettingsStepperTest {
         val worst = intervals.maxOf { interval -> thresholds.maxOf { interval * it } }
         assertTrue("最長検知遅延が10分を超えている: ${worst}秒", worst <= 600)
     }
+
+    // --- clampSlowRxKbps / stepSlowRxKbps（task-6） ---
+
+    @Test
+    fun `受信速度の下限は範囲内ならそのまま`() {
+        assertEquals(1000, SettingsStepper.clampSlowRxKbps(1000))
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MIN, SettingsStepper.clampSlowRxKbps(SettingsStepper.SLOW_RX_KBPS_MIN))
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MAX, SettingsStepper.clampSlowRxKbps(SettingsStepper.SLOW_RX_KBPS_MAX))
+    }
+
+    @Test
+    fun `受信速度の下限は下限未満なら下限に丸める`() {
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MIN, SettingsStepper.clampSlowRxKbps(0))
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MIN, SettingsStepper.clampSlowRxKbps(-100))
+    }
+
+    @Test
+    fun `受信速度の下限は上限を超えたら上限に丸める`() {
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MAX, SettingsStepper.clampSlowRxKbps(999_999))
+    }
+
+    @Test
+    fun `受信速度の下限を1段階増減すると刻み幅ぶん動く`() {
+        assertEquals(1250, SettingsStepper.stepSlowRxKbps(1000, +1))
+        assertEquals(750, SettingsStepper.stepSlowRxKbps(1000, -1))
+    }
+
+    @Test
+    fun `受信速度の下限は下限で－を押しても下限のまま`() {
+        assertEquals(
+            SettingsStepper.SLOW_RX_KBPS_MIN,
+            SettingsStepper.stepSlowRxKbps(SettingsStepper.SLOW_RX_KBPS_MIN, -1),
+        )
+    }
+
+    @Test
+    fun `受信速度の下限は上限で＋を押しても上限のまま`() {
+        assertEquals(
+            SettingsStepper.SLOW_RX_KBPS_MAX,
+            SettingsStepper.stepSlowRxKbps(SettingsStepper.SLOW_RX_KBPS_MAX, +1),
+        )
+    }
+
+    @Test
+    fun `受信速度の下限は1段階の刻みでちょうど上限に着地できる`() {
+        // 上限がステップの整数倍からずれていると、＋を押していっても上限ちょうどに
+        // 止まらず最後の一押しだけ刻み幅が変わる、という不整合が起きる。
+        val steps = (SettingsStepper.SLOW_RX_KBPS_MAX - SettingsStepper.SLOW_RX_KBPS_MIN) /
+            SettingsStepper.SLOW_RX_KBPS_STEP
+        var value = SettingsStepper.SLOW_RX_KBPS_MIN
+        repeat(steps) { value = SettingsStepper.stepSlowRxKbps(value, +1) }
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MAX, value)
+    }
+
+    @Test
+    fun `受信速度の下限はどれだけ増減しても250刻みの格子から外れない`() {
+        val values = generateSequence(SettingsStepper.SLOW_RX_KBPS_MIN) { current ->
+            val next = SettingsStepper.stepSlowRxKbps(current, +1)
+            next.takeIf { it != current }
+        }.toList()
+        assertTrue(values.all { it % SettingsStepper.SLOW_RX_KBPS_STEP == 0 })
+        assertEquals(SettingsStepper.SLOW_RX_KBPS_MAX, values.last())
+    }
 }
