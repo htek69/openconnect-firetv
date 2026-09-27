@@ -8,6 +8,10 @@ operable with the TV remote alone. This is a fork of
 (GPLv2); the VPN core is upstream's, the TV UI and the failover engine are new.
 Source comments and docs are in Japanese.
 
+**Published as a reference implementation and a record of Fire TV findings, not
+as a supported product.** No support, no releases, no prebuilt APK; issues and
+pull requests may go unanswered. Fork freely under the GPLv2.
+
 **Requires an Android-based Fire OS device.** It does **not** run on Fire TV
 devices that ship with Vega OS — Vega is not Android and cannot install Android
 APKs at all. See 「対応端末」 below.
@@ -33,6 +37,36 @@ Fire TV のリモコンだけで OpenConnect VPN を使うためのアプリで�
 2. **TV 向けの画面**
    リモコン（D-pad）だけで接続先の追加・編集・削除、グループの作成・並び替え、
    接続・切断、疎通確認の設定まで行えます。
+
+## このリポジトリの位置づけ（サポートはしません）
+
+**動く参照実装と、実機で得た知見の置き場**として公開しています。製品ではありません。
+
+- **サポートはしません。** Issue や Pull Request に返信できる保証はありません。
+  リリースも配布もせず、ビルド済みの APK は置きません
+- **動作の保証はありません。** 作者が自分の Fire TV で使うために作ったもので、
+  確認したのはその1台（Fire TV Stick 4K 第1世代）だけです
+- フォークや改変は GPLv2 の範囲で自由にどうぞ。**返答を待たずに進めてください**
+
+### なぜ公開するのか
+
+1. **上流には TV 用の画面がありません。** 上流は 2025年1月に
+   ランチャーのバナーと `LEANBACK_LAUNCHER` を足しましたが、開いたあとの UI は
+   スマホ向けのままです。リモコンだけで完結する画面は誰も作っていません
+2. **優先順位つきのフェイルオーバーは上流に無い機能**です。皮の張り替えではありません
+3. **Fire TV 固有の知見が、検索してもなかなか出てきません。** たとえば:
+   - ソフトキーボードは**明示要求**でないとフルスクリーンの IME に拒否される
+   - 祖先の `focusProperties` が子孫の `focusGroup()` を**無効化する**
+   - ランチャーのバナーは `<application>` ではなく**アクティビティ**側が読まれる
+   - 認証ダイアログは**サービスに bind した Activity** が無いと表示先を持たない
+
+   いずれも実機でしか分からず、突き止めるのに相応の時間がかかりました。
+   コミットメッセージと [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md) には、
+   **症状・切り分け・計測値**を残してあります。本アプリを使わない人にも
+   役に立つかもしれません
+
+4. GPLv2 の実務上の理由。**APK を誰かに渡すならソースの提供が必要**になるので、
+   先に公開しておけばその都度考えずに済みます
 
 ## 上流からの変更点（GPLv2 §2(a) の表示）
 
