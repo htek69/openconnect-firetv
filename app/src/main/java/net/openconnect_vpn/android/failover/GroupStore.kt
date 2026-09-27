@@ -128,6 +128,26 @@ class GroupStore(private val store: KeyValueStore) {
         store.putString(KEY_PROFILE_GENERATION, (current + 1).toString())
     }
 
+    /**
+     * スループット低下による切替の設定（仕様書 5）を読み込む。
+     *
+     * 未保存や壊れた JSON の場合は [SlowLinkSettings] の既定値（無効・1000kbps）を
+     * 返す。既定を無効にするのは、この機能の誤判定（仕様書 6）を承知のうえで
+     * ユーザーに明示的に有効化してもらうため。
+     */
+    fun loadSlowLinkSettings(): SlowLinkSettings {
+        val raw = store.getString(KEY_SLOW_LINK) ?: return SlowLinkSettings()
+        return try {
+            json.decodeFromString<SlowLinkSettings>(raw)
+        } catch (e: Exception) {
+            SlowLinkSettings()
+        }
+    }
+
+    fun saveSlowLinkSettings(settings: SlowLinkSettings) {
+        store.putString(KEY_SLOW_LINK, json.encodeToString(settings))
+    }
+
     private fun defaultProbeSchedule(): ProbeSchedule {
         val defaults = FailoverConfig()
         return ProbeSchedule(
@@ -165,12 +185,18 @@ class GroupStore(private val store: KeyValueStore) {
      *
      * 裁定86（H1）: `KEY_PROFILE_GENERATION`（接続先の作成・削除の世代）も
      * ここに含める。理由は [bumpProfileGeneration] を参照。
+     *
+     * Task 3: `KEY_SLOW_LINK`（スループット低下による切替の設定）もここに含める。
+     * 含めないと設定画面での保存が動作中の `FailoverService` に届かず、
+     * ユーザーが有効化・閾値変更してもサービス再起動まで反映されない
+     * （計画1 の F2 と同じ「設定画面と実際の挙動が食い違う」穴）。
      */
     fun isReloadTriggerKey(key: String?): Boolean =
         key == KEY_GROUPS ||
             key == KEY_PROBE_TARGET ||
             key == KEY_PROBE_SCHEDULE ||
-            key == KEY_PROFILE_GENERATION
+            key == KEY_PROFILE_GENERATION ||
+            key == KEY_SLOW_LINK
 
     private companion object {
         const val KEY_GROUPS = "failover_groups_v1"
@@ -178,5 +204,6 @@ class GroupStore(private val store: KeyValueStore) {
         const val KEY_ACTIVE_GROUP_ID = "failover_active_group_id_v1"
         const val KEY_PROBE_SCHEDULE = "failover_probe_schedule_v1"
         const val KEY_PROFILE_GENERATION = "failover_profile_generation_v1"
+        const val KEY_SLOW_LINK = "slow_link_settings_v1"
     }
 }
