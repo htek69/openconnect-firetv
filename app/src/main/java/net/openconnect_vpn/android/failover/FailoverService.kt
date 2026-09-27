@@ -66,7 +66,48 @@ class FailoverService : Service() {
     private lateinit var groupStore: GroupStore
     private lateinit var bridge: VpnStatusBridge
     private lateinit var networkGate: NetworkGate
+    private lateinit var throughputSource: ThroughputSource
     private var probeTarget: ProbeTarget = ProbeTarget()
+
+    /**
+     * 仕様書 4: [SlowLinkDetector.onSample] へ渡す時刻と [controller] が使う時刻を
+     * 同じ1つの時計から取るために、ここで持って両方へ渡す。
+     *
+     * [SlowLinkDetector] は前回サンプルからの経過が 0 以下のとき速度を計算せずに
+     * 基準を取り直す。それが安全なのは**この時計が巻き戻らない**からである。
+     * [SystemClock] は `android.os.SystemClock.elapsedRealtime()`（起動からの経過
+     * 時間）で、端末時刻の変更や NTP 補正では戻らない。壁時計
+     * （`System.currentTimeMillis()`）へ差し替えると、補正で時刻が戻った瞬間に
+     * 判定器が基準を取り直すだけでは済まず、窓の数え方そのものが壊れる。
+     */
+    private val clock: Clock = SystemClock()
+
+    /**
+     * 仕様書 5: スループット低下による切替の設定。[onCreate] で読み込み、以後は
+     * [reloadSlowLinkSettings] が SharedPreferences の変更を検知するたびに
+     * 読み直す。[FailoverController] へは `slowLinkProvider` という供給関数の
+     * 形で渡してあるので、このフィールドを差し替えるだけで次回参照から新しい
+     * 値が見える（コントローラは作り直さない。裁定72 と同じ理由）。
+     */
+    private var slowLinkSettings: SlowLinkSettings = SlowLinkSettings()
+
+    /**
+     * 仕様書 4-2 の判定器。閾値（[SlowLinkThresholds]）はコンストラクタ引数なので、
+     * 閾値が変わったときは**作り直す**（[reloadSlowLinkSettings]）。そのため
+     * `var` であり、`slowLinkProvider` のラムダはインスタンスを捕獲せずこの
+     * フィールドを毎回読む。
+     *
+     * 差し替えとサンプル採取・[reset] はすべてメインスレッド上で起きる
+     * （prefs リスナ・ティックループ・ブロードキャスト受信の3経路すべてが
+     * メイン。理由は [scope] の KDoc）ので、同期化は要らない。
+     */
+    private var slowLinkDetector: SlowLinkDetector = SlowLinkDetector(SlowLinkThresholds())
+
+    /**
+     * 直前に [slowLinkDetector] を向けていた候補の識別子（[slowLinkCandidateKey]）。
+     * 変わったら測り直す。詳細は [syncSlowLinkCandidate]。
+     */
+    private var lastSlowLinkCandidateKey: String? = null
 
     /**
      * 裁定48/72: TV UI が保存したグループ・プローブ宛先の変更を検知するための
@@ -196,6 +237,13 @@ class FailoverService : Service() {
         networkGate = ConnectivityNetworkGate(this)
         probeTarget = groupStore.loadProbeTarget()
 
+        // 仕様書 4: 採取元と判定器。判定器の閾値は保存された設定から作る。
+        throughputSource = ProcNetDevThroughputSource()
+        slowLinkSettings = groupStore.loadSlowLinkSettings()
+        slowLinkDetector = SlowLinkDetector(
+            SlowLinkThresholds(slowRxKbps = slowLinkSettings.slowRxKbps),
+        )
+
         ProfileManager.init(this)
         // VpnProfile の実際のアクセサは getUUIDString()（Task 12 Step 6 で確認）。
         // "UUID" のように連続する大文字2文字で始まる getter は Kotlin の
@@ -208,7 +256,7 @@ class FailoverService : Service() {
         groups = groupStore.loadGroups(knownUuids)
         controller = FailoverController(
             groupsProvider = { groups },
-            clock = SystemClock(),
+            clock = clock,
             vpn = OpenConnectVpnController(this),
             network = networkGate,
             // 裁定93: 「人が認証ダイアログに答えられるか」を供給する。Android API を
@@ -216,6 +264,12 @@ class FailoverService : Service() {
             // 値の実体は OpenVpnService.mActivityConnections > 0 に相当する
             // （なぜ直接読まないかは DialogHostTracker の KDoc 参照）。
             dialogHostAttachedProvider = { DialogHostRegistry.tracker.attached },
+            // 仕様書 4-3: 「生きてはいるが遅い」を供給する。`/proc/net/dev` の
+            // 読み取りと設定の有効・無効はこちら側の責任で、
+            // FailoverController は真偽値だけを見る。機能が無効なら判定器を
+            // 一切参照せず必ず false になる（無効時に切替が起きない保証）。
+            // [slowLinkDetector] は差し替わりうるのでフィールドを毎回読む。
+            slowLinkProvider = { slowLinkSettings.enabled && slowLinkDetector.isSlow() },
         )
 
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
@@ -251,6 +305,10 @@ class FailoverService : Service() {
                     val reachable = probe.probe(probeTarget, currentProbeTimeoutMs())
                     dispatch(FailoverEvent.ProbeResult(reachable))
                 }
+                // 仕様書 4-2: Tick を投げる前に採取する。速度の判定を読むのは
+                // この直後の Tick 処理（onSlowLinkSwitch）なので、同じ tick の
+                // 中で「採取 → 判定」の順になる。
+                sampleThroughput()
                 dispatch(FailoverEvent.Tick)
                 val interval = when {
                     // Ruling 25/27a: 切替中は切断完了の確認待ちなので細かく tick する。
@@ -333,7 +391,98 @@ class FailoverService : Service() {
         val knownUuids = ProfileManager.getProfiles().map { it.getUUIDString() }.toSet()
         groups = groupStore.loadGroups(knownUuids)
         probeTarget = groupStore.loadProbeTarget()
+        reloadSlowLinkSettings()
         wakeLoop.trySend(Unit)
+    }
+
+    /**
+     * 仕様書 5: スループット低下による切替の設定を読み直す。
+     * [reloadGroupsAndProbeTarget] から呼ばれる（`KEY_SLOW_LINK` は Task 3 で
+     * [GroupStore.isReloadTriggerKey] に含めてあるので、既存の再読込経路に
+     * そのまま乗る。新しいシグナリング経路は作らない）。
+     *
+     * 実際に値が変わっていなければ何もしない。このリスナはグループ・プローブ
+     * 宛先・プローブ間隔・プロファイル世代の変更でも呼ばれるため、無条件に
+     * 下の2つを行うと、無関係な保存（グループ名の変更など）のたびに
+     * 判定中の窓が消え、仕様書 4-5 の「一周したら止める」も解除されてしまう。
+     *
+     * 値が変わっていたときにやることは2つある。
+     *
+     * 1. **判定器を作り直す。** [SlowLinkThresholds] は
+     *    [SlowLinkDetector] のコンストラクタ引数なので、一度作った判定器は
+     *    閾値を変えられない。作り直さないと、利用者が閾値を変えてもアプリを
+     *    再起動するまで何も起きない（Task 3 で `KEY_SLOW_LINK` を再読込
+     *    トリガに含めた意味が無くなる）。新しい判定器は全フィールドが初期値
+     *    なので、古いサンプルを引き継がずに窓を数え直す——閾値が変わった
+     *    のだから、古い閾値で「遅い」と数えた時間に意味は無い。
+     * 2. **[FailoverController.onSlowLinkSettingsChanged] を呼ぶ。**
+     *    仕様書 4-5 が定める「設定変更は新しい指示なので一周の記録を解除する」
+     *    ためである。呼ばないと、一周して止まったあとに閾値を上げた利用者から
+     *    見て機能が壊れているように見える（一周の記録は UI に出ない内部状態
+     *    なので、なぜ動かないのか分からない）。時間による再武装ではないので
+     *    仕様書 4-5 の禁止には触れない。
+     */
+    private fun reloadSlowLinkSettings() {
+        val loaded = groupStore.loadSlowLinkSettings()
+        if (loaded == slowLinkSettings) return
+        slowLinkSettings = loaded
+        slowLinkDetector = SlowLinkDetector(SlowLinkThresholds(slowRxKbps = loaded.slowRxKbps))
+        controller.onSlowLinkSettingsChanged()
+    }
+
+    /**
+     * 仕様書 4-2: トンネルの累計バイト数を1回採取して判定器へ渡す。
+     *
+     * **読めなかったときは [SlowLinkDetector.onSample] を呼ばない。**
+     * 「測れない」を「遅い」と解釈してはならない。`?.let` がその唯一の関門で、
+     * このサービスの中で `onSample` を呼ぶ場所はここだけである。
+     * [ProcNetDevThroughputSource] は、ファイルが読めない場合と `tun0` の行が
+     * 無い場合（＝切断中の通常の状態）の両方で null を返す。
+     *
+     * 接続していない間も呼ぶが、それで誤判定は起きない。tun が無ければ
+     * null で何も渡らず、万一 tun が残っていてもカウンタは進まないので
+     * 送信速度が「使おうとしている」閾値を超えず、遅いとは判定されない。
+     * さらに候補が変われば [syncSlowLinkCandidate] が測り直させる。
+     */
+    private fun sampleThroughput() {
+        throughputSource.read()?.let { slowLinkDetector.onSample(clock.nowMs(), it) }
+    }
+
+    /**
+     * 仕様書 4-2: 測っている対象が変わったら [SlowLinkDetector] を測り直させる。
+     * 前の候補の測定値を次の候補へ持ち越さないためである（持ち越すと、遅かった
+     * 候補から切り替えた直後に、新しい候補が自分の速度を1つも記録しないうちに
+     * 「遅い」と判定されうる）。
+     *
+     * `dispatch` から、状態を [FailoverStateHolder] へ publish するのと同じ
+     * 場所で呼ぶ。状態機械を動かすのは `controller.handle` の1か所だけで、
+     * それを呼ぶのは `dispatch` だけなので、**状態が変わる経路は必ずここを通る。**
+     * 専用のフックは増やさない。
+     *
+     * [slowLinkCandidateKey] が null を返す状態（`Idle`・`FailingOver`・
+     * `Exhausted`）はどれも「測る対象のトンネルが無い」ことを意味するので、
+     * 切断（利用者の切断・画面消灯による切断・障害による切替・全滅）は
+     * すべてここで測り直しになる。`Verifying` から `Healthy` への昇格では
+     * グループと候補番号が変わらないので測り直さない（同じトンネルだから）。
+     */
+    private fun syncSlowLinkCandidate() {
+        val key = slowLinkCandidateKey()
+        if (key == lastSlowLinkCandidateKey) return
+        lastSlowLinkCandidateKey = key
+        slowLinkDetector.reset()
+    }
+
+    /**
+     * いま [SlowLinkDetector] が測っている対象の識別子。トンネルを持たない状態は
+     * null。詳細は [syncSlowLinkCandidate]。
+     */
+    private fun slowLinkCandidateKey(): String? = when (val s = controller.state) {
+        FailoverState.Idle -> null
+        is FailoverState.Connecting -> "${s.groupId}#${s.candidateIndex}"
+        is FailoverState.Verifying -> "${s.groupId}#${s.candidateIndex}"
+        is FailoverState.Healthy -> "${s.groupId}#${s.candidateIndex}"
+        is FailoverState.FailingOver -> null
+        is FailoverState.Exhausted -> null
     }
 
     /**
@@ -401,6 +550,8 @@ class FailoverService : Service() {
         // publish する。UI 側で GroupStore から読み直した一覧と世代がずれても、
         // 名前解決をこの一覧と照合できるようにするため。
         FailoverStateHolder.publish(controller.state, currentGroup())
+        // 仕様書 4-2: 測っている候補が変わった・トンネルが無くなったなら測り直す。
+        syncSlowLinkCandidate()
         syncWakeLock()
         updateForegroundText()
         // 裁定41（M5）: lastNeedsUserConsent の説明を参照。

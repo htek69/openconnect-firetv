@@ -14,6 +14,11 @@ interface HealthProbe {
     suspend fun probe(target: ProbeTarget, timeoutMs: Int): Boolean
 }
 
+/** トンネルの累計バイト数を読む。読めなければ null を返し、例外は投げない。 */
+interface ThroughputSource {
+    fun read(): IfaceBytes?
+}
+
 enum class ConnectResult {
     /** 接続処理を開始した。 */
     Started,
