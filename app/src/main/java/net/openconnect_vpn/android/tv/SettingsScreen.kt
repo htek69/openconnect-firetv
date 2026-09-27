@@ -27,6 +27,16 @@ import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.ProbeSchedule
 import net.openconnect_vpn.android.failover.ProbeTarget
 import net.openconnect_vpn.android.failover.SlowLinkSettings
+import net.openconnect_vpn.android.failover.SlowLinkThresholds
+
+/**
+ * 裁定R24: 速度を均す窓の長さ（秒）。この画面の説明文が出す「検知までの時間」を
+ * 判定器の既定値そのものから取るための参照で、数字を画面側に書き写さない。
+ * 窓の長さは利用者に変えさせない定数（仕様書 5）であり、`FailoverService` も
+ * `SlowLinkThresholds` の既定値のまま判定器を作るため、ここで既定値を読むのが
+ * 実際に効いている値である。
+ */
+private val SLOW_LINK_WINDOW_SEC = SlowLinkThresholds().windowSec
 
 /**
  * 設定画面。疎通確認の宛先・間隔・失敗閾値、VPN 許可の取得・切断、
@@ -207,6 +217,19 @@ fun SettingsScreen(
             valueText = "${slowRxKbps}kbps",
             onDecrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, -1) },
             onIncrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, +1) },
+        )
+
+        // 裁定R24: 上の死活側（「最短 X秒・最長 Y秒でダウンを検知します」）と同じ
+        // 体裁で、速度側の検知までの時間も書く。窓の長さは利用者が変えられない
+        // 定数（仕様書 5）なので、数字はその定数から出して二重管理にしない。
+        // 「約60秒」と書かないと、有効にして20秒待った利用者が壊れていると
+        // 判断する（切替そのものの時間が後ろに付くことも書く）。
+        Text(
+            "速度は${SLOW_LINK_WINDOW_SEC}秒ぶんを均して判断するため、" +
+                "遅くなってから「遅い」と判定するまで約${SLOW_LINK_WINDOW_SEC}秒かかります。" +
+                "実際に別の接続先で見られるようになるのは、そこに切替そのものの時間が" +
+                "加わったあとです。",
+            style = MaterialTheme.typography.bodySmall,
         )
 
         message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
