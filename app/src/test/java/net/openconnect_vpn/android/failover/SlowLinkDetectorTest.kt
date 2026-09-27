@@ -23,6 +23,22 @@ class SlowLinkDetectorTest {
         return t
     }
 
+    /** バイトカウンタの状態を保持しながら供給する。[Pair]の第一要素は時刻、第二要素は(rx, tx)。 */
+    private data class FeedResult(val timeMs: Long, val rxBytes: Long, val txBytes: Long)
+    private fun SlowLinkDetector.feedWithState(startMs: Long, startRx: Long, startTx: Long, sec: Int, rxKbps: Int, txKbps: Int): FeedResult {
+        var rx = startRx
+        var tx = startTx
+        var t = startMs
+        onSample(t, IfaceBytes(rx, tx))
+        repeat(sec) {
+            t += 1_000
+            rx += rxKbps * 1000L / 8
+            tx += txKbps * 1000L / 8
+            onSample(t, IfaceBytes(rx, tx))
+        }
+        return FeedResult(t, rx, tx)
+    }
+
     @Test
     fun `窓を満たすまでは遅いと判定しない`() {
         val d = SlowLinkDetector(th)
@@ -83,5 +99,38 @@ class SlowLinkDetectorTest {
         d.onSample(0, IfaceBytes(0, 0))
         d.onSample(0, IfaceBytes(0, 0))
         assertFalse(d.isSlow())
+    }
+
+    @Test
+    fun `条件が破れた後の窓は数え直す`() {
+        val d = SlowLinkDetector(th)
+        var result = d.feedWithState(0, 0, 0, sec = 40, rxKbps = 100, txKbps = 50)
+        assertFalse(d.isSlow())
+
+        result = d.feedWithState(result.timeMs, result.rxBytes, result.txBytes, sec = 1, rxKbps = 4000, txKbps = 50)
+        assertFalse(d.isSlow())
+
+        result = d.feedWithState(result.timeMs, result.rxBytes, result.txBytes, sec = 40, rxKbps = 100, txKbps = 50)
+        assertFalse(d.isSlow())
+
+        d.feedWithState(result.timeMs, result.rxBytes, result.txBytes, sec = 21, rxKbps = 100, txKbps = 50)
+        assertTrue(d.isSlow())
+    }
+
+    @Test
+    fun `受信カウンタのみが巻き戻った時も数え直す`() {
+        val d = SlowLinkDetector(th)
+        var result = d.feedWithState(0, 0, 0, sec = 61, rxKbps = 100, txKbps = 50)
+        assertTrue(d.isSlow())
+
+        var t = result.timeMs + 1_000
+        var rxBackward = result.rxBytes / 2
+        var txContinue = result.txBytes + 50 * 1000L / 8
+        d.onSample(t, IfaceBytes(rxBackward, txContinue))
+
+        assertFalse(d.isSlow())
+
+        d.feedWithState(t, rxBackward, txContinue, sec = 61, rxKbps = 100, txKbps = 50)
+        assertTrue(d.isSlow())
     }
 }
