@@ -14,9 +14,17 @@ interface HealthProbe {
     suspend fun probe(target: ProbeTarget, timeoutMs: Int): Boolean
 }
 
-/** トンネルの累計バイト数を読む。読めなければ null を返し、例外は投げない。 */
+/**
+ * トンネルの累計バイト数を読む。読めなければ null を返し、例外は投げない。
+ *
+ * 裁定R21: [HealthProbe.probe] と同じく `suspend` である。呼び出し元
+ * （[FailoverService] のティックループ）はメインスレッドに固定されているので
+ * （理由は `FailoverService` の `scope` の KDoc）、**実装側が内部で
+ * `Dispatchers.IO` へ逃げる責任を持つ**。呼び出し元は suspend するだけで、
+ * メインスレッドがファイル読み取りでブロックしない。
+ */
 interface ThroughputSource {
-    fun read(): IfaceBytes?
+    suspend fun read(): IfaceBytes?
 }
 
 enum class ConnectResult {

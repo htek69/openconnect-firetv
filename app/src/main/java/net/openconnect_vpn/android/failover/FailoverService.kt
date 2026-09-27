@@ -41,10 +41,14 @@ class FailoverService : Service() {
      * 3経路すべてを同じスレッド（メイン）に固定することで、事実上のロックとして
      * 機能させ、状態機械へのデータ競合を無くす。
      *
-     * これは実測プローブをメインスレッドでブロックすることを意味しない。
-     * TcpHealthProbe.probe は内部で withContext(Dispatchers.IO) しているため、
-     * ここから呼んでも実際のソケット処理は IO ディスパッチャに逃げ、
-     * このコルーチンは suspend するだけである（delay も同様）。
+     * これは実測プローブやスループットの採取をメインスレッドでブロックすることを
+     * 意味しない。TcpHealthProbe.probe と ProcNetDevThroughputSource.read は
+     * どちらも suspend 関数で、内部で withContext(Dispatchers.IO) しているため、
+     * ここから呼んでも実際のソケット処理・ファイル読み取りは IO ディスパッチャに
+     * 逃げ、このコルーチンは suspend するだけである（delay も同様）。
+     * 裁定R21: 採取を足した当初は同期ファイル読みで、この不変条件を破っていた。
+     * ループの中でメインスレッドを実際に止める処理を増やさないこと
+     * （状態機械に触る部分は逆に、必ずメインスレッドのまま実行すること）。
      *
      * これを Dispatchers.Default に「最適化」で戻すと、この協調が失われて
      * 元のデータ競合が復活するので変更しないこと。
@@ -332,6 +336,9 @@ class FailoverService : Service() {
                 // Ruling 18: 次回 onCreate（プロセス kill 後の復帰）で同じグループへ
                 // 自動的に再接続できるよう、要求された時点で記録する。
                 groupStore.saveActiveGroupId(groupId)
+                // 裁定R19: 利用者の明示的な接続は新しい指示なので、前回の切替理由は
+                // ここで消す（これが唯一の消去点。時間では消さない）。
+                FailoverStateHolder.clearSlowLinkSwitch()
                 dispatchExternal(FailoverEvent.UserConnectGroup(groupId))
             }
 
@@ -460,13 +467,30 @@ class FailoverService : Service() {
      *
      * 機能が有効なら接続していない間も呼ぶが、それで誤判定は起きない。tun が
      * 無ければ null で何も渡らず、万一 tun が残っていてもカウンタは進まないので
-     * 送信速度が「使おうとしている」閾値を超えず、`SlowLinkDetector` の else 側
-     * （条件が破れたら数え直す）に入って連続が 0 に戻る。
-     * さらに候補が変われば [syncSlowLinkCandidate] が測り直させる。
+     * 送信速度が「使おうとしている」閾値を超えず、窓の平均が需要の条件を
+     * 満たさない。さらに候補が変われば [syncSlowLinkCandidate] が測り直させる。
+     *
+     * 裁定R20: **測れなかったときは窓を捨てる。** [SlowLinkDetector] 自身も
+     * 「古すぎる窓からは判定を出さない」が、それは次のサンプルが来て初めて
+     * 分かる。読み取りが恒久的に失敗する端末では次のサンプルが永久に来ないので、
+     * 窓が埋まった直後に読めなくなると古い判定が生き残り、何分も前の証拠で
+     * 切り替わりうる。ここで捨てておけば、その経路そのものが無くなる。
+     * 代償は「一時的に読めなかっただけ」でも 60 秒を数え直すことだが、
+     * 切替が遅れる側＝安全側である。
+     *
+     * 裁定R21: [ThroughputSource.read] は suspend で、内部で `Dispatchers.IO` へ
+     * 逃げる。この関数もそれに合わせて suspend であり、[SlowLinkDetector] を
+     * 触るのは再開後のメインスレッド上だけである（[scope] の KDoc の事実上の
+     * ロックを崩さない）。
      */
-    private fun sampleThroughput() {
+    private suspend fun sampleThroughput() {
         if (!slowLinkSettings.enabled) return
-        throughputSource.read()?.let { slowLinkDetector.onSample(clock.nowMs(), it) }
+        val bytes = throughputSource.read()
+        if (bytes == null) {
+            slowLinkDetector.reset()
+            return
+        }
+        slowLinkDetector.onSample(clock.nowMs(), bytes)
     }
 
     /**
@@ -590,6 +614,12 @@ class FailoverService : Service() {
         // publish する。UI 側で GroupStore から読み直した一覧と世代がずれても、
         // 名前解決をこの一覧と照合できるようにするため。
         FailoverStateHolder.publish(controller.state, currentGroup())
+        // 裁定R19: 仕様書 5 の「切り替えた理由を表示する」を、理由が分かる
+        // FailingOver の数秒より長く生かす。状態と同じ投影先へ、状態とは別の
+        // 寿命を持つ値として置く（FailoverState には足さない）。
+        (controller.state as? FailoverState.FailingOver)
+            ?.takeIf { it.bySlowLink }
+            ?.let { FailoverStateHolder.publishSlowLinkSwitch(it.groupId) }
         // 仕様書 4-2: 測っている候補が変わった・トンネルが無くなったなら測り直す。
         syncSlowLinkCandidate()
         syncWakeLock()
