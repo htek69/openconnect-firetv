@@ -123,13 +123,11 @@ class HomeRowsTest {
     }
 
     @Test
-    fun `速度低下による切替の直後は理由が候補名の代わりに表示される`() {
-        // bySlowLink=true の FailingOver では、まだ次候補への接続は成立して
-        // いない（memberName の通常契約どおり null になり得る場面）が、
-        // 「理由の分からない自動切替を作らない」ため、候補名の代わりに
-        // 切替理由の文言を出す。バッジ自体は死活起因のときと変わらず
-        // Connecting のままでよい（まだつながろうとしている、という意味は
-        // 変わらないため）。
+    fun `速度低下による切替でも memberName は接続先の名前の意味のまま`() {
+        // 裁定R23: 以前はここで memberName に理由文が入っていた。memberName は
+        // 「接続先の表示名」であり、FailingOver では死活起因でも速度起因でも
+        // 同じく null（＝切替中は候補名を出さない）でなければならない。
+        // 理由は switchReason 側が持つ。
         val state = FailoverState.FailingOver(
             groupId = "g1",
             failedIndex = 0,
@@ -141,7 +139,41 @@ class HomeRowsTest {
 
         val row = rows[0] as HomeRow.GroupRow
         assertEquals(ConnectionBadge.Connecting, row.badge)
-        assertEquals("速度低下で切替", row.memberName)
+        assertNull(row.memberName)
+        assertNull(row.switchReason)
+    }
+
+    @Test
+    fun `直前の切替が速度低下なら理由が専用フィールドに入る`() {
+        // 裁定R19: 理由は FailingOver の数秒で消えず、切替後に Healthy へ
+        // 落ち着いたあとも出せる（切り替わった先の候補名と両方出る）。
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state, slowLinkSwitchGroupId = "g1")
+
+        val row = rows[0] as HomeRow.GroupRow
+        assertEquals(ConnectionBadge.Connected, row.badge)
+        assertEquals("sv2", row.memberName)
+        assertEquals("速度低下で切替", row.switchReason)
+    }
+
+    @Test
+    fun `切替理由は当該グループの行にだけ出る`() {
+        val other = group.copy(id = "g2", name = "予備")
+        val rows = HomeRows.build(
+            listOf(group, other),
+            profiles,
+            FailoverState.Idle,
+            slowLinkSwitchGroupId = "g2",
+        )
+
+        assertNull((rows[0] as HomeRow.GroupRow).switchReason)
+        assertEquals("速度低下で切替", (rows[1] as HomeRow.GroupRow).switchReason)
+    }
+
+    @Test
+    fun `切替理由が無ければ switchReason は null`() {
+        val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+        assertNull((rows[0] as HomeRow.GroupRow).switchReason)
     }
 
     @Test
@@ -271,6 +303,20 @@ class HomeRowsTest {
         val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), engineGroup)
 
         assertNull((reconciled[0] as HomeRow.GroupRow).memberName)
+    }
+
+    @Test
+    fun `ずれの補正は名前だけを消し切替理由は残す`() {
+        // 裁定R23: 補正が消すのは「信用できない名前」であり、切替理由は
+        // グループ単位の事実なので候補の並びのずれとは無関係に残す。
+        val state = FailoverState.Healthy("g1", candidateIndex = 1, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        val rows = HomeRows.build(listOf(group), profiles, state, slowLinkSwitchGroupId = "g1")
+
+        val engineGroup = group.copy(memberUuids = listOf("uuid-b", "uuid-a"))
+        val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), engineGroup)
+
+        assertNull((reconciled[0] as HomeRow.GroupRow).memberName)
+        assertEquals("速度低下で切替", (reconciled[0] as HomeRow.GroupRow).switchReason)
     }
 
     @Test

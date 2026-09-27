@@ -99,9 +99,20 @@ fun HomeScreen(
     // groupList（下の remember、GroupStore から読み直したもの）と世代がずれて
     // いないかを照合するために使う。
     val engineActiveGroup by FailoverStateHolder.activeGroup.collectAsStateWithLifecycle()
+    // 裁定R19: 直前にスループット低下で切り替えたグループ。FailingOver の数秒で
+    // 消えないので、切替のあとにアプリを開いた利用者も理由を確かめられる。
+    val slowLinkSwitchGroupId by
+        FailoverStateHolder.lastSlowLinkSwitchGroupId.collectAsStateWithLifecycle()
 
-    val rows = remember(reloadToken, profileList, groupList, failoverState, engineActiveGroup) {
-        val built = HomeRows.build(groupList, profileList, failoverState)
+    val rows = remember(
+        reloadToken,
+        profileList,
+        groupList,
+        failoverState,
+        engineActiveGroup,
+        slowLinkSwitchGroupId,
+    ) {
+        val built = HomeRows.build(groupList, profileList, failoverState, slowLinkSwitchGroupId)
         HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }
     // 裁定84（fix8）: rows のうちフォーカス対象になりうる行のキーだけを並べたもの。
@@ -442,6 +453,13 @@ private fun GroupCard(
                 "${row.memberCount} 件の候補 · $auto${statusSuffix(row)}",
                 style = MaterialTheme.typography.bodySmall,
             )
+            // 裁定R19/R23: 直前の自動切替の理由。接続先の名前ではないので、
+            // バッジと候補名（statusSuffix）の行には混ぜず、独立した行に
+            // 「直前の切替: …」として出す（名前の位置に出すと、そういう名前の
+            // 接続先へ繋いでいるように読めてしまう）。
+            row.switchReason?.let { reason ->
+                Text("直前の切替: $reason", style = MaterialTheme.typography.bodySmall)
+            }
             // 裁定63: ラベルは実際の動作と一致させる。全状態の対応は
             // GroupCard 直前の KDoc の表を参照。
             val actionHint = when (row.badge) {

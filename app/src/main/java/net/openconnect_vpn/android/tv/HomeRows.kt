@@ -26,14 +26,28 @@ sealed interface HomeRow {
          * この名前が出る）。対象が定まっていない状態（`Idle` / `Exhausted` /
          * `FailingOver`）では null。
          *
-         * 例外: `FailingOver` のうちスループット低下が理由の切替
-         * （[FailoverState.FailingOver.bySlowLink]）では、候補名の代わりに
-         * 切替理由の文言（例:「速度低下で切替」）が入る。死活起因の
-         * `FailingOver`（`bySlowLink = false`）では従来どおり null のまま
-         * （理由の分からない自動切替を作らないための仕様書 5 の要件だが、
-         * 死活起因は元々ユーザーにとって理由が自明なため文言を増やさない）。
+         * 裁定R23: ここに**接続先の表示名以外を入れてはならない。** 一時期は
+         * スループット低下による切替の理由文をここへ載せていたが、
+         * `HomeScreen` がこれを「接続中 (◯◯)」の括弧の中に描くため、
+         * 「速度低下で切替」という名前の接続先へ繋いでいるように読めていた。
+         * 切替理由は [switchReason] が持つ。
          */
         val memberName: String?,
+        /**
+         * 裁定R19/R23: この行のグループが**直前に自動で切り替わった理由**
+         * （例:「速度低下で切替」）。理由が無い・別のグループの切替だった場合は
+         * null。[memberName] と違い接続先の名前ではないので、`HomeScreen` 側も
+         * 名前の位置には描かない。
+         *
+         * 死活起因の切替では null のままにする（理由の分からない自動切替を
+         * 作らないための仕様書 5 の要件だが、死活起因は元々利用者にとって
+         * 理由が自明なため文言を増やさない）。
+         *
+         * 寿命は [FailoverState] ではなく
+         * [net.openconnect_vpn.android.failover.FailoverStateHolder.lastSlowLinkSwitchGroupId]
+         * が決める（切替中の数秒で消えず、次に利用者が明示的に接続するまで残る）。
+         */
+        val switchReason: String? = null,
     ) : HomeRow
 
     data class SectionHeader(val title: String) : HomeRow
@@ -73,14 +87,22 @@ object HomeRows {
 
     /**
      * スループット低下が理由の切替であることをユーザーに伝える文言
-     * （仕様書 5、例示どおり）。[memberName] だけがこれを使う。
+     * （仕様書 5、例示どおり）。[HomeRow.GroupRow.switchReason] だけがこれを使う。
      */
     private const val SLOW_LINK_SWITCH_REASON = "速度低下で切替"
 
+    /**
+     * @param slowLinkSwitchGroupId 裁定R19: 直前にスループット低下で切り替えた
+     *   グループの ID（[net.openconnect_vpn.android.failover.FailoverStateHolder.lastSlowLinkSwitchGroupId]
+     *   をそのまま渡す）。その行だけ [HomeRow.GroupRow.switchReason] が入る。
+     *   既定の null は「理由なし」で、状態だけから行を組み立てていた従来と同じ
+     *   結果になる。
+     */
     fun build(
         groups: List<FailoverGroup>,
         profiles: List<ProfileSummary>,
         state: FailoverState,
+        slowLinkSwitchGroupId: String? = null,
     ): List<HomeRow> {
         val rows = mutableListOf<HomeRow>()
 
@@ -92,6 +114,7 @@ object HomeRows {
                 autoFailoverEnabled = group.autoFailoverEnabled,
                 badge = badgeFor(group.id, state),
                 memberName = memberName(group, profiles, state),
+                switchReason = if (group.id == slowLinkSwitchGroupId) SLOW_LINK_SWITCH_REASON else null,
             )
         }
 
@@ -140,11 +163,9 @@ object HomeRows {
      * [FailoverState.FailingOver] の `failedIndex` は見限られつつある候補を指す
      * だけで、次の候補への接続はまだ成立していないため null を返す。
      *
-     * ただし [FailoverState.FailingOver.bySlowLink] が true（スループット低下が
-     * 理由の切替）のときだけは例外で、候補名の代わりに切替理由の文言を返す
-     * （仕様書 5:「理由の分からない自動切替を作らない」）。この理由は
-     * [FailoverState.FailingOver] の間しか分からない（次候補が [Healthy] へ
-     * 進むとフラグごと消える）ため、この関数もその間しか文言を返せない。
+     * 裁定R23: 切替理由（[HomeRow.GroupRow.switchReason]）はここでは扱わない。
+     * この関数が返すのは**接続先の名前だけ**であり、スループット低下による切替でも
+     * 死活による切替と同じく null を返す。
      *
      * こちらも6ケースを網羅し `else` は使わない。
      */
@@ -153,10 +174,6 @@ object HomeRows {
         profiles: List<ProfileSummary>,
         state: FailoverState,
     ): String? {
-        if (state is FailoverState.FailingOver && state.groupId == group.id && state.bySlowLink) {
-            return SLOW_LINK_SWITCH_REASON
-        }
-
         val index: Int? = when (state) {
             FailoverState.Idle -> null
             is FailoverState.Connecting ->

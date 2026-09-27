@@ -62,6 +62,36 @@ class FailoverStateHolderTest {
     }
 
     @Test
+    fun `裁定R19 - 切替理由は状態が FailingOver を抜けても残り 明示的な消去でだけ消える`() {
+        assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        FailoverStateHolder.publishSlowLinkSwitch("g1")
+        // 切替が終わって Healthy へ進んでも理由は残る（publish は理由に触らない）。
+        FailoverStateHolder.publish(
+            FailoverState.Healthy(
+                groupId = "g1",
+                candidateIndex = 1,
+                consecutiveFailures = 0,
+                lastProbeAtMs = 1_000L,
+            ),
+            group,
+        )
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        FailoverStateHolder.clearSlowLinkSwitch()
+        assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+    }
+
+    @Test
+    fun `裁定R19 - reset は切替理由も消す`() {
+        FailoverStateHolder.publishSlowLinkSwitch("g1")
+
+        FailoverStateHolder.reset()
+
+        assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+    }
+
+    @Test
     fun `裁定65（指摘7）- state を MutableStateFlow へキャストして書き込もうとすると失敗する`() {
         // asStateFlow() は ReadonlyStateFlow でラップして返すため、
         // MutableStateFlow の実装クラスとは異なり、このキャストは実行時に落ちる。

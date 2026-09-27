@@ -43,6 +43,7 @@ object FailoverStateHolder {
 
     private val mutableState = MutableStateFlow<FailoverState>(FailoverState.Idle)
     private val mutableActiveGroup = MutableStateFlow<FailoverGroup?>(null)
+    private val mutableLastSlowLinkSwitchGroupId = MutableStateFlow<String?>(null)
 
     /** UI はここだけを読む。真実の所有者は [FailoverController]、ここは写し。 */
     val state: StateFlow<FailoverState> = mutableState.asStateFlow()
@@ -61,10 +62,52 @@ object FailoverStateHolder {
      */
     val activeGroup: StateFlow<FailoverGroup?> = mutableActiveGroup.asStateFlow()
 
+    /**
+     * 裁定R19（裁定R18 を覆す）: 最後に**スループット低下が理由で**切り替えた
+     * グループの ID。まだ一度も起きていなければ null。
+     *
+     * 仕様書 5 は「切り替えた理由を表示する」ことを求め、その目的を
+     * 「理由の分からない自動切替は最も嫌われる挙動である」と述べている。
+     * 理由そのものは [FailoverState.FailingOver.bySlowLink] にも載っているが、
+     * その状態は切断完了の確認まで（実測1〜3秒）しか続かない。この機能が働くのは
+     * 利用者が**別のアプリで動画を見ている**あいだなので、その数秒に画面を
+     * 見ている確率はほぼ0で、仕様書 5 の目的は満たせない。
+     *
+     * そこで理由だけをここに残す。[FailoverState] にフィールドを足すのでは
+     * ないので、状態機械（真実）の形は変わらない——ここは元から
+     * [FailoverService] が持つ投影であり、状態と同じ場所に置くのが最も安い。
+     *
+     * 寿命は「次に利用者が明示的に接続するまで」。理由を消すのは
+     * [clearSlowLinkSwitch] の1か所だけで、[FailoverService.onStartCommand] の
+     * `ACTION_CONNECT_GROUP` から呼ぶ（仕様書 4-5 が一周の記録の解除に使う
+     * のと同じ「利用者の明示的な操作」であり、時間による自動消去はしない）。
+     */
+    val lastSlowLinkSwitchGroupId: StateFlow<String?> = mutableLastSlowLinkSwitchGroupId.asStateFlow()
+
     /** [FailoverService] の dispatch ループからのみ呼ぶこと。 */
     internal fun publish(newState: FailoverState, activeGroup: FailoverGroup?) {
         mutableState.value = newState
         mutableActiveGroup.value = activeGroup
+    }
+
+    /**
+     * 裁定R19: スループット低下による切替が始まったことを記録する。
+     * [FailoverService] の dispatch ループからのみ呼ぶこと。
+     *
+     * 同じ切替のあいだ（`FailingOver` の数ティック）繰り返し呼ばれるが、
+     * [MutableStateFlow] は同じ値の代入では購読者に流さないので冪等である。
+     */
+    internal fun publishSlowLinkSwitch(groupId: String) {
+        mutableLastSlowLinkSwitchGroupId.value = groupId
+    }
+
+    /**
+     * 裁定R19: 記録した理由を消す。利用者が明示的に接続をやり直したときに
+     * [FailoverService.onStartCommand] から呼ぶ。新しい指示が来た時点で、
+     * 前回なぜ切り替わったかを表示し続ける意味は無い。
+     */
+    internal fun clearSlowLinkSwitch() {
+        mutableLastSlowLinkSwitchGroupId.value = null
     }
 
     /**
@@ -75,5 +118,7 @@ object FailoverStateHolder {
     internal fun reset() {
         mutableState.value = FailoverState.Idle
         mutableActiveGroup.value = null
+        // 裁定R19: 切替理由も投影の一部なので、サービスの生死に合わせて消す。
+        mutableLastSlowLinkSwitchGroupId.value = null
     }
 }
