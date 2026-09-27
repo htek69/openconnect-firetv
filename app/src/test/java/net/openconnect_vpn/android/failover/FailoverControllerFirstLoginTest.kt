@@ -127,6 +127,32 @@ class FailoverControllerFirstLoginTest {
     }
 
     @Test
+    fun `接続中に利用者が指示した場合も切断確認のあとで飛ばさない`() {
+        // 裁定86（H2）の PendingConnect.unattended は、切断待ちを挟んでも
+        // 「利用者が指示した」ことを持ち越す。ここで unattended が true に
+        // 化けると、既にそのグループへ接続中の状態で初回ログインを始めようと
+        // した利用者（＝報告された状況そのもの）が永久に登録できなくなる。
+        val controller = controllerFor(
+            group("uuid-a", "uuid-b"),
+            needsFirstLogin = setOf("uuid-a", "uuid-b"),
+        )
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        // 同じグループへもう一度指示する（生きている候補があるので2段階になる）。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertEquals(listOf("uuid-a", "uuid-a"), vpn.connectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(0, (state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
     fun `全員が初回ログイン未完了なら無人の開始は既存の枯渇へ落ちて空回りしない`() {
         val controller = controllerFor(
             group("uuid-a", "uuid-b"),

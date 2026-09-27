@@ -606,6 +606,12 @@ class FailoverController(
      *   明示操作では適用しない（理由は [needsFirstLoginProvider] の KDoc）。
      *
      * 供給関数を引くのは候補選択のときだけである（`onTick` の毎周期では引かない）。
+     *
+     * [fromIndex] の下限を 0 に丸めるのは防御でしかない。負の値が来る経路は
+     * 現在存在しない（[stopBeforeStarting] が置く `failedIndex = -1` は
+     * [advanceAfterFailingOver] の `pendingConnect` 分岐が先に評価されるため
+     * 読まれず、読まれる経路では必ず `failedIndex + 1 >= 0` になる）。
+     * 丸めの有無で到達しうる振る舞いは変わらない。
      */
     private fun nextStartableIndex(group: FailoverGroup, fromIndex: Int, unattended: Boolean): Int {
         var index = fromIndex.coerceAtLeast(0)
