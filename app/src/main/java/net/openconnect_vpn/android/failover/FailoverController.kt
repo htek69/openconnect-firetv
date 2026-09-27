@@ -29,6 +29,32 @@ class FailoverController(
      * [awaitingHumanAuthInput] の KDoc）。
      */
     private val dialogHostAttachedProvider: () -> Boolean = { false },
+    /**
+     * そのメンバー（引数はメンバーの uuid）が初回ログインを終えていないか。
+     * [groupsProvider]（裁定72）/ [dialogHostAttachedProvider]（裁定93）と同じ
+     * 「参照のたびに呼ぶ供給関数」の形で受け取る。実体は
+     * `ProfileRepository.needsFirstLogin`（プロファイル自身の prefs に
+     * `FORMDATA-` で始まるキーが1つも無いか）で、`FailoverService` が供給する。
+     * **ここから Android API は一切参照しない。** 真偽値だけを見る。
+     *
+     * true が意味するのは「認証情報が保存されていないので、人が居なければ
+     * **絶対に**接続が成功しない」ことである。それを無人で起動すると、裁定30 の
+     * `UserPrompt` 10秒で候補を見捨てて裁定95 の `cancelActiveDialog()` が
+     * 認証ダイアログを畳むため、**利用者が答えようとしているダイアログを
+     * 巡回のたびに消し続ける**（実機で8回連続の「取り消し」として観測された）。
+     * よって [nextStartableIndex] は**無人で始めるときだけ**このメンバーを飛ばす。
+     *
+     * **利用者の明示操作（`unattended = false`）では飛ばさない。** 初回ログインは
+     * その経路で行うのだから、そこで飛ばすと誰も登録できなくなる。
+     *
+     * 飛ばすことは S1 の除外（[excludedUuids]）とは別物で、集合には何も足さない。
+     * 供給関数なので、利用者が初回ログインを終えた次の候補選択からは false に
+     * なり、そのメンバーは自動の巡回へ戻る。
+     *
+     * 既定値が `{ false }` なのは「従来どおり誰も飛ばさない」を意味する。
+     * 供給しない呼び出し元（既存のテスト）の振る舞いは無改変で変わらない。
+     */
+    private val needsFirstLoginProvider: (String) -> Boolean = { false },
 ) {
 
     /**
@@ -558,17 +584,50 @@ class FailoverController(
     }
 
     /**
-     * [fromIndex] 以降で除外されていない最初の候補へ接続する。
+     * [fromIndex] 以降で**起動してよい**最初の候補の位置。無ければ
+     * `group.memberUuids.size`（＝枯渇）を返す。
+     *
+     * 候補を飛ばす規則をこの1か所に集めるために切り出してある。以前は
+     * [startCandidateFrom] のループの中に直接書かれていたが、飛ばす条件が
+     * 「除外されている」以外にも増えたので、条件が呼び出し経路ごとに食い違う
+     * 余地を残さないよう1つの関数にした。[startCandidateFrom] がこの関数の
+     * 唯一の呼び出し元であり、候補を起動する5経路（[onUserConnect] /
+     * [onAutoConnect] / [failOver] / [advanceAfterFailingOver] /
+     * [onExhaustedRetry]）はすべて [startCandidateFrom] を通る。
+     *
+     * 飛ばす条件は2つ:
+     * - 安全策 S1 の除外集合（[excludedUuids]）に入っている。有人・無人を問わない
+     *   ……**わけではない**。除外は「認証段階に到達して通らなかった」記録であり、
+     *   裁定35 により利用者の明示操作（[onUserConnect]）ではその集合ごとクリア
+     *   されてからここへ来る。したがってこの判定を `unattended` で分ける必要は
+     *   なく、従来どおり無条件でよい（振る舞いは以前と同一）。
+     * - [needsFirstLoginProvider] が true で、**かつ [unattended] が true**。
+     *   人が居ないときに成功しえない候補を起動しないための規則で、利用者の
+     *   明示操作では適用しない（理由は [needsFirstLoginProvider] の KDoc）。
+     *
+     * 供給関数を引くのは候補選択のときだけである（`onTick` の毎周期では引かない）。
+     */
+    private fun nextStartableIndex(group: FailoverGroup, fromIndex: Int, unattended: Boolean): Int {
+        var index = fromIndex.coerceAtLeast(0)
+        while (index < group.memberUuids.size) {
+            val uuid = group.memberUuids[index]
+            val skip = uuid in _excludedUuids || (unattended && needsFirstLoginProvider(uuid))
+            if (!skip) return index
+            index++
+        }
+        return group.memberUuids.size
+    }
+
+    /**
+     * [fromIndex] 以降で起動してよい最初の候補（[nextStartableIndex]）へ接続する。
      * 候補が無ければ Exhausted に入る。
      */
     private fun startCandidateFrom(group: FailoverGroup, fromIndex: Int, unattended: Boolean): FailoverState {
         var index = fromIndex
-        while (index < group.memberUuids.size) {
+        while (true) {
+            index = nextStartableIndex(group, index, unattended)
+            if (index >= group.memberUuids.size) break
             val uuid = group.memberUuids[index]
-            if (uuid in _excludedUuids) {
-                index++
-                continue
-            }
             currentCandidatePassedAuth = false
             currentCandidateReachedAuth = false
             currentCandidateUnattended = unattended
