@@ -35,6 +35,15 @@ sealed interface HomeRow {
         val uuid: String,
         val name: String,
         val serverAddress: String,
+        /**
+         * この接続先がまだ初回ログインを終えていないか
+         * （`ProfileRepository.needsFirstLogin`）。true の間、自動切替はこの
+         * 接続先を候補にしない（無人では絶対に成功しないため）。
+         *
+         * 既定値が false なのは、判定を渡さない呼び出し元（既存のテスト）で
+         * 印が付かないことを意味する。表示する文言は [HomeRows.firstLoginNotice]。
+         */
+        val needsFirstLogin: Boolean = false,
     ) : HomeRow
 
     data object AddProfile : HomeRow
@@ -68,6 +77,12 @@ object HomeRows {
         groups: List<FailoverGroup>,
         profiles: List<ProfileSummary>,
         state: FailoverState,
+        /**
+         * その接続先（引数は uuid）が初回ログインを終えていないか。
+         * 実体は `ProfileRepository.needsFirstLogin`。既定 `{ false }` は
+         * 「どの行にも印を付けない」を意味する。
+         */
+        needsFirstLogin: (String) -> Boolean = { false },
     ): List<HomeRow> {
         val rows = mutableListOf<HomeRow>()
 
@@ -91,6 +106,7 @@ object HomeRows {
                 uuid = profile.uuid,
                 name = profile.name,
                 serverAddress = profile.serverAddress,
+                needsFirstLogin = needsFirstLogin(profile.uuid),
             )
         }
 
@@ -219,6 +235,20 @@ object HomeRows {
             }
         }
     }
+
+    /**
+     * 初回ログインが未完了の接続先の行に添える注記。終えていれば null（何も出さない）。
+     *
+     * 自動切替はこの接続先を候補にしない（認証情報が保存されていないので人が
+     * 居なければ絶対に成功せず、無人で起動すると裁定30 の10秒で見捨てられて
+     * 認証ダイアログごと消える）。**理由の分からない自動挙動を作らない**という
+     * 既存の方針（仕様書5）に従い、飛ばされていること自体を利用者に見せる。
+     *
+     * 文言の組み立ては [groupDeletionWarning] と同じく純関数にしてテストで固定
+     * してある（Compose 側はこの結果を描くだけにする）。
+     */
+    fun firstLoginNotice(needsFirstLogin: Boolean): String? =
+        if (needsFirstLogin) "初回ログインが必要（自動切替では選ばれません）" else null
 
     /**
      * 裁定84（fix8）: 削除確認オーバーレイで削除を実行したあと、フォーカスを

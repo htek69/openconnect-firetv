@@ -398,4 +398,33 @@ class HomeRowsTest {
 
         assertNull(target)
     }
+
+    @Test
+    fun `初回ログインが必要な接続先の注記を文言ごと固定する`() {
+        assertEquals(
+            "初回ログインが必要（自動切替では選ばれません）",
+            HomeRows.firstLoginNotice(needsFirstLogin = true),
+        )
+        assertNull(HomeRows.firstLoginNotice(needsFirstLogin = false))
+    }
+
+    @Test
+    fun `初回ログインが必要な接続先の行にその印が付く`() {
+        val rows = HomeRows.build(
+            groups = listOf(group),
+            profiles = profiles,
+            state = FailoverState.Idle,
+            needsFirstLogin = { uuid -> uuid == "uuid-b" },
+        )
+
+        val profileRows = rows.filterIsInstance<HomeRow.ProfileRow>()
+        assertEquals(listOf(false, true), profileRows.map { it.needsFirstLogin })
+    }
+
+    @Test
+    fun `判定を渡さなければどの行にも印は付かない`() {
+        val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+
+        assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().none { it.needsFirstLogin })
+    }
 }

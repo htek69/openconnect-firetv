@@ -101,7 +101,16 @@ fun HomeScreen(
     val engineActiveGroup by FailoverStateHolder.activeGroup.collectAsStateWithLifecycle()
 
     val rows = remember(reloadToken, profileList, groupList, failoverState, engineActiveGroup) {
-        val built = HomeRows.build(groupList, profileList, failoverState)
+        val built = HomeRows.build(
+            groupList,
+            profileList,
+            failoverState,
+            // 初回ログインが未完了の接続先には行に注記を出す。自動切替が
+            // その接続先を飛ばしていることを利用者から見えるようにするため
+            // （HomeRows.firstLoginNotice の KDoc）。rows を作り直すときだけ
+            // 引くので、行の描画ごとに prefs を読むことはない。
+            needsFirstLogin = { uuid -> profiles.needsFirstLogin(uuid) },
+        )
         HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }
     // 裁定84（fix8）: rows のうちフォーカス対象になりうる行のキーだけを並べたもの。
@@ -492,6 +501,9 @@ private fun ProfileCard(
         Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(row.name, style = MaterialTheme.typography.titleMedium)
             Text(row.serverAddress, style = MaterialTheme.typography.bodySmall)
+            HomeRows.firstLoginNotice(row.needsFirstLogin)?.let { notice ->
+                Text(notice, style = MaterialTheme.typography.bodySmall)
+            }
             Text("長押しで削除", style = MaterialTheme.typography.bodySmall)
         }
     }
