@@ -111,6 +111,29 @@ object FailoverStateHolder {
     }
 
     /**
+     * 最終再レビューの指摘4（FIX 1）: [FailoverState.FailingOver] が新しく
+     * 始まるたびに [FailoverService.dispatch] から呼ぶ。理由の書き込み・消去を
+     * 1か所にまとめ、両分岐を必ず対にする。
+     *
+     * `bySlowLink == true` なら [publishSlowLinkSwitch] で記録するが、
+     * それ以外（**死活起因の切替**）では [clearSlowLinkSwitch] で必ず消す。
+     * 以前はこの else 側が無く、速度低下による切替のあとに死活起因の切替が
+     * 起きても前回の理由が残ったまま——「直前の切替: 速度低下で切替」という
+     * 表示が、実際には死活切替であるにもかかわらず居座る誤表示になっていた。
+     * 理由が分からない自動切替より、**間違った理由が表示される自動切替の方が
+     * 悪い**（仕様書 5 の「理由の分からない自動切替を作らない」の趣旨に反する）。
+     *
+     * `FailingOver` 以外の状態（`Healthy` など）ではどちらも呼ばない。切替の
+     * 理由は「次に FailingOver が始まるまで」有効な値として運ぶものであり、
+     * 切替と切替の間の定常状態でこの値を書き換える理由が無い。
+     */
+    internal fun onFailoverStateChanged(newState: FailoverState) {
+        (newState as? FailoverState.FailingOver)?.let {
+            if (it.bySlowLink) publishSlowLinkSwitch(it.groupId) else clearSlowLinkSwitch()
+        }
+    }
+
+    /**
      * [FailoverService.onDestroy] からのみ呼ぶこと。
      * サービスが止まったのに UI が古い接続状態を表示し続けないよう、
      * サービスの生死と投影内容を一致させる。

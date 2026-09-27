@@ -92,6 +92,36 @@ class FailoverStateHolderTest {
     }
 
     @Test
+    fun `最終再レビュー指摘4（FIX 1）- 速度低下切替のあとの死活切替は理由を消す`() {
+        // 速度低下による切替が起きて理由が記録される。
+        FailoverStateHolder.onFailoverStateChanged(
+            FailoverState.FailingOver(
+                groupId = "g1",
+                failedIndex = 0,
+                awaitingUuid = "uuid-a",
+                startedAtMs = 0L,
+                bySlowLink = true,
+            ),
+        )
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        // 時間が経ち、今度は死活起因の切替が別グループで起きる。
+        // このとき前回の「速度低下で切替」という理由を残してはいけない
+        // （直前の切替は死活起因であり、速度低下の文言は嘘になる）。
+        FailoverStateHolder.onFailoverStateChanged(
+            FailoverState.FailingOver(
+                groupId = "g1",
+                failedIndex = 1,
+                awaitingUuid = "uuid-b",
+                startedAtMs = 10_000L,
+                bySlowLink = false,
+            ),
+        )
+
+        assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+    }
+
+    @Test
     fun `裁定65（指摘7）- state を MutableStateFlow へキャストして書き込もうとすると失敗する`() {
         // asStateFlow() は ReadonlyStateFlow でラップして返すため、
         // MutableStateFlow の実装クラスとは異なり、このキャストは実行時に落ちる。
