@@ -123,6 +123,28 @@ class HomeRowsTest {
     }
 
     @Test
+    fun `速度低下による切替の直後は理由が候補名の代わりに表示される`() {
+        // bySlowLink=true の FailingOver では、まだ次候補への接続は成立して
+        // いない（memberName の通常契約どおり null になり得る場面）が、
+        // 「理由の分からない自動切替を作らない」ため、候補名の代わりに
+        // 切替理由の文言を出す。バッジ自体は死活起因のときと変わらず
+        // Connecting のままでよい（まだつながろうとしている、という意味は
+        // 変わらないため）。
+        val state = FailoverState.FailingOver(
+            groupId = "g1",
+            failedIndex = 0,
+            awaitingUuid = "uuid-a",
+            startedAtMs = 0L,
+            bySlowLink = true,
+        )
+        val rows = HomeRows.build(listOf(group), profiles, state)
+
+        val row = rows[0] as HomeRow.GroupRow
+        assertEquals(ConnectionBadge.Connecting, row.badge)
+        assertEquals("速度低下で切替", row.memberName)
+    }
+
+    @Test
     fun `別のグループが Healthy でも当該グループのバッジは None`() {
         val other = group.copy(id = "g2", name = "予備")
         val state = FailoverState.Healthy("g2", candidateIndex = 0, consecutiveFailures = 0, lastProbeAtMs = 0L)

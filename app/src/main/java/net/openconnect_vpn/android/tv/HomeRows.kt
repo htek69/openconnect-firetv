@@ -25,6 +25,13 @@ sealed interface HomeRow {
          * （例: [ConnectionBadge.Connecting] の間はダイヤル中でトンネル未確立でも
          * この名前が出る）。対象が定まっていない状態（`Idle` / `Exhausted` /
          * `FailingOver`）では null。
+         *
+         * 例外: `FailingOver` のうちスループット低下が理由の切替
+         * （[FailoverState.FailingOver.bySlowLink]）では、候補名の代わりに
+         * 切替理由の文言（例:「速度低下で切替」）が入る。死活起因の
+         * `FailingOver`（`bySlowLink = false`）では従来どおり null のまま
+         * （理由の分からない自動切替を作らないための仕様書 5 の要件だが、
+         * 死活起因は元々ユーザーにとって理由が自明なため文言を増やさない）。
          */
         val memberName: String?,
     ) : HomeRow
@@ -63,6 +70,12 @@ fun HomeRow.focusKey(): String? = when (this) {
  * Compose 側はこの結果を描くだけにして、表示の判断をここに集約する。
  */
 object HomeRows {
+
+    /**
+     * スループット低下が理由の切替であることをユーザーに伝える文言
+     * （仕様書 5、例示どおり）。[memberName] だけがこれを使う。
+     */
+    private const val SLOW_LINK_SWITCH_REASON = "速度低下で切替"
 
     fun build(
         groups: List<FailoverGroup>,
@@ -126,6 +139,13 @@ object HomeRows {
      * 未確立でも候補名を返す。接続済みかどうかは [badgeFor] が示す）。
      * [FailoverState.FailingOver] の `failedIndex` は見限られつつある候補を指す
      * だけで、次の候補への接続はまだ成立していないため null を返す。
+     *
+     * ただし [FailoverState.FailingOver.bySlowLink] が true（スループット低下が
+     * 理由の切替）のときだけは例外で、候補名の代わりに切替理由の文言を返す
+     * （仕様書 5:「理由の分からない自動切替を作らない」）。この理由は
+     * [FailoverState.FailingOver] の間しか分からない（次候補が [Healthy] へ
+     * 進むとフラグごと消える）ため、この関数もその間しか文言を返せない。
+     *
      * こちらも6ケースを網羅し `else` は使わない。
      */
     private fun memberName(
@@ -133,6 +153,10 @@ object HomeRows {
         profiles: List<ProfileSummary>,
         state: FailoverState,
     ): String? {
+        if (state is FailoverState.FailingOver && state.groupId == group.id && state.bySlowLink) {
+            return SLOW_LINK_SWITCH_REASON
+        }
+
         val index: Int? = when (state) {
             FailoverState.Idle -> null
             is FailoverState.Connecting ->
