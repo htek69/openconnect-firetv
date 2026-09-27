@@ -22,6 +22,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.openconnect_vpn.android.core.ProfileManager
+import net.openconnect_vpn.android.tv.ProfileRepository
 
 /**
  * フェイルオーバー状態機械を駆動するフォアグラウンドサービス。
@@ -64,6 +65,14 @@ class FailoverService : Service() {
     private lateinit var controller: FailoverController
     private lateinit var probe: HealthProbe
     private lateinit var groupStore: GroupStore
+
+    /**
+     * 初回ログインが済んでいるかを引くためだけに持つ。
+     * `ProfileRepository` は `ProfileManager` への薄いアダプタであり、ここでは
+     * `needsFirstLogin`（キー名の有無を見るだけの読み取り）しか呼ばない
+     * （作成・削除・アドレス変更は行わないので `bumpProfileGeneration` は動かない）。
+     */
+    private lateinit var profiles: ProfileRepository
     private lateinit var bridge: VpnStatusBridge
     private lateinit var networkGate: NetworkGate
     private var probeTarget: ProbeTarget = ProbeTarget()
@@ -206,6 +215,7 @@ class FailoverService : Service() {
         val knownUuids = ProfileManager.getProfiles().map { it.getUUIDString() }.toSet()
 
         groups = groupStore.loadGroups(knownUuids)
+        profiles = ProfileRepository(this, groupStore)
         controller = FailoverController(
             groupsProvider = { groups },
             clock = SystemClock(),
@@ -216,6 +226,15 @@ class FailoverService : Service() {
             // 値の実体は OpenVpnService.mActivityConnections > 0 に相当する
             // （なぜ直接読まないかは DialogHostTracker の KDoc 参照）。
             dialogHostAttachedProvider = { DialogHostRegistry.tracker.attached },
+            // 「この接続先は初回ログインが未完了か」を供給する。プロファイルの
+            // prefs を読むのはこちら側の責任で、FailoverController は真偽値だけを
+            // 見る（Android API を参照しない）。
+            //
+            // 引かれるのは候補選択（FailoverController.nextStartableIndex）の
+            // ときだけであり、onTick の毎周期では引かれない。供給関数なので
+            // 利用者が初回ログインを終えた次の候補選択から false に変わり、
+            // その接続先は自動の巡回へ戻る（コントローラを作り直す必要は無い）。
+            needsFirstLoginProvider = { uuid -> profiles.needsFirstLogin(uuid) },
         )
 
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
