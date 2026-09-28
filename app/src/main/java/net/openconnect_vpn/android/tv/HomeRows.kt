@@ -395,14 +395,22 @@ object HomeRows {
      * **いま張っているトンネルを切ってから**指定した接続先へ繋ぎ直す。
      * どのグループが繋ぎ直されるのかも利用者から見えるよう、経路になるグループの
      * 名前（[HomeRow.ProfileRow.firstLoginGroup]）を文面に出す。
+     *
+     * **短く言う**（指摘7・レビュー2）。[ConfirmDialog] の本文は
+     * `fillMaxWidth(0.6f)` の `Column` に置かれ、`verticalScroll` を持たない。
+     * 長いと低解像度・大フォント設定の端末で**ボタン行が下にはみ出す**ので、
+     * この画面のどの確認よりも長い文面にしてはならない。削ったのは
+     * 「ユーザー名とパスワード」「『パスワードを保存』にチェック」という手順の
+     * 説明であって、**落としてはならない2点——いまの接続が切れること・どのグループか
+     * ——は残してある**（手順は認証画面そのものと README・`docs/MANUAL-TEST.md` が
+     * 案内する）。上限はテストで固定した。
      */
     fun firstLoginConfirmation(row: HomeRow.ProfileRow): String? {
         val group = row.firstLoginGroup ?: return null
         if (!row.needsFirstLogin || row.firstLoginInProgress) return null
-        return "「${row.name}」で初回ログインを行いますか？\n\n" +
-            "いまの VPN 接続を切って、グループ「${group.name}」の「${row.name}」へ繋ぎ直します。" +
-            "認証画面が出たらユーザー名とパスワードを入力してください" +
-            "（「パスワードを保存」にチェックを入れると、次回からは自動で接続できます）。"
+        return "「${row.name}」で初回ログインしますか？\n\n" +
+            "いまの VPN 接続を切り、グループ「${group.name}」経由で繋ぎ直します。" +
+            "認証画面が出たら入力してください。"
     }
 
     /**

@@ -479,12 +479,15 @@ class HomeRowsTest {
         )
 
         assertEquals(
-            "「sv2」で初回ログインを行いますか？\n\n" +
-                "いまの VPN 接続を切って、グループ「自宅優先」の「sv2」へ繋ぎ直します。" +
-                "認証画面が出たらユーザー名とパスワードを入力してください" +
-                "（「パスワードを保存」にチェックを入れると、次回からは自動で接続できます）。",
+            "「sv2」で初回ログインしますか？\n\n" +
+                "いまの VPN 接続を切り、グループ「自宅優先」経由で繋ぎ直します。" +
+                "認証画面が出たら入力してください。",
             message,
         )
+        // 指摘7（レビュー2）: ConfirmDialog はスクロールを持たないので、長いと
+        // 低解像度・大フォント設定の端末でボタン行が下にはみ出す。落としては
+        // ならない2点（接続が切れる・どのグループか）は上の文言で固定してある。
+        assertTrue("確認の文面が長すぎる（${message!!.length}文字）", message.length <= 90)
         assertNull(
             HomeRows.firstLoginConfirmation(profileRow(needsFirstLogin = false, group = firstLoginGroup)),
         )
