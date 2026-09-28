@@ -419,12 +419,35 @@ class HomeRowsTest {
     fun `初回ログインが必要な接続先の注記を文言ごと固定する`() {
         // 状態（飛ばされている）だけでなく、解き方（この行の操作で接続する）まで
         // 書いてあることを固定する。どちらかが消えたら落ちる。
+        // 指摘1（レビュー2）: 解き方は隣の「初回ログイン」カードが示すので、
+        // 注記に書かない。注記が長いほど本体カードの要求幅が伸び、操作カードを
+        // 押し出す方向に働く（＝操作に到達できなくなる）。
         assertEquals(
-            "初回ログインが必要 / 自動切替では選ばれません。" +
-                "右（→）の「初回ログイン」で接続するとログインできます",
+            "初回ログインが必要 / 自動切替では選ばれません",
             HomeRows.firstLoginNotice(profileRow(needsFirstLogin = true, group = firstLoginGroup)),
         )
         assertNull(HomeRows.firstLoginNotice(profileRow(needsFirstLogin = false, group = firstLoginGroup)))
+    }
+
+    @Test
+    fun `行の注記は操作カードを押し出さない長さに保つ`() {
+        // 指摘1（レビュー2・high）: 注記は行の本体カードの中にあり、長いほど
+        // 本体カードの要求幅が伸びて、右の「初回ログイン」カードを押し出す方向に
+        // 働く（潰れると「表示は出るのに操作に到達できない」＝この機能が埋めた
+        // はずの穴が戻る）。幅の保証は ProfileCard の weight(1f) で行っているが、
+        // 文言の側にも上限を置いて余裕を確保する。30文字は、1080p・density 2・
+        // 左右 48dp の余白で操作カードの実寸が残るようにとった目安である。
+        val notices = listOfNotNull(
+            HomeRows.firstLoginNotice(profileRow(needsFirstLogin = true, group = firstLoginGroup)),
+            HomeRows.firstLoginNotice(
+                profileRow(needsFirstLogin = true, group = firstLoginGroup, inProgress = true),
+            ),
+        )
+
+        assertEquals(2, notices.size)
+        notices.forEach { notice ->
+            assertTrue("注記が長すぎる（${notice.length}文字）: $notice", notice.length <= 32)
+        }
     }
 
     @Test
@@ -475,8 +498,7 @@ class HomeRowsTest {
         val row = profileRow(needsFirstLogin = true, group = firstLoginGroup, inProgress = true)
 
         assertEquals(
-            "初回ログイン中 / 認証画面が出たらユーザー名とパスワードを入力してください。" +
-                "もう一度押す必要はありません",
+            "初回ログイン中 / 認証画面で入力してください（押し直し不要）",
             HomeRows.firstLoginNotice(row),
         )
         assertNull(HomeRows.firstLoginActionLabel(row))

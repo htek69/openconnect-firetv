@@ -708,11 +708,26 @@ private fun ProfileCard(
     onDelete: () -> Unit,
     onFirstLogin: () -> Unit,
 ) {
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Card(
             onClick = onEdit,
             onLongClick = withLongPressConsumed(onLongPressConsumed, onDelete),
-            modifier = modifier,
+            // 指摘1（レビュー2・high）: weight を付けるのは見た目のためではない。
+            // `Row` は **weight を持たない子を先に実寸で測り、残りを weight の子に
+            // 渡す**。本体カードを weight 側にすることで、右の「初回ログイン」
+            // カードは必ず自分の実寸を取り、注記がどれだけ長くても押し出されない
+            // （注記は残り幅の中で折り返す）。
+            //
+            // 逆向き（本体カードが実寸・操作カードが残り）にすると、注記の長さで
+            // 操作カードが 0 幅へ潰れうる。そうなると画面には「初回ログインが必要」
+            // と出るのに操作に到達できない——**このブランチが埋めようとした穴の
+            // 再現**である。`GroupEditScreen` のメンバー行（▲/▼/名前）が狭い
+            // 操作を先に置いているのも同じ理由で、あちらと同じ側を潰れない側に
+            // 揃えたことになる。
+            modifier = modifier.weight(1f),
         ) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(row.name, style = MaterialTheme.typography.titleMedium)
