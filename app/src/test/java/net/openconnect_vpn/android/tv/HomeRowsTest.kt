@@ -401,8 +401,11 @@ class HomeRowsTest {
 
     @Test
     fun `初回ログインが必要な接続先の注記を文言ごと固定する`() {
+        // 状態（飛ばされている）だけでなく、解き方（先頭にして接続する）まで
+        // 書いてあることを固定する。どちらかが消えたら落ちる。
         assertEquals(
-            "初回ログインが必要（自動切替では選ばれません）",
+            "初回ログインが必要 / 自動切替では選ばれません。" +
+                "グループ設定の ▲ で先頭にしてから接続するとログインできます",
             HomeRows.firstLoginNotice(needsFirstLogin = true),
         )
         assertNull(HomeRows.firstLoginNotice(needsFirstLogin = false))
