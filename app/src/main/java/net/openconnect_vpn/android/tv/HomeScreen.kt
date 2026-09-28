@@ -32,6 +32,7 @@ import androidx.tv.material3.Button
 import androidx.tv.material3.Card
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import kotlinx.coroutines.delay
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.FailoverStateHolder
 import net.openconnect_vpn.android.failover.GroupStore
@@ -89,6 +90,10 @@ fun HomeScreen(
     // （この操作はいまの VPN 接続を切る）。文面は作れるときだけ作って持たせる
     // （[PendingFirstLogin] の KDoc）。
     var pendingFirstLogin by remember { mutableStateOf<PendingFirstLogin?>(null) }
+    // 確認で実行した「初回ログイン」の試行。**確認そのもので立てる**
+    // （[FirstLoginAttempt] と HomeRows.firstLoginAttemptInFlight の KDoc）。
+    var firstLoginAttempt by remember { mutableStateOf<FirstLoginAttempt?>(null) }
+    var firstLoginAttemptSeq by remember { mutableStateOf(0) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val profileList = remember(reloadToken) { profiles.list() }
@@ -117,13 +122,27 @@ fun HomeScreen(
     // 変わったとき）だけ。初回ログインが通った直後に注記が消えることは
     // Connecting → Verifying → Healthy の遷移で鍵が変わることで保たれる
     // （詳細は firstLoginRecheckKey の KDoc）。
+    //
+    // この鍵は「初回ログインの進行中の印」を降ろす判断にも使う
+    // （HomeRows.firstLoginAttemptInFlight）。**判定の呼び出し口を増やすことには
+    // ならない**: 鍵を1つの val にまとめて両方で読むだけで、needsFirstLogin を
+    // 呼ぶのは依然この remember の中だけである。
+    val firstLoginRecheckKey = HomeRows.firstLoginRecheckKey(failoverState)
     val needsFirstLoginByUuid = remember(
         reloadToken,
         profileList,
-        HomeRows.firstLoginRecheckKey(failoverState),
+        firstLoginRecheckKey,
     ) {
         profileList.associate { it.uuid to profiles.needsFirstLogin(it.uuid) }
     }
+
+    // 「初回ログイン中」の印を出す接続先。確認で立てた試行がまだ決着していない
+    // あいだだけ非 null になる（判定の引き直しは伴わない）。
+    val firstLoginInProgressUuid = firstLoginAttempt
+        ?.takeIf {
+            HomeRows.firstLoginAttemptInFlight(it.groupId, it.startedAtRecheckKey, failoverState)
+        }
+        ?.uuid
 
     val rows = remember(
         reloadToken,
@@ -132,12 +151,14 @@ fun HomeScreen(
         failoverState,
         engineActiveGroup,
         needsFirstLoginByUuid,
+        firstLoginInProgressUuid,
     ) {
         val built = HomeRows.build(
             groupList,
             profileList,
             failoverState,
             needsFirstLogin = { uuid -> needsFirstLoginByUuid[uuid] == true },
+            firstLoginInProgressUuid = firstLoginInProgressUuid,
         )
         HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }
@@ -356,6 +377,18 @@ fun HomeScreen(
                 // フォーカスを戻す（削除のキャンセルと同じ経路）。
                 val key = target.row.focusKey()
                 pendingFirstLogin = null
+                // **この操作そのもの**で行の操作を押せなくする（接続の節目の到着を
+                // 待たない）。待つと、認証ダイアログが出て入力している最中も
+                // 「初回ログイン」が押せる状態のままになり、二度押しが裁定95 の
+                // cancelActiveDialog() を通してそのダイアログを畳む
+                // （＝このブランチが直した症状の再現）。
+                firstLoginAttemptSeq++
+                firstLoginAttempt = FirstLoginAttempt(
+                    uuid = target.row.uuid,
+                    groupId = target.group.id,
+                    startedAtRecheckKey = firstLoginRecheckKey,
+                    token = firstLoginAttemptSeq,
+                )
                 // 既存の有人接続と同じ入口（ACTION_CONNECT_GROUP）に、どの
                 // メンバーから始めるかを足して渡すだけ。新しいシグナリング経路は
                 // 作らない（uuid → 添字の解決は FailoverService 側）。
@@ -378,6 +411,38 @@ fun HomeScreen(
                 }
             },
         )
+    }
+
+    // 「初回ログイン中」の印を降ろす（決着した試行を捨てる）。降ろす条件は
+    // HomeRows.firstLoginAttemptInFlight にあり、**成功と失敗の両方で降りる**
+    // （成功だけで降りる印は、失敗したときに再試行の手段を奪うので欠陥より悪い）。
+    // ここで state そのものを捨てておくのは、鍵が将来また同じ値に戻ったときに
+    // 古い試行が「進行中」として復活しないようにするため。
+    // 判定（needsFirstLogin）は引き直さない——見ているのは publish された状態だけ。
+    LaunchedEffect(firstLoginAttempt?.token, firstLoginRecheckKey) {
+        val attempt = firstLoginAttempt ?: return@LaunchedEffect
+        val inFlight = HomeRows.firstLoginAttemptInFlight(
+            attempt.groupId,
+            attempt.startedAtRecheckKey,
+            failoverState,
+        )
+        if (!inFlight) firstLoginAttempt = null
+    }
+
+    // 指示がどこにも届かなかった場合の取り下げ。`FailoverService` は、画面が読んだ
+    // グループ一覧が古くて添字を解決できないと**何も dispatch しない**ので、
+    // 接続の節目が1つも動かない＝上の効果は降ろす契機を得られない。その1点を
+    // 時間で回収する: 鍵がまったく動かないまま FIRST_LOGIN_STALL_MS 過ぎたら
+    // 印を降ろし、利用者が操作をもう一度押せる状態に戻す。鍵が動いていれば
+    // （＝ダイヤルは始まっている。利用者が入力中の窓を含む）何もしない。
+    LaunchedEffect(firstLoginAttempt?.token) {
+        val attempt = firstLoginAttempt ?: return@LaunchedEffect
+        delay(FIRST_LOGIN_STALL_MS)
+        if (firstLoginAttempt?.token == attempt.token &&
+            HomeRows.firstLoginRecheckKey(failoverState) == attempt.startedAtRecheckKey
+        ) {
+            firstLoginAttempt = null
+        }
     }
 
     // TV UI で最も多い不具合は「フォーカスがどこにも無い」状態。
@@ -446,6 +511,42 @@ private data class PendingFirstLogin(
     val group: FirstLoginGroup,
     val message: String,
 )
+
+/**
+ * 確認で実行した「初回ログイン」の試行。**確認そのものが立てる**印であり、
+ * 状態機械からの `Connecting` の到着は待たない——待つとその隙間に操作を
+ * もう一度押せてしまい、二度目の接続指示が裁定95 の `cancelActiveDialog()` を
+ * 通して入力中の認証ダイアログを畳む（`HomeRow.ProfileRow.firstLoginInProgress` の
+ * KDoc）。
+ *
+ * [startedAtRecheckKey] は確認した時点の `HomeRows.firstLoginRecheckKey`。
+ * 降ろす条件は `HomeRows.firstLoginAttemptInFlight`（成功でも失敗でも降りる）。
+ * [token] は `FocusRestoreRequest` と同じ目的で、内容が同じ試行が連続しても
+ * `LaunchedEffect` のキーが必ず変わるようにするためだけの値。
+ *
+ * **画面側だけの印なので、この画面がコンポジションから外れると消える**
+ * （接続先やグループの編集へ入る、裁定84/87 の画面往復など）。それは受け入れる:
+ * 戻ってきた時点で `needsFirstLogin` は引き直され、初回ログインが済んでいれば
+ * 注記も操作も消え、済んでいなければ操作が出る（＝再試行できる）だけである。
+ * 印を永続化すると、いつ消えるのかを別に決める必要が生まれ、状態機械の外に
+ * 2つ目の真実を作ることになる。
+ */
+private data class FirstLoginAttempt(
+    val uuid: String,
+    val groupId: String,
+    val startedAtRecheckKey: String,
+    val token: Int,
+)
+
+/**
+ * 「初回ログイン」を指示したのに接続の節目が1つも動かないとき、印を取り下げる
+ * までの時間（`HomeScreen` の該当 `LaunchedEffect` 参照）。`Connecting` の
+ * publish は指示から間もなく届くので、これを過ぎて鍵がまったく動いていなければ
+ * 指示はどこにも届いていない。Ruling 22 の45秒より長くとってあるのは、
+ * 「まだ始まっていない」と「始まっているが人が入力している」を取り違えて
+ * 操作を復活させないため（取り違えると二度押しの窓が戻る）。
+ */
+private const val FIRST_LOGIN_STALL_MS = 60_000L
 
 /**
  * 裁定84（fix8）: ConfirmDialog を閉じた直後に一度だけ行うフォーカス復帰の指示。

@@ -4,6 +4,7 @@ import net.openconnect_vpn.android.failover.FailoverConfig
 import net.openconnect_vpn.android.failover.FailoverGroup
 import net.openconnect_vpn.android.failover.FailoverState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -26,14 +27,18 @@ class HomeRowsTest {
 
     private val firstLoginGroup = FirstLoginGroup("g1", "自宅優先")
 
-    private fun profileRow(needsFirstLogin: Boolean, group: FirstLoginGroup?) =
-        HomeRow.ProfileRow(
-            uuid = "uuid-b",
-            name = "sv2",
-            serverAddress = "sv2.example.com",
-            needsFirstLogin = needsFirstLogin,
-            firstLoginGroup = group,
-        )
+    private fun profileRow(
+        needsFirstLogin: Boolean,
+        group: FirstLoginGroup?,
+        inProgress: Boolean = false,
+    ) = HomeRow.ProfileRow(
+        uuid = "uuid-b",
+        name = "sv2",
+        serverAddress = "sv2.example.com",
+        needsFirstLogin = needsFirstLogin,
+        firstLoginGroup = group,
+        firstLoginInProgress = inProgress,
+    )
 
     @Test
     fun `グループが先に来て次に個別の接続先が並ぶ`() {
@@ -460,6 +465,115 @@ class HomeRowsTest {
         assertNull(
             HomeRows.firstLoginConfirmation(profileRow(needsFirstLogin = false, group = firstLoginGroup)),
         )
+    }
+
+    @Test
+    fun `初回ログインを実行した直後は操作を消して進行中の注記に差し替える`() {
+        // 二度押しで裁定95 が入力中の認証ダイアログを畳む（＝このブランチが
+        // 直した症状そのもの）のを防ぐ。操作が消えること・押す必要が無いと
+        // 書いてあることの両方を固定する。
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup, inProgress = true)
+
+        assertEquals(
+            "初回ログイン中 / 認証画面が出たらユーザー名とパスワードを入力してください。" +
+                "もう一度押す必要はありません",
+            HomeRows.firstLoginNotice(row),
+        )
+        assertNull(HomeRows.firstLoginActionLabel(row))
+        assertNull(HomeRows.firstLoginConfirmation(row))
+    }
+
+    @Test
+    fun `初回ログインを終えていれば進行中の印が残っていても何も出さない`() {
+        val row = profileRow(needsFirstLogin = false, group = firstLoginGroup, inProgress = true)
+
+        assertNull(HomeRows.firstLoginNotice(row))
+        assertNull(HomeRows.firstLoginActionLabel(row))
+    }
+
+    @Test
+    fun `進行中の印は指定した接続先の行だけに付く`() {
+        val rows = HomeRows.build(
+            groups = listOf(group),
+            profiles = profiles,
+            state = FailoverState.Idle,
+            needsFirstLogin = { true },
+            firstLoginInProgressUuid = "uuid-b",
+        )
+
+        val profileRows = rows.filterIsInstance<HomeRow.ProfileRow>()
+        assertEquals(listOf(false, true), profileRows.map { it.firstLoginInProgress })
+    }
+
+    @Test
+    fun `進行中の印を渡さなければどの行にも付かない`() {
+        val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
+
+        assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().none { it.firstLoginInProgress })
+    }
+
+    @Test
+    fun `接続の節目が動くまでの隙間も進行中とみなす`() {
+        // 立てた直後は状態機械がまだ Connecting を publish していない。この隙間を
+        // 進行中に含めないと、そこで操作を押せてしまう（＝欠陥の原因そのもの）。
+        assertTrue(
+            HomeRows.firstLoginAttemptInFlight(
+                attemptGroupId = "g1",
+                startedAtRecheckKey = "idle",
+                state = FailoverState.Idle,
+            ),
+        )
+        assertTrue(
+            HomeRows.firstLoginAttemptInFlight(
+                attemptGroupId = "g1",
+                startedAtRecheckKey = "healthy:g1:0",
+                state = FailoverState.Healthy(
+                    "g1",
+                    0,
+                    consecutiveFailures = 0,
+                    lastProbeAtMs = 9_000L,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `認証ダイアログが出ている窓は進行中のまま`() {
+        // 既存コアの UserPrompt は FailoverState を変えない（裁定94 により人が
+        // 答えているあいだ Connecting のまま留まる）。ここで降ろすと二度押しが
+        // できてしまう。
+        assertTrue(
+            HomeRows.firstLoginAttemptInFlight(
+                attemptGroupId = "g1",
+                startedAtRecheckKey = "idle",
+                state = FailoverState.Connecting("g1", 2, startedAtMs = 5_000L),
+            ),
+        )
+    }
+
+    @Test
+    fun `試行が決着したら成功でも失敗でも進行中を降ろす`() {
+        // 成功だけで降ろす印は、失敗したあとに再試行の手段を奪うので欠陥より悪い。
+        val ended = listOf(
+            FailoverState.Verifying("g1", 2, connectedAtMs = 6_000L, consecutiveFailures = 0),
+            FailoverState.Healthy("g1", 2, consecutiveFailures = 0, lastProbeAtMs = 7_000L),
+            FailoverState.FailingOver("g1", 2, awaitingUuid = "uuid-b", startedAtMs = 6_000L),
+            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
+            FailoverState.Idle,
+            // 別のグループへ移っていれば、この試行はもう追われていない。
+            FailoverState.Connecting("g2", 0, startedAtMs = 6_000L),
+        )
+
+        ended.forEach { state ->
+            assertFalse(
+                "$state で進行中のままになっている",
+                HomeRows.firstLoginAttemptInFlight(
+                    attemptGroupId = "g1",
+                    startedAtRecheckKey = "connecting:g1:0",
+                    state = state,
+                ),
+            )
+        }
     }
 
     @Test

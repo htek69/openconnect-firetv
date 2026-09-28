@@ -61,6 +61,26 @@ sealed interface HomeRow {
          * [HomeRows.firstLoginActionLabel] / [HomeRows.firstLoginConfirmation]。
          */
         val firstLoginGroup: FirstLoginGroup? = null,
+        /**
+         * この接続先で、**利用者が確認で始めた初回ログインの試行がまだ進行中か**。
+         *
+         * true の間は行の操作（[HomeRows.firstLoginActionLabel]）を出さず、注記を
+         * 進行中の文言に差し替える。理由: [needsFirstLogin] の判定は
+         * [HomeRows.firstLoginRecheckKey] の節目でしか引き直さないので、確認の直後
+         * ——認証ダイアログが出て利用者が入力している最中——も「初回ログインが
+         * 必要」のままである。そこで操作を押せる状態に残すと、もう一度押した接続
+         * 指示が裁定95 の `cancelActiveDialog()` を通して**入力中の認証ダイアログを
+         * 畳む**。それはこのブランチ全体が直した症状（パスワード画面が消える）
+         * そのものであり、TV には押した手応えが無いので利用者は実際に押す。
+         *
+         * この印は**確認そのもので立てる**（状態の到着を待たない。その隙間が
+         * 欠陥の原因だから）。消えるのは試行が決着したときで、成功したときだけで
+         * なく**失敗したときも消える**（[HomeRows.firstLoginAttemptInFlight]）。
+         * 成功時にしか消えない印は欠陥より悪い（retry する手段が無くなる）。
+         *
+         * 画面側だけの印なので、[needsFirstLogin] の判定を引き直す回数は増えない。
+         */
+        val firstLoginInProgress: Boolean = false,
     ) : HomeRow
 
     data object AddProfile : HomeRow
@@ -107,6 +127,13 @@ object HomeRows {
          * 「どの行にも印を付けない」を意味する。
          */
         needsFirstLogin: (String) -> Boolean = { false },
+        /**
+         * 利用者が確認で始めた初回ログインの試行が進行中の接続先の uuid
+         * （[HomeRow.ProfileRow.firstLoginInProgress]）。既定 null は
+         * 「進行中のものは無い」を意味する。**判定の供給関数ではない**ので、
+         * これを渡しても `prefs` の読み直しは1回も増えない。
+         */
+        firstLoginInProgressUuid: String? = null,
     ): List<HomeRow> {
         val rows = mutableListOf<HomeRow>()
 
@@ -137,6 +164,7 @@ object HomeRows {
                 // 読み直しを増やさない（呼び出し側の remember の鍵は
                 // [firstLoginRecheckKey]）。
                 firstLoginGroup = if (needsLogin) firstLoginGroupFor(profile.uuid, groups) else null,
+                firstLoginInProgress = profile.uuid == firstLoginInProgressUuid,
             )
         }
 
@@ -297,14 +325,23 @@ object HomeRows {
      *
      * 文言の組み立ては [groupDeletionWarning] と同じく純関数にしてテストで固定
      * してある（Compose 側はこの結果を描くだけにする）。
+     *
+     * [HomeRow.ProfileRow.firstLoginInProgress] のときは**進行中の文言に差し替える**。
+     * 操作は消えている（[firstLoginActionLabel] が null）ので、「押しても何も
+     * 起きない操作」を出しっぱなしにするのではなく、いま何が起きているのかと
+     * **もう一度押す必要が無いこと**を書く（TV には押した手応えが無いため、
+     * 書かないと利用者は押し直す）。
      */
-    fun firstLoginNotice(row: HomeRow.ProfileRow): String? =
-        if (firstLoginApplies(row)) {
+    fun firstLoginNotice(row: HomeRow.ProfileRow): String? = when {
+        !firstLoginApplies(row) -> null
+        row.firstLoginInProgress ->
+            "初回ログイン中 / 認証画面が出たらユーザー名とパスワードを入力してください。" +
+                "もう一度押す必要はありません"
+
+        else ->
             "初回ログインが必要 / 自動切替では選ばれません。" +
                 "右（→）の「初回ログイン」で接続するとログインできます"
-        } else {
-            null
-        }
+    }
 
     /**
      * 行に出す「初回ログイン」の操作のラベル。出さないときは null
@@ -316,9 +353,15 @@ object HomeRows {
      * （`GroupEditScreen` のメンバー行の ▲/▼/名前と同じ並べ方であり、
      * 新しい入力の作法を増やしていない）。長押しでは発火しないため、裁定78/80 の
      * 孤児 UP（`LongPressKeyUpFilter` が捨てるもの）はこの経路では起きない。
+     *
+     * **進行中（[HomeRow.ProfileRow.firstLoginInProgress]）は null。** カードごと
+     * 消えるので、確認した直後から二度押しができない
+     * （[HomeRow.ProfileRow.firstLoginInProgress] の KDoc の欠陥）。カードが消えても
+     * フォーカスは行の本体のカードへ戻してあるので（`HomeScreen` の
+     * `FocusRestoreRequest.ToRow`）、フォーカスの行き先が無くなることはない。
      */
     fun firstLoginActionLabel(row: HomeRow.ProfileRow): String? =
-        if (firstLoginApplies(row)) "初回ログイン" else null
+        if (firstLoginApplies(row) && !row.firstLoginInProgress) "初回ログイン" else null
 
     /**
      * 「初回ログイン」を実行する前に出す確認の文面（[ConfirmDialog]。既存の削除の
@@ -332,7 +375,7 @@ object HomeRows {
      */
     fun firstLoginConfirmation(row: HomeRow.ProfileRow): String? {
         val group = row.firstLoginGroup ?: return null
-        if (!row.needsFirstLogin) return null
+        if (!row.needsFirstLogin || row.firstLoginInProgress) return null
         return "「${row.name}」で初回ログインを行いますか？\n\n" +
             "いまの VPN 接続を切って、グループ「${group.name}」の「${row.name}」へ繋ぎ直します。" +
             "認証画面が出たらユーザー名とパスワードを入力してください" +
@@ -382,6 +425,50 @@ object HomeRows {
         is FailoverState.FailingOver -> "failingOver:${state.groupId}:${state.failedIndex}"
         is FailoverState.Exhausted -> "exhausted:${state.groupId}:${state.attempt}"
     }
+
+    /**
+     * 確認で始めた初回ログインの試行が**まだ進行中か**（`HomeScreen` の
+     * `FirstLoginAttempt`。true の間だけ [HomeRow.ProfileRow.firstLoginInProgress] を
+     * 立てる）。
+     *
+     * 立てる契機は確認そのものであり、ここは**降ろす契機だけ**を決める。
+     * 進行中と見なすのは次の2つのどちらかである:
+     *
+     * 1. [startedAtRecheckKey]（確認した時点の [firstLoginRecheckKey]）と現在の鍵が
+     *    同じ。まだ接続の節目が1つも動いていない＝指示が状態機械へ届いて
+     *    `Connecting` が publish されるまでの隙間。**この隙間を進行中に含めることが
+     *    この関数の目的である**（含めないと、隙間のあいだ操作が押せてしまう）。
+     * 2. 状態が [attemptGroupId] のグループの [FailoverState.Connecting]。
+     *    これが認証ダイアログが出ている窓である（既存コアの `UserPrompt` は
+     *    [FailoverState] を変えず、裁定94 により人が答えているあいだ
+     *    `Connecting` のまま留まる）。
+     *
+     * それ以外は**決着した**とみなして降ろす:
+     *
+     * - [FailoverState.Verifying] / [FailoverState.Healthy]: 認証を通った
+     *   （成功。この場合はそもそも次の再判定で `needsFirstLogin` が false になり
+     *   注記も操作も消える）。
+     * - [FailoverState.FailingOver] / [FailoverState.Exhausted] /
+     *   [FailoverState.Idle] / 別グループ: **失敗・中断**。ここで降ろすので、
+     *   利用者は操作をもう一度押して再試行できる。**成功したときだけ降ろす印には
+     *   していない**（それでは失敗したあとに手段が無くなり、元の欠陥より悪い）。
+     *
+     * 同じグループの `Connecting` が続く限り（自分の候補が落ちて次の候補が
+     * 起動した場合など）は進行中のままだが、`Connecting` は Ruling 22 の45秒で
+     * 必ず打ち切られ、候補の切替は [FailoverState.FailingOver] を経るので
+     * そこで降りる。したがって**印が無期限に残ることはない**。
+     * 指示がどこにも届かなかった場合（画面のグループ一覧が古く、
+     * `FailoverService` が添字を解決できずに何も dispatch しなかった場合）だけは
+     * 鍵が動かないので 1. のまま残る。それは `HomeScreen` 側の
+     * `FIRST_LOGIN_STALL_MS` の取り下げが回収する。
+     */
+    fun firstLoginAttemptInFlight(
+        attemptGroupId: String,
+        startedAtRecheckKey: String,
+        state: FailoverState,
+    ): Boolean =
+        firstLoginRecheckKey(state) == startedAtRecheckKey ||
+            (state is FailoverState.Connecting && state.groupId == attemptGroupId)
 
     /**
      * 裁定84（fix8）: 削除確認オーバーレイで削除を実行したあと、フォーカスを
