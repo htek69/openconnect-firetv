@@ -526,9 +526,33 @@ object HomeRows {
      *
      * **時計は使わない。** 1段目に留まるのは「切断待ち（`FailingOver`）」と
      * 「まだ何も publish されていない」の2つだけで、前者は状態機械が必ず次へ進め、
-     * 後者は次の publish で解ける。指したメンバーがグループから外れていた場合は
-     * `HomeScreen` が**確認の時点で読み直して拒否**する（[firstLoginRefusal]。
-     * 印をそもそも立てない）。
+     * 後者は次の publish で解ける。
+     *
+     * ### この判定では気づけないこと（旧版の注意書きの更新。消さないこと）
+     *
+     * 以前ここには「VPN 許可が失われていた場合は `Idle` のまま残るが、許可を
+     * 取り直すには画面を離れるしかなく、離れればこの印ごと消える」と書いてあった。
+     * その注意書きは**上の `Idle`/`Exhausted` の分岐を足したときに一度消して
+     * しまったが、消したことで限界が無くなったわけではない**ので、いま真である形に
+     * 直して残す（レビュー4 の指摘。既知の限界を記録したコメントは証拠であり、
+     * 限界が実際に消えていないなら消してはならない）。
+     *
+     * 真であること: [FailoverState.Idle] は引数を持たない `data object` なので
+     * [firstLoginRecheckKey] は常に `"idle"` であり、**「実行前の `Idle`」と
+     * 「起動できずに戻った `Idle`」をこの関数は区別できない**（同値なので
+     * `StateFlow` が畳み、再コンポーズすら起きないことがある）。同じことは
+     * 実行前がちょうど `Exhausted(G, 0)` だった場合にも起こる。
+     * つまり**起動そのものが失敗した場合は、状態を見ていても気づけない。**
+     *
+     * だからそこは状態ではなく**実行の前**で塞いでいる: `HomeScreen` は決定の時点で
+     * プロファイルとグループの一覧を読み直し、VPN 許可の有無も確かめて、
+     * 起動が失敗する条件なら**指示せず理由を出す**（[firstLoginRefusal]。
+     * 印をそもそも立てないので嘘も出ない）。
+     *
+     * それでも残る窓: 読み直しから `FailoverService` の dispatch までのあいだに
+     * メンバーが外された・プロファイルが削除された・許可が失われた場合は、
+     * 起動の失敗を画面から観測できない。その場合この印は1段目に留まり、画面を
+     * 離れるまで消えない（データは壊れない。時計で誤魔化していない）。
      */
     fun firstLoginAttemptProgress(
         attemptGroupId: String,
@@ -571,25 +595,67 @@ object HomeRows {
      * 属しているかを確かめる。属していなければ理由を出して実行しない
      * （印も立てないので「進行中」の嘘も出ない）。時計で取り下げる必要も無くなる。
      *
-     * 判定は3つ:
+     * ### なぜ `ConnectResult` の失敗もここで見るのか（レビュー4・high）
+     *
+     * `FailoverController` が候補の起動に失敗したとき、**publish される状態が
+     * 実行前と区別できない場合がある**。[FailoverState.Idle] は引数を持たない
+     * `data object` なので [firstLoginRecheckKey] は常に `"idle"` であり、
+     * 「実行前の `Idle`」と「`ConnectResult.NeedsUserConsent` で起動できずに
+     * 戻った `Idle`」は**同じ鍵・同じ値**になる（`StateFlow` は同値を畳むので
+     * 再コンポーズさえ起きないことがある）。同じことは
+     * `ConnectResult.Failed` が全候補で起こった場合にもありうる——
+     * `onUserConnect` は `exhaustionAttempt` を 0 に戻すので、実行前が
+     * ちょうど `Exhausted(G, 0)` だと戻り先も `Exhausted(G, 0)` で鍵が動かない。
+     *
+     * つまり**状態だけを見て気づくことは原理的にできない**（[firstLoginAttemptProgress]
+     * の鍵一致の分岐が先に当たり、印が降りない）。時計で諦めるのは裁定78 の誤りに
+     * 戻るだけなので、**起動が失敗する条件を実行の前に見て、そもそも指示しない**。
+     * どちらも画面側から確かめられる:
+     *
+     * - `NeedsUserConsent`（`OpenConnectVpnController.connect` が
+     *   `VpnService.prepare(...) != null` のときに返す値）→ [vpnConsentMissing]。
+     *   これは利用者に**伝えるべきこと**でもある（許可を取り直さないと、この操作に
+     *   限らず一切繋がらない）。文面でそう言う。
+     * - `Failed`（`ProfileManager.get(uuid)` が null＝プロファイルが消えている）
+     *   → [profileExists]。旧 UI などで外部から削除されると、画面が持っている
+     *   一覧にはまだ残っている。
+     *
+     * [profileExists] を読み直した一覧から渡すことは、[freshGroups] の精度も上げる:
+     * 以前はこの関数に渡す [freshGroups] を**古い**プロファイル一覧で
+     * [GroupStore.loadGroups] していたため、外部で削除されたプロファイルが
+     * ふるい落とされずに「まだメンバーである」と読めてしまっていた
+     * （報告書の裁定 G1 の訂正で挙げた穴）。
+     *
+     * 判定は5つ（データの食い違いを先に、許可を最後に見る。どちらも当てはまる
+     * ときに「許可を取り直したのにまた失敗する」を避けるため）:
      * - もう初回ログインが要らない／経路が無い行（[firstLoginApplies] が false）:
      *   一覧が古いということなので、読み直しを促す文面を返す。
+     * - プロファイル自体が消えている（[profileExists] が false）。
      * - そのグループ自体が無くなっている: グループごと消えた（最後のメンバーが
      *   削除された等）。
      * - グループはあるがメンバーから外れている: 一番起こりやすい場合。
+     * - VPN の利用許可が無い（[vpnConsentMissing]）。
      */
     fun firstLoginRefusal(
         row: HomeRow.ProfileRow,
         freshGroups: List<FailoverGroup>,
+        profileExists: Boolean = true,
+        vpnConsentMissing: Boolean = false,
     ): String? {
         val group = row.firstLoginGroup
         if (group == null || !row.needsFirstLogin) {
             return "「${row.name}」の状態が変わりました。一覧を読み直します。"
         }
+        if (!profileExists) {
+            return "「${row.name}」は見つかりません。一覧を読み直します。"
+        }
         val fresh = freshGroups.firstOrNull { it.id == group.id }
             ?: return "グループ「${group.name}」が見つかりません。一覧を読み直します。"
         if (row.uuid !in fresh.memberUuids) {
             return "「${row.name}」はグループ「${group.name}」から外れています。一覧を読み直します。"
+        }
+        if (vpnConsentMissing) {
+            return "VPN の利用許可がありません。設定の「VPN の許可を取得する」で取り直してください。"
         }
         return null
     }

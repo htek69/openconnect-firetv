@@ -749,28 +749,81 @@ class HomeRowsTest {
     }
 
     @Test
-    fun `確認時点が Idle や枯渇のままなら本物の起動待ちとして進行中を保つ`() {
-        // 鍵が確認時点と同じあいだは降ろさない。ここを落とすと、切断状態や
-        // 再試行待ちから実行したとき——同じ状態がもう一度 publish されるだけで——
-        // 自分のダイヤルが始まる前に印が消える（＝二度押しの窓が戻る）。
-        assertEquals(
-            FirstLoginAttemptProgress.WaitingToStart,
-            HomeRows.firstLoginAttemptProgress(
-                attemptGroupId = "g1",
-                sawConnecting = false,
-                startedAtRecheckKey = "idle",
-                state = FailoverState.Idle,
+    fun `再試行待ちから実行して枯渇へ落ちた順序で降りる`() {
+        // レビュー4（low）: 前の版のここは鍵一致の分岐だけを叩いていて、
+        // Idle/Exhausted の分岐が無くても通ってしまう空振りのテストだった。
+        // 1歩目で本物の起動待ち（鍵が確認時点と同じ。retryAtMs は鍵に入らないので
+        // バックオフの再評価で値が変わっても同じ鍵）を守り、2歩目で
+        // **新しい分岐が無ければ落ちる**ことを見る: onUserConnect は
+        // exhaustionAttempt を 0 に戻すので、全候補の起動が失敗すると
+        // Exhausted(g1, 0) へ落ちる——鍵は動くが生きている候補は無いので決着である。
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "exhausted:g1:1",
+            states = listOf(
+                FailoverState.Exhausted("g1", attempt = 1, retryAtMs = 999_000L),
+                FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
             ),
         )
+
         assertEquals(
-            FirstLoginAttemptProgress.WaitingToStart,
-            HomeRows.firstLoginAttemptProgress(
-                attemptGroupId = "g1",
-                sawConnecting = false,
-                startedAtRecheckKey = "exhausted:g1:1",
-                // retryAtMs は鍵に入らないので、バックオフの再評価で値が
-                // 変わっても同じ鍵＝進行中のまま。
-                state = FailoverState.Exhausted("g1", attempt = 1, retryAtMs = 999_000L),
+            listOf(FirstLoginAttemptProgress.WaitingToStart, FirstLoginAttemptProgress.Ended),
+            progress,
+        )
+    }
+
+    @Test
+    fun `VPN の許可が無ければ実行せず取り直し方を伝える`() {
+        // レビュー4（high）: ConnectResult.NeedsUserConsent は状態機械に Idle を
+        // 返させるが、Idle は引数を持たない data object なので鍵が動かず、
+        // 印を降ろす判定では原理的に気づけない（＝行が永久に「初回ログイン中」と
+        // 嘘をつく）。実行の前に確かめて、指示しない。
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertEquals(
+            "VPN の利用許可がありません。設定の「VPN の許可を取得する」で取り直してください。",
+            HomeRows.firstLoginRefusal(row, listOf(group), vpnConsentMissing = true),
+        )
+    }
+
+    @Test
+    fun `プロファイルが消えていれば実行しない`() {
+        // ConnectResult.Failed（ProfileManager.get が null）の経路。全候補で
+        // 起こると Exhausted(G, 0) へ戻り、実行前がちょうどそれだと鍵が動かない。
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertEquals(
+            "「sv2」は見つかりません。一覧を読み直します。",
+            HomeRows.firstLoginRefusal(row, listOf(group), profileExists = false),
+        )
+    }
+
+    @Test
+    fun `データの食い違いは許可より先に伝える`() {
+        // 両方おかしいときに許可の話だけをして、取り直したあともう一度失敗させない。
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertEquals(
+            "「sv2」はグループ「自宅優先」から外れています。一覧を読み直します。",
+            HomeRows.firstLoginRefusal(
+                row,
+                listOf(group.copy(memberUuids = listOf("uuid-a"))),
+                profileExists = true,
+                vpnConsentMissing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `許可もデータも揃っていれば実行を拒まない`() {
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertNull(
+            HomeRows.firstLoginRefusal(
+                row,
+                listOf(group),
+                profileExists = true,
+                vpnConsentMissing = false,
             ),
         )
     }

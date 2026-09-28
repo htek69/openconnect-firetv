@@ -390,8 +390,28 @@ fun HomeScreen(
                 // 実行しない（印も立てない＝嘘も出ない。時計で取り下げる必要も無い）。
                 // この読み直しは決定1回につき1回だけで、裁定16 の「疎通確認ごとに
                 // 走査する」とは別物である。
-                val freshGroups = groupStore.loadGroups(profileList.map { it.uuid }.toSet())
-                val refusal = HomeRows.firstLoginRefusal(target.row, freshGroups)
+                //
+                // レビュー4（high）: 起動そのものが失敗する場合も**ここで**塞ぐ。
+                // ConnectResult.NeedsUserConsent は状態機械に Idle を返させるが、
+                // Idle は引数を持たない data object なので鍵が動かず、印を降ろす
+                // 判定（HomeRows.firstLoginAttemptProgress）では原理的に気づけない
+                // （ConnectResult.Failed が全候補で起きて Exhausted(G, 0) に戻る
+                // 場合も同じ）。時計で諦めるのは裁定78 の誤りなので、失敗する条件を
+                // 実行の前に確かめる。プロファイル一覧も読み直すのは、古い一覧で
+                // loadGroups すると外部で削除されたプロファイルがふるい落とされず
+                // 「まだメンバーである」と読めてしまうため。
+                val freshProfiles = profiles.list()
+                val freshUuids = freshProfiles.map { it.uuid }.toSet()
+                val freshGroups = groupStore.loadGroups(freshUuids)
+                val refusal = HomeRows.firstLoginRefusal(
+                    row = target.row,
+                    freshGroups = freshGroups,
+                    profileExists = target.row.uuid in freshUuids,
+                    // OpenConnectVpnController.connect が NeedsUserConsent を返す
+                    // のと同じ条件。この画面が起動時に見ているのと同じ API で、
+                    // 新しい経路は作らない。
+                    vpnConsentMissing = VpnService.prepare(context) != null,
+                )
                 if (refusal == null) {
                     // **この操作そのもの**で行の操作を押せなくする（接続の節目の到着を
                     // 待たない）。待つと、認証ダイアログが出て入力している最中も
