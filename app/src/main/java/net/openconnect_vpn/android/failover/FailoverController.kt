@@ -46,6 +46,9 @@ class FailoverController(
      *
      * **利用者の明示操作（`unattended = false`）では飛ばさない。** 初回ログインは
      * その経路で行うのだから、そこで飛ばすと誰も登録できなくなる。
+     * その経路が先頭メンバーにしか届かないという穴は
+     * [FailoverEvent.UserConnectGroup.fromIndex] で埋めてある（一覧の行の
+     * 「初回ログイン」から、その接続先の位置を指定して有人で開始する）。
      *
      * 飛ばすことは S1 の除外（[excludedUuids]）とは別物で、集合には何も足さない。
      * 供給関数なので、利用者が初回ログインを終えた次の候補選択からは false に
@@ -213,8 +216,19 @@ class FailoverController(
      * 裁定86（H2）: [pendingConnect] の中身。[unattended] は
      * [startCandidateFrom] にそのまま渡す値で、Ruling 21 の「人が見ている保証が
      * あるか」を保留の前後で失わないために持つ。
+     *
+     * [fromIndex] も同じ理由で持つ。既定の 0 は「先頭から順に試す」（従来の意味。
+     * 保留を作る3経路のうち [onAutoConnect] / [onExhaustedRetry] は常にこれ）。
+     * 一覧の行の「初回ログイン」から来た指示だけが 0 以外を持ち、これを落とすと
+     * 「接続中に初回ログインを指示した利用者」が切断のあと先頭メンバーへ
+     * 繋ぎ直され、目的の接続先へは永久に到達できない（保留の前後で
+     * [unattended] を失うと裁定30 の除外が働かなくなるのと同じ形の欠陥）。
      */
-    private data class PendingConnect(val groupId: String, val unattended: Boolean)
+    private data class PendingConnect(
+        val groupId: String,
+        val unattended: Boolean,
+        val fromIndex: Int = 0,
+    )
 
     /**
      * 裁定72-fix(F2): [onFailingOverTimeout] が確認を諦めて先へ進んだときの
@@ -247,7 +261,7 @@ class FailoverController(
         // reconcileCandidateIdentity のドキュメントを参照。
         state = reconcileCandidateIdentity(state)
         state = when (event) {
-            is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId)
+            is FailoverEvent.UserConnectGroup -> onUserConnect(event.groupId, event.fromIndex)
             is FailoverEvent.AutoConnectGroup -> onAutoConnect(event.groupId)
             is FailoverEvent.UserDisconnect -> onUserDisconnect()
             is FailoverEvent.VpnStateChanged -> onVpnState(event.state, event.uuid)
@@ -436,8 +450,32 @@ class FailoverController(
      * （生きている候補がある切替は必ず2段階）を保証する。
      * `Idle`/`Exhausted` は生きている候補が無いので即座に起動してよい
      * （後述）。
+     *
+     * [fromIndex] は起動を試し始める位置。既定の 0 は従来どおり
+     * 「グループの先頭から順に試す」であり、**既定値で呼ぶ限り振る舞いは
+     * 以前と完全に同じ**である（裁定72/93 と同じ既定値の作法）。0 以外が来るのは
+     * 一覧の行の「初回ログイン」からだけで、そこから先は既存の
+     * [startCandidateFrom] に位置を渡すだけである（新しい接続経路は無い）。
+     * 有人（`unattended = false`）は変えないので、初回ログインの飛ばしは
+     * ここでは適用されない（[needsFirstLoginProvider] の KDoc）。
+     *
+     * 範囲外の [fromIndex]（グループが無い／その位置にメンバーが居ない）の扱い:
+     * **何もしない。** 状態も副作用も一切変えずに現在の状態を返す。
+     * 画面が読んだグループ定義とここが持つ定義がずれていた場合に起こりうるが、
+     * そのとき先頭から繋ぎ直すと**利用者が指したのとは別の接続先**が起動して
+     * しまう（「理由の分からない自動挙動を作らない」という既存の方針に反する）。
+     * 枯渇（[enterExhausted]）にも落とさない——利用者の1回の操作が、繋ぐ気の
+     * 無い候補へのバックオフ再試行を始める理由は無いためである。
+     * `fromIndex == 0` のときはこの判定を通さないので、既存の経路
+     * （グループが無ければ [FailoverState.Idle]、メンバー0件なら枯渇）は
+     * 従来どおりである。
      */
-    private fun onUserConnect(groupId: String): FailoverState {
+    private fun onUserConnect(groupId: String, fromIndex: Int = 0): FailoverState {
+        if (fromIndex != 0) {
+            val requested = groupOf(groupId)
+            if (requested == null || fromIndex !in requested.memberUuids.indices) return state
+        }
+
         exhaustionAttempt = 0
         // 裁定35a: 明示的なユーザー操作は新しいセッションの意思表示である。
         // S1（_excludedUuids）は「無人リトライでアカウントをロックさせない」ための
@@ -447,10 +485,10 @@ class FailoverController(
         _excludedUuids.clear()
         needsUserConsent = false
 
-        stopBeforeStarting(groupId, unattended = false)?.let { return it }
+        stopBeforeStarting(groupId, unattended = false, fromIndex = fromIndex)?.let { return it }
 
         val group = groupOf(groupId) ?: return FailoverState.Idle
-        return startCandidateFrom(group, fromIndex = 0, unattended = false)
+        return startCandidateFrom(group, fromIndex = fromIndex, unattended = false)
     }
 
     /**
@@ -481,7 +519,11 @@ class FailoverController(
      *   実質ゼロ（既に数十秒待っている）。
      * - [onUserConnect]: 裁定72-fix(F2) で既に守っていた分。
      */
-    private fun stopBeforeStarting(groupId: String, unattended: Boolean): FailoverState? {
+    private fun stopBeforeStarting(
+        groupId: String,
+        unattended: Boolean,
+        fromIndex: Int = 0,
+    ): FailoverState? {
         val current = state
 
         if (current is FailoverState.Idle || current is FailoverState.Exhausted) {
@@ -505,7 +547,7 @@ class FailoverController(
                     pendingConnect = null
                     return null
                 }
-            pendingConnect = PendingConnect(groupId, unattended)
+            pendingConnect = PendingConnect(groupId, unattended, fromIndex)
             currentCandidateUuid = abandonedUuid
             vpn.disconnect()
             return FailoverState.FailingOver(
@@ -525,7 +567,7 @@ class FailoverController(
             // 限りにおいて有界である。ここで vpn.disconnect() を再送したり
             // startedAtMs を更新したりすると、指示が繰り返されるたびに上限が
             // 延び続け、上限が上限でなくなる。保留先だけを差し替える。
-            pendingConnect = PendingConnect(groupId, unattended)
+            pendingConnect = PendingConnect(groupId, unattended, fromIndex)
             return current
         }
 
@@ -533,7 +575,7 @@ class FailoverController(
         // を先に止め、完了を待ってから新グループを起動する（Ruling 25 と同じ2段階。
         // expectingDisconnect は立てない — この Disconnected は S3 で捨てるのでは
         // なく、advanceAfterFailingOver への合図として観測する必要がある）。
-        pendingConnect = PendingConnect(groupId, unattended)
+        pendingConnect = PendingConnect(groupId, unattended, fromIndex)
         val awaitingUuid = currentCandidateUuid
         val currentGroupId = groupIdOf(current) ?: groupId
         val currentIndex = candidateIndexOf(current) ?: 0
@@ -966,7 +1008,18 @@ class FailoverController(
         pendingConnect?.let { pending ->
             pendingConnect = null
             val group = groupOf(pending.groupId) ?: return FailoverState.Idle
-            return startCandidateFrom(group, fromIndex = 0, unattended = pending.unattended)
+            // 開始位置の指定（一覧の行の「初回ログイン」）も保留の前後で失わない。
+            // 待っているあいだにその位置のメンバーが消えていたら、先頭から
+            // 繋ぎ直さずに止める（`onUserConnect` の範囲外と同じ判断。利用者が
+            // 指したのとは別の接続先を勝手に起動しない）。
+            if (pending.fromIndex != 0 && pending.fromIndex !in group.memberUuids.indices) {
+                return FailoverState.Idle
+            }
+            return startCandidateFrom(
+                group,
+                fromIndex = pending.fromIndex,
+                unattended = pending.unattended,
+            )
         }
 
         val group = groupOf(s.groupId) ?: return FailoverState.Idle

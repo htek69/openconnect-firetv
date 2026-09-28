@@ -3,8 +3,27 @@ package net.openconnect_vpn.android.failover
 /** 状態機械への入力。 */
 sealed interface FailoverEvent {
 
-    /** ユーザーがグループへの接続を指示した。 */
-    data class UserConnectGroup(val groupId: String) : FailoverEvent
+    /**
+     * ユーザーがグループへの接続を指示した。
+     *
+     * [fromIndex] は起動を試し始めるメンバーの位置。既定の 0（従来の意味）は
+     * 「グループの先頭から順に試す」であり、既存の呼び出し元は無改変でよい。
+     * 0 以外が入るのは、一覧の行から「初回ログイン」を指示された場合だけである
+     * ——有人の接続は常に先頭メンバーから始まるので、初回ログインが必要な
+     * 接続先が2番目以降にあると到達する手段が無い（一覧には「初回ログインが
+     * 必要」と出るのに利用者にできることが無い）という穴を埋めるためのもの。
+     *
+     * **uuid ではなく添字を運ぶ。** グループ定義を引いて uuid を添字に直すのは
+     * `FailoverService` 側の責任で（そちらは Android の `Intent` から uuid を
+     * 受け取る）、[FailoverController] にグループ検索の責務を増やさない。
+     *
+     * 範囲外の値（メンバーが存在しない位置）の扱いは
+     * `FailoverController.onUserConnect` の KDoc を参照。
+     */
+    data class UserConnectGroup(
+        val groupId: String,
+        val fromIndex: Int = 0,
+    ) : FailoverEvent
 
     /**
      * 裁定36: 人の操作ではない接続開始（Ruling 18 のプロセス kill からの自動復帰）。

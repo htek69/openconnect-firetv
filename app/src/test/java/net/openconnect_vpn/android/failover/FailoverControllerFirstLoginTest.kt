@@ -198,4 +198,134 @@ class FailoverControllerFirstLoginTest {
         failCurrentCandidateWithoutReachingAuth(controller)
         assertEquals(listOf("uuid-a", "uuid-b"), vpn.connectCalls)
     }
+
+    // ------------------------------------------------------------------
+    // 開始位置を指定する有人接続（接続先の行の「初回ログイン」から来る経路）。
+    //
+    // 有人の接続は常に先頭メンバーから始まるため、初回ログインが必要な接続先が
+    // 2番目以降にあると到達する手段が無かった（一覧には「初回ログインが必要」と
+    // 出るのに利用者にできることが無い）。既存の有人経路にそのまま開始位置を
+    // 足して埋める。新しい接続経路は作らない（すべて startCandidateFrom を通る）。
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `開始位置を指定した利用者の接続はそのメンバーから始まり飛ばさない`() {
+        val controller = controllerFor(
+            group("uuid-a", "uuid-b", "uuid-c"),
+            needsFirstLogin = setOf("uuid-c"),
+        )
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 2))
+
+        assertEquals(listOf("uuid-c"), vpn.connectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(2, (state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `開始位置を渡さない従来の利用者の接続は先頭から始まる`() {
+        // 既定 fromIndex = 0 の意味。既存の呼び出し元とテストは無改変で通る。
+        val controller = controllerFor(group("uuid-a", "uuid-b", "uuid-c"))
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(0, (controller.state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `開始位置の指定は除外集合のクリアを変えない`() {
+        // 裁定35a: 明示的なユーザー操作は新しいセッションの意思表示である。
+        // 開始位置を指定する入口でも意味を変えない（変えると「除外されたあと
+        // 初回ログインだけは通る／通らない」という別の規則が生まれる）。
+        val controller = controllerFor(group("uuid-a", "uuid-b"))
+
+        // 認証段階に到達して通らずに落ちた（Ruling 23 で S1 の除外が起きる）。
+        // 裁定31a により、自分の Connecting を観測してから Disconnected を送る。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Authenticating))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected))
+        assertTrue("uuid-a" in controller.excludedUuids)
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 1))
+
+        assertTrue(controller.excludedUuids.isEmpty())
+    }
+
+    @Test
+    fun `範囲外の開始位置では何も起動しない`() {
+        // グループ構成が画面の読み込みより後に変わっていた場合。先頭から
+        // 繋ぎ直すと「利用者が指したのとは別の接続先」が始まってしまうので、
+        // 何もしない（枯渇にも入らない＝バックオフの再試行を始めない）。
+        val controller = controllerFor(group("uuid-a", "uuid-b"))
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 5))
+
+        assertTrue(vpn.connectCalls.isEmpty())
+        assertEquals(0, vpn.disconnectCalls)
+        assertEquals(FailoverState.Idle, controller.state)
+    }
+
+    @Test
+    fun `範囲外の開始位置はいま生きている候補も止めない`() {
+        val controller = controllerFor(group("uuid-a", "uuid-b"))
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = -1))
+
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(0, vpn.disconnectCalls)
+        assertTrue(controller.state is FailoverState.Connecting)
+    }
+
+    @Test
+    fun `切断待ちを挟んでも指定した開始位置を持ち越す`() {
+        // 裁定86（H2）の PendingConnect は有人・無人を持ち越す。開始位置も
+        // 同じように持ち越さないと、接続中に初回ログインを始めた利用者は
+        // 切断のあと先頭メンバーへ繋ぎ直されてしまう（＝到達できないままになる）。
+        val controller = controllerFor(
+            group("uuid-a", "uuid-b", "uuid-c"),
+            needsFirstLogin = setOf("uuid-c"),
+        )
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 2))
+        assertTrue(controller.state is FailoverState.FailingOver)
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertEquals(listOf("uuid-a", "uuid-c"), vpn.connectCalls)
+        val state = controller.state
+        assertTrue(state is FailoverState.Connecting)
+        assertEquals(2, (state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `切断を待つあいだに指定したメンバーが消えたら何も起動しない`() {
+        var current = group("uuid-a", "uuid-b", "uuid-c")
+        val controller = FailoverController(
+            groupsProvider = { listOf(current) },
+            clock = clock,
+            vpn = vpn,
+            network = network,
+        )
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting))
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 2))
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        // 切断を待っているあいだにグループから外された。
+        current = group("uuid-a")
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(FailoverState.Idle, controller.state)
+    }
 }
