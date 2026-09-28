@@ -24,6 +24,17 @@ class HomeRowsTest {
         config = FailoverConfig(),
     )
 
+    private val firstLoginGroup = FirstLoginGroup("g1", "自宅優先")
+
+    private fun profileRow(needsFirstLogin: Boolean, group: FirstLoginGroup?) =
+        HomeRow.ProfileRow(
+            uuid = "uuid-b",
+            name = "sv2",
+            serverAddress = "sv2.example.com",
+            needsFirstLogin = needsFirstLogin,
+            firstLoginGroup = group,
+        )
+
     @Test
     fun `グループが先に来て次に個別の接続先が並ぶ`() {
         val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
@@ -401,14 +412,54 @@ class HomeRowsTest {
 
     @Test
     fun `初回ログインが必要な接続先の注記を文言ごと固定する`() {
-        // 状態（飛ばされている）だけでなく、解き方（先頭にして接続する）まで
+        // 状態（飛ばされている）だけでなく、解き方（この行の操作で接続する）まで
         // 書いてあることを固定する。どちらかが消えたら落ちる。
         assertEquals(
             "初回ログインが必要 / 自動切替では選ばれません。" +
-                "グループ設定の ▲ で先頭にしてから接続するとログインできます",
-            HomeRows.firstLoginNotice(needsFirstLogin = true),
+                "右（→）の「初回ログイン」で接続するとログインできます",
+            HomeRows.firstLoginNotice(profileRow(needsFirstLogin = true, group = firstLoginGroup)),
         )
-        assertNull(HomeRows.firstLoginNotice(needsFirstLogin = false))
+        assertNull(HomeRows.firstLoginNotice(profileRow(needsFirstLogin = false, group = firstLoginGroup)))
+    }
+
+    @Test
+    fun `グループに属さない接続先には注記も操作も出さない`() {
+        // 自動切替の対象でないので飛ばされることもなく、初回ログインを急ぐ理由が
+        // 無い。意味の無い警告を出さない（操作もその接続先には無い）。
+        val row = profileRow(needsFirstLogin = true, group = null)
+
+        assertNull(HomeRows.firstLoginNotice(row))
+        assertNull(HomeRows.firstLoginActionLabel(row))
+        assertNull(HomeRows.firstLoginConfirmation(row))
+    }
+
+    @Test
+    fun `初回ログインの操作のラベルを文言ごと固定する`() {
+        assertEquals(
+            "初回ログイン",
+            HomeRows.firstLoginActionLabel(profileRow(needsFirstLogin = true, group = firstLoginGroup)),
+        )
+        assertNull(
+            HomeRows.firstLoginActionLabel(profileRow(needsFirstLogin = false, group = firstLoginGroup)),
+        )
+    }
+
+    @Test
+    fun `初回ログインの確認は接続が切れることと対象グループを明示する`() {
+        val message = HomeRows.firstLoginConfirmation(
+            profileRow(needsFirstLogin = true, group = firstLoginGroup),
+        )
+
+        assertEquals(
+            "「sv2」で初回ログインを行いますか？\n\n" +
+                "いまの VPN 接続を切って、グループ「自宅優先」の「sv2」へ繋ぎ直します。" +
+                "認証画面が出たらユーザー名とパスワードを入力してください" +
+                "（「パスワードを保存」にチェックを入れると、次回からは自動で接続できます）。",
+            message,
+        )
+        assertNull(
+            HomeRows.firstLoginConfirmation(profileRow(needsFirstLogin = false, group = firstLoginGroup)),
+        )
     }
 
     @Test
@@ -429,6 +480,57 @@ class HomeRowsTest {
         val rows = HomeRows.build(listOf(group), profiles, FailoverState.Idle)
 
         assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().none { it.needsFirstLogin })
+        assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().all { it.firstLoginGroup == null })
+    }
+
+    @Test
+    fun `初回ログインの経路は属するグループのうち一覧の順で最初のもの`() {
+        // 接続先は複数のグループに属しうる。裁定: グループ一覧の順で最初に
+        // 見つかったものを使う（決定的であり、選ばせる画面を増やさない）。
+        val other = group.copy(id = "g2", name = "予備", memberUuids = listOf("uuid-b"))
+
+        val rows = HomeRows.build(
+            groups = listOf(other, group),
+            profiles = profiles,
+            state = FailoverState.Idle,
+            needsFirstLogin = { true },
+        )
+
+        val row = rows.filterIsInstance<HomeRow.ProfileRow>().first { it.uuid == "uuid-b" }
+        assertEquals(FirstLoginGroup("g2", "予備"), row.firstLoginGroup)
+    }
+
+    @Test
+    fun `初回ログインを終えている接続先には経路を持たせない`() {
+        val rows = HomeRows.build(
+            groups = listOf(group),
+            profiles = profiles,
+            state = FailoverState.Idle,
+            needsFirstLogin = { uuid -> uuid == "uuid-b" },
+        )
+
+        val profileRows = rows.filterIsInstance<HomeRow.ProfileRow>()
+        assertNull(profileRows.first { it.uuid == "uuid-a" }.firstLoginGroup)
+        assertEquals(
+            FirstLoginGroup("g1", "自宅優先"),
+            profileRows.first { it.uuid == "uuid-b" }.firstLoginGroup,
+        )
+    }
+
+    @Test
+    fun `グループに属さない接続先には経路を持たせない`() {
+        val loneProfile = ProfileSummary("uuid-z", "sv9", "sv9.example.com")
+
+        val rows = HomeRows.build(
+            groups = listOf(group),
+            profiles = profiles + loneProfile,
+            state = FailoverState.Idle,
+            needsFirstLogin = { true },
+        )
+
+        val row = rows.filterIsInstance<HomeRow.ProfileRow>().first { it.uuid == "uuid-z" }
+        assertTrue(row.needsFirstLogin)
+        assertNull(row.firstLoginGroup)
     }
 
     @Test

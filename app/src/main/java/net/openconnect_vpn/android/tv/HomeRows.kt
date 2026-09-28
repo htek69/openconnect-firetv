@@ -44,10 +44,34 @@ sealed interface HomeRow {
          * 印が付かないことを意味する。表示する文言は [HomeRows.firstLoginNotice]。
          */
         val needsFirstLogin: Boolean = false,
+        /**
+         * [needsFirstLogin] が true で、かつこの接続先が少なくとも1つのグループに
+         * 属しているとき、**初回ログインをどのグループ経由で行うか**。
+         * どちらかが成り立たなければ null。
+         *
+         * 裁定（このラウンド）: 属するグループが複数ある場合は**グループ一覧の順で
+         * 最初に見つかったもの**を使う。決定的であり、利用者に選ばせる画面を
+         * 増やさない。初回ログインの目的（認証情報を1度保存する）はどのグループ
+         * 経由でも達成される。
+         *
+         * null が「行の操作も注記も出さない」を意味する。グループに属していない
+         * 接続先は自動切替の対象でもないので飛ばされることがなく、初回ログインを
+         * 急ぐ理由が無い（そこに「初回ログインが必要」と出すのは意味の無い警告に
+         * なる）。文言の組み立ては [HomeRows.firstLoginNotice] /
+         * [HomeRows.firstLoginActionLabel] / [HomeRows.firstLoginConfirmation]。
+         */
+        val firstLoginGroup: FirstLoginGroup? = null,
     ) : HomeRow
 
     data object AddProfile : HomeRow
 }
+
+/**
+ * 初回ログインを行う経路になるグループ（[HomeRow.ProfileRow.firstLoginGroup]）。
+ * [id] は接続の指示に使い（`FailoverService.connectGroup`）、[name] は確認の
+ * 文面に出す（どのグループが繋ぎ直されるのかを利用者に見せるため）。
+ */
+data class FirstLoginGroup(val id: String, val name: String)
 
 /**
  * この行を一意に識別する安定したキー。[HomeRow.SectionHeader] はフォーカス対象では
@@ -102,11 +126,17 @@ object HomeRows {
         }
 
         profiles.forEach { profile ->
+            val needsLogin = needsFirstLogin(profile.uuid)
             rows += HomeRow.ProfileRow(
                 uuid = profile.uuid,
                 name = profile.name,
                 serverAddress = profile.serverAddress,
-                needsFirstLogin = needsFirstLogin(profile.uuid),
+                needsFirstLogin = needsLogin,
+                // 初回ログインが必要なときだけ経路を決める。判定は
+                // [needsFirstLogin] の1回の呼び出しを使い回し、prefs の
+                // 読み直しを増やさない（呼び出し側の remember の鍵は
+                // [firstLoginRecheckKey]）。
+                firstLoginGroup = if (needsLogin) firstLoginGroupFor(profile.uuid, groups) else null,
             )
         }
 
@@ -237,6 +267,15 @@ object HomeRows {
     }
 
     /**
+     * [uuid] の接続先が属するグループのうち、**グループ一覧 [groups] の順で最初に
+     * 見つかったもの**（[HomeRow.ProfileRow.firstLoginGroup] の裁定）。
+     * どのグループにも属していなければ null。
+     */
+    private fun firstLoginGroupFor(uuid: String, groups: List<FailoverGroup>): FirstLoginGroup? =
+        groups.firstOrNull { uuid in it.memberUuids }
+            ?.let { FirstLoginGroup(it.id, it.name) }
+
+    /**
      * 初回ログインが未完了の接続先の行に添える注記。終えていれば null（何も出さない）。
      *
      * 自動切替はこの接続先を候補にしない（認証情報が保存されていないので人が
@@ -244,23 +283,69 @@ object HomeRows {
      * 認証ダイアログごと消える）。**理由の分からない自動挙動を作らない**という
      * 既存の方針（仕様書5）に従い、飛ばされていること自体を利用者に見せる。
      *
-     * **状態だけでなく解き方も書く。** 利用者の明示操作による接続は必ず
-     * `fromIndex = 0`（グループの先頭メンバー）から始まり、個別の接続先だけを
-     * 単体で接続する操作は TV UI に無いので、**この接続先がグループの先頭でないと
-     * 有人の接続でもそこへ到達しない**。「飛ばされています」だけを出すと、
-     * 利用者には打つ手が分からない。`GroupEditScreen` の ▲ で先頭へ動かせば
-     * 接続できることまで書く（README の「仕組み」と同じ案内）。
+     * **状態だけでなく解き方も書く。** 「飛ばされています」だけを出すと利用者には
+     * 打つ手が分からない。以前ここには「グループ設定の ▲ で先頭へ動かしてから
+     * 接続する」と書いてあった——利用者の明示操作による接続が必ずグループの先頭
+     * メンバーから始まり、接続先を単体で繋ぐ操作が無かったためである。その回避策は
+     * 接続先を追加するたびにリモコンで並べ替えることを意味して現実的でなく、
+     * **同じ行に置いた「初回ログイン」の操作**（[firstLoginActionLabel]。
+     * その接続先の位置を指定して有人で接続を開始する）に差し替えた。
+     *
+     * [HomeRow.ProfileRow.firstLoginGroup] が null（どのグループにも属していない）
+     * なら null を返す。自動切替の対象でないので飛ばされることもなく、
+     * 行に出せる操作も無いため、注記は意味の無い警告になる。
      *
      * 文言の組み立ては [groupDeletionWarning] と同じく純関数にしてテストで固定
      * してある（Compose 側はこの結果を描くだけにする）。
      */
-    fun firstLoginNotice(needsFirstLogin: Boolean): String? =
-        if (needsFirstLogin) {
+    fun firstLoginNotice(row: HomeRow.ProfileRow): String? =
+        if (firstLoginApplies(row)) {
             "初回ログインが必要 / 自動切替では選ばれません。" +
-                "グループ設定の ▲ で先頭にしてから接続するとログインできます"
+                "右（→）の「初回ログイン」で接続するとログインできます"
         } else {
             null
         }
+
+    /**
+     * 行に出す「初回ログイン」の操作のラベル。出さないときは null
+     * （[firstLoginNotice] と同じ条件で現れ、同じ条件で消える）。
+     *
+     * D-pad での操作は同じ行の「編集」「削除」と同じ作法に合わせてある:
+     * この操作は**決定**（`Card` の `onClick`）で、既存の長押し（削除）と
+     * 衝突しない。カードを1枚右に並べるので、行から **→** で移動して決定する
+     * （`GroupEditScreen` のメンバー行の ▲/▼/名前と同じ並べ方であり、
+     * 新しい入力の作法を増やしていない）。長押しでは発火しないため、裁定78/80 の
+     * 孤児 UP（`LongPressKeyUpFilter` が捨てるもの）はこの経路では起きない。
+     */
+    fun firstLoginActionLabel(row: HomeRow.ProfileRow): String? =
+        if (firstLoginApplies(row)) "初回ログイン" else null
+
+    /**
+     * 「初回ログイン」を実行する前に出す確認の文面（[ConfirmDialog]。既存の削除の
+     * 確認と同じ作法）。出さないときは null。
+     *
+     * **何が起きるかをはっきり書く。** この操作は
+     * `FailoverEvent.UserConnectGroup`（有人の接続）であり、既存の有人接続と同じく
+     * **いま張っているトンネルを切ってから**指定した接続先へ繋ぎ直す。
+     * どのグループが繋ぎ直されるのかも利用者から見えるよう、経路になるグループの
+     * 名前（[HomeRow.ProfileRow.firstLoginGroup]）を文面に出す。
+     */
+    fun firstLoginConfirmation(row: HomeRow.ProfileRow): String? {
+        val group = row.firstLoginGroup ?: return null
+        if (!row.needsFirstLogin) return null
+        return "「${row.name}」で初回ログインを行いますか？\n\n" +
+            "いまの VPN 接続を切って、グループ「${group.name}」の「${row.name}」へ繋ぎ直します。" +
+            "認証画面が出たらユーザー名とパスワードを入力してください" +
+            "（「パスワードを保存」にチェックを入れると、次回からは自動で接続できます）。"
+    }
+
+    /**
+     * その行に初回ログインの注記と操作を出すか。**初回ログインが未完了で、かつ
+     * 少なくとも1つのグループに属している**ときだけ true
+     * （[HomeRow.ProfileRow.firstLoginGroup] の KDoc）。
+     */
+    private fun firstLoginApplies(row: HomeRow.ProfileRow): Boolean =
+        row.needsFirstLogin && row.firstLoginGroup != null
 
     /**
      * 初回ログインの判定（`ProfileRepository.needsFirstLogin`）を**引き直してよい

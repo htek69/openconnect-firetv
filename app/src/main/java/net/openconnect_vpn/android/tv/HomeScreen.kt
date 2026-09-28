@@ -85,6 +85,10 @@ fun HomeScreen(
 
     var reloadToken by remember { mutableStateOf(0) }
     var pendingDelete by remember { mutableStateOf<HomeRow.ProfileRow?>(null) }
+    // 「初回ログイン」の確認。削除（pendingDelete）と同じ作法で、実行前に1枚挟む
+    // （この操作はいまの VPN 接続を切る）。文面は作れるときだけ作って持たせる
+    // （[PendingFirstLogin] の KDoc）。
+    var pendingFirstLogin by remember { mutableStateOf<PendingFirstLogin?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
 
     val profileList = remember(reloadToken) { profiles.list() }
@@ -174,7 +178,10 @@ fun HomeScreen(
             // フォーカスターゲットに継承されるため、この1箇所を false にするだけで
             // LazyColumn の行・ヘッダーのカードを含む配下すべてがフォーカス探索の
             // 対象から外れる。
-            // pendingDelete が null に戻ればまた true になり、通常操作に戻る。
+            // pendingDelete / pendingFirstLogin が null に戻ればまた true になり、
+            // 通常操作に戻る（確認オーバーレイはどちらも [ConfirmDialog] であり、
+            // 同時に出ることはない——一方が出ている間は背後の行にフォーカスが
+            // 行かないので、もう一方を起動できない）。
             //
             // 裁定87 による訂正と、この書き方をよそへ写すときの注意:
             // 継承の向きは「内側が勝つ」ではなく **外側（祖先）が勝つ**
@@ -188,7 +195,7 @@ fun HomeScreen(
             // 1つも無く、名指しの `down` も無いという条件が揃っているからに
             // すぎない。`GroupEditScreen` は同じ書き方を写して実機の D-pad を
             // 2手で殺した（[GroupEditScreen] の KDoc 裁定87 の節を参照）。
-            .focusProperties { canFocus = pendingDelete == null },
+            .focusProperties { canFocus = pendingDelete == null && pendingFirstLogin == null },
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Row(
@@ -267,6 +274,20 @@ fun HomeScreen(
                             statusMessage = null
                             pendingDelete = row
                         },
+                        onFirstLogin = {
+                            // 文面を組み立てられないなら何もしない。この操作は
+                            // HomeRows.firstLoginActionLabel が非 null のときしか
+                            // 画面に出ないので通常は成立するが、確認を出す前に
+                            // 文面と経路グループを確定させておく（オーバーレイ側で
+                            // null になりうると、背後がフォーカス不可のまま
+                            // 何も描かれない＝D-pad が死ぬ状態を作れてしまう）。
+                            val group = row.firstLoginGroup
+                            val message = HomeRows.firstLoginConfirmation(row)
+                            if (group != null && message != null) {
+                                statusMessage = null
+                                pendingFirstLogin = PendingFirstLogin(row, group, message)
+                            }
+                        },
                     )
 
                     HomeRow.AddProfile -> Card(
@@ -326,6 +347,39 @@ fun HomeScreen(
         )
     }
 
+    pendingFirstLogin?.let { target ->
+        ConfirmDialog(
+            message = target.message,
+            confirmLabel = "接続する",
+            onConfirm = {
+                // 裁定84（fix8）: 一覧は変わらないので、操作した行そのものへ
+                // フォーカスを戻す（削除のキャンセルと同じ経路）。
+                val key = target.row.focusKey()
+                pendingFirstLogin = null
+                // 既存の有人接続と同じ入口（ACTION_CONNECT_GROUP）に、どの
+                // メンバーから始めるかを足して渡すだけ。新しいシグナリング経路は
+                // 作らない（uuid → 添字の解決は FailoverService 側）。
+                FailoverService.connectGroup(
+                    context,
+                    target.group.id,
+                    memberUuid = target.row.uuid,
+                )
+                if (key != null) {
+                    focusRestoreTokenSeq++
+                    focusRestoreRequest = FocusRestoreRequest.ToRow(key, focusRestoreTokenSeq)
+                }
+            },
+            onDismiss = {
+                val key = target.row.focusKey()
+                pendingFirstLogin = null
+                if (key != null) {
+                    focusRestoreTokenSeq++
+                    focusRestoreRequest = FocusRestoreRequest.ToRow(key, focusRestoreTokenSeq)
+                }
+            },
+        )
+    }
+
     // TV UI で最も多い不具合は「フォーカスがどこにも無い」状態。
     // 画面表示時に必ず先頭項目へフォーカスを置く。
     //
@@ -377,6 +431,21 @@ fun HomeScreen(
         }
     }
 }
+
+/**
+ * 「初回ログイン」の確認オーバーレイに必要なものを、**確認を出すと決めた時点で
+ * 確定させて**持ち回る入れ物。
+ *
+ * [message] と [group] を保持するのは、オーバーレイをコンポーズする箇所で
+ * `HomeRows.firstLoginConfirmation` が null を返しうる形にしないためである。
+ * 背後の画面は確認中フォーカス不可（裁定83）なので、「オーバーレイも描かれず
+ * 背後も掴めない」状態を作ると D-pad が完全に死ぬ（脱出は BACK だけ）。
+ */
+private data class PendingFirstLogin(
+    val row: HomeRow.ProfileRow,
+    val group: FirstLoginGroup,
+    val message: String,
+)
 
 /**
  * 裁定84（fix8）: ConfirmDialog を閉じた直後に一度だけ行うフォーカス復帰の指示。
@@ -509,6 +578,26 @@ private fun statusSuffix(row: HomeRow.GroupRow): String {
     return " / $badgeText$target"
 }
 
+/**
+ * 接続先の行。決定で編集、長押しで削除（裁定80 の作法で
+ * [withLongPressConsumed] を必ず通す）。
+ *
+ * 初回ログインが必要で、かつどこかのグループに属している接続先
+ * （[HomeRows.firstLoginActionLabel] が非 null）では、**同じ行の右に**
+ * 「初回ログイン」のカードを1枚並べる。既存の2つの操作
+ * （決定＝編集・長押し＝削除）はそのままにして、3つ目の入力の作法を
+ * 発明しない: D-pad の **→** でこのカードへ移り、**決定**で確認を出す
+ * （`GroupEditScreen` のメンバー行が ▲/▼/名前の3枚を横に並べ、左右で
+ * 移動して決定で実行するのと同じ形。実機で確認済みの形である）。
+ *
+ * 決定（`onClick`）は ACTION_UP で発火するので、長押し（ACTION_DOWN 中に
+ * 発火して UP が孤児になる裁定78/80 の問題）は起きない。[LongPressKeyUpFilter]
+ * が関わるのは既存の長押し＝削除だけで、そちらの経路は変えていない。
+ *
+ * 行の [FocusRequester]（裁定84 の復帰先）は**左の本体のカード**に付けたまま
+ * にしてある。確認を閉じたあとフォーカスが戻るのは行そのもの（従来と同じ位置）
+ * であり、操作が増えても復帰先の意味が変わらない。
+ */
 @Composable
 private fun ProfileCard(
     row: HomeRow.ProfileRow,
@@ -516,19 +605,34 @@ private fun ProfileCard(
     onLongPressConsumed: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onFirstLogin: () -> Unit,
 ) {
-    Card(
-        onClick = onEdit,
-        onLongClick = withLongPressConsumed(onLongPressConsumed, onDelete),
-        modifier = modifier,
-    ) {
-        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(row.name, style = MaterialTheme.typography.titleMedium)
-            Text(row.serverAddress, style = MaterialTheme.typography.bodySmall)
-            HomeRows.firstLoginNotice(row.needsFirstLogin)?.let { notice ->
-                Text(notice, style = MaterialTheme.typography.bodySmall)
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Card(
+            onClick = onEdit,
+            onLongClick = withLongPressConsumed(onLongPressConsumed, onDelete),
+            modifier = modifier,
+        ) {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(row.name, style = MaterialTheme.typography.titleMedium)
+                Text(row.serverAddress, style = MaterialTheme.typography.bodySmall)
+                HomeRows.firstLoginNotice(row)?.let { notice ->
+                    Text(notice, style = MaterialTheme.typography.bodySmall)
+                }
+                Text("長押しで削除", style = MaterialTheme.typography.bodySmall)
             }
-            Text("長押しで削除", style = MaterialTheme.typography.bodySmall)
+        }
+
+        HomeRows.firstLoginActionLabel(row)?.let { label ->
+            Card(onClick = onFirstLogin) {
+                Column(
+                    Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(label, style = MaterialTheme.typography.titleMedium)
+                    Text("決定で接続", style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
     }
 }
