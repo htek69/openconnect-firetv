@@ -58,6 +58,23 @@ class FailoverController(
      * 供給しない呼び出し元（既存のテスト）の振る舞いは無改変で変わらない。
      */
     private val needsFirstLoginProvider: (String) -> Boolean = { false },
+    /**
+     * 仕様書 4-3: いまの候補が「生きてはいるが遅い」か。判定そのものは
+     * [SlowLinkDetector] が持ち、ここへは真偽値だけが届く。[groupsProvider]
+     * （裁定72）や [dialogHostAttachedProvider]（裁定93）と同じ「参照のたびに
+     * 呼ぶ供給関数」の形で受け取る。
+     *
+     * 実体は `/proc/net/dev` の読み取りと [SlowLinkSettings] の有効・無効を含む
+     * 値で、`FailoverService` が供給する。**ここから Android API は一切参照
+     * しない。** 既定値が `{ false }` なのは、供給しない呼び出し元（既存の
+     * テスト、および機能が無効な構成）に対して従来の振る舞い＝「速度では
+     * 切り替えない」をそのまま残すため。
+     *
+     * 参照するのは [onSlowLinkSwitch] の1か所だけで、そこが仕様書 4-4 の
+     * 「判定しない条件」と 4-5 の「一周したら止める」を先に確かめる。つまり
+     * **この関数が呼ばれた時点で、その答えは切替に直結する。**
+     */
+    private val slowLinkProvider: () -> Boolean = { false },
 ) {
 
     /**
@@ -254,6 +271,42 @@ class FailoverController(
      * 楽観に倒すよりは安全である。
      */
     private var unconfirmedAbandonedUuid: String? = null
+
+    /**
+     * 仕様書 4-4: 現在の候補のトンネルが確立した時刻（コアの `Connected` を
+     * 観測した時刻）。速度の判定を接続直後の猶予（`graceAfterConnectSec`）が
+     * 明けてからに限るために持つ。
+     *
+     * [FailoverState.Verifying.connectedAtMs] と同じ値だが、速度の判定を行う
+     * [FailoverState.Healthy] はこの値を持たない（持たせると UI と状態保存の
+     * 公開面が増える）。候補の起動（[startCandidateFrom]）で null に戻すので、
+     * 値があるのは「いまの候補のトンネルが一度は張れた」ときだけである。
+     */
+    private var candidateConnectedAtMs: Long? = null
+
+    /**
+     * 仕様書 4-5: 速度起因の切替を「一周」で止めるための記録。グループ ID ごとに
+     * 何回切り替えたかと、そのとき数えていたメンバー構成を覚えておく。
+     *
+     * **時間による自動解除は設けない。** 遅いという判定は誤りうる（仕様書 6）
+     * ので、誤判定のまま時間で再武装すると候補の間を延々と行き来し続ける。
+     * 解除は次の3つだけ（仕様書 4-5 が挙げる3つと1対1）:
+     *
+     * - [onUserConnect]: 明示的なユーザー操作は新しいセッションの意思表示である
+     *   （裁定35a が `_excludedUuids` をここでクリアするのと同じ考え方）
+     * - グループのメンバー構成が変わった: 候補の集合が変わったのだから、前の
+     *   集合について「全部試した」と数えた記録はもう意味を持たない。判定は
+     *   [slowLinkLapAvailable] が参照のたびに [SlowLinkLap.memberUuids] を
+     *   突き合わせて行う（[groupsProvider] は参照のたびに最新を返す＝裁定72）
+     * - [onSlowLinkSettingsChanged]: この機能の設定が変わった
+     */
+    private val slowLinkLaps = mutableMapOf<String, SlowLinkLap>()
+
+    /**
+     * [slowLinkLaps] の中身。[memberUuids] は [switches] を数え始めたときの
+     * グループ構成で、構成変更による解除の判定にだけ使う。
+     */
+    private data class SlowLinkLap(val memberUuids: List<String>, val switches: Int)
 
     fun handle(event: FailoverEvent) {
         // 裁定72a: どのイベントを処理する前にも、まず現在の候補の添字が
@@ -484,6 +537,10 @@ class FailoverController(
         // 何度「接続」を押しても vpn.connect() が一度も呼ばれない（欠陥・M1）。
         _excludedUuids.clear()
         needsUserConsent = false
+        // 仕様書 4-5: 一周して止まっていた速度起因の切替を再武装する（裁定35a と
+        // 同じ考え方——ユーザー自身がいま接続を指示しているのだから、前の
+        // セッションで数えた「全部試した」を引きずる理由が無い）。
+        slowLinkLaps.clear()
 
         stopBeforeStarting(groupId, unattended = false, fromIndex = fromIndex)?.let { return it }
 
@@ -626,28 +683,44 @@ class FailoverController(
     }
 
     /**
-     * [fromIndex] 以降で**起動してよい**最初の候補の位置。無ければ
-     * `group.memberUuids.size`（＝枯渇）を返す。
+     * [fromIndex] 以降で**起動してよい**最初の候補の添字。無ければ null。
      *
      * 候補を飛ばす規則をこの1か所に集めるために切り出してある。以前は
      * [startCandidateFrom] のループの中に直接書かれていたが、飛ばす条件が
      * 「除外されている」以外にも増えたので、条件が呼び出し経路ごとに食い違う
-     * 余地を残さないよう1つの関数にした。[startCandidateFrom] がこの関数の
-     * 唯一の呼び出し元であり、候補を起動する5経路（[onUserConnect] /
+     * 余地を残さないよう1つの関数にした。候補を起動する5経路（[onUserConnect] /
      * [onAutoConnect] / [failOver] / [advanceAfterFailingOver] /
-     * [onExhaustedRetry]）はすべて [startCandidateFrom] を通る。
+     * [onExhaustedRetry]）はすべて [startCandidateFrom] を通り、その
+     * [startCandidateFrom] の選択も必ずこの関数を通す。したがって「起動できる
+     * 候補があるか」と「起動してみたら候補が無かった」の答えが**食い違いよう
+     * がない**（定義が1か所しかない）。
      *
      * 飛ばす条件は2つ:
-     * - 安全策 S1 の除外集合（[excludedUuids]）に入っている。有人・無人を問わない
-     *   ……**わけではない**。除外は「認証段階に到達して通らなかった」記録であり、
-     *   裁定35 により利用者の明示操作（[onUserConnect]）ではその集合ごとクリア
-     *   されてからここへ来る。したがってこの判定を `unattended` で分ける必要は
-     *   なく、従来どおり無条件でよい（振る舞いは以前と同一）。
+     * - 安全策 S1 の除外集合（[excludedUuids] / [_excludedUuids]）に入っている。
+     *   有人・無人を問わない……**わけではない**。除外は「認証段階に到達して
+     *   通らなかった」記録であり、裁定35 により利用者の明示操作
+     *   （[onUserConnect]）ではその集合ごとクリアされてからここへ来る。
+     *   したがってこの判定を `unattended` で分ける必要はなく、従来どおり
+     *   無条件でよい（振る舞いは以前と同一）。
      * - [needsFirstLoginProvider] が true で、**かつ [unattended] が true**。
      *   人が居ないときに成功しえない候補を起動しないための規則で、利用者の
      *   明示操作では適用しない（理由は [needsFirstLoginProvider] の KDoc）。
      *
      * 供給関数を引くのは候補選択のときだけである（`onTick` の毎周期では引かない）。
+     *
+     * 起動してよい候補が無いことは **null** で表す（枯渇を
+     * `group.memberUuids.size` で返していた形は捨てた）。仕様書 4-4 の
+     * [onSlowLinkSwitch] がこれを使うのは、**行き先が無い切替を始めないため**
+     * であり、そこでは「無い」と「添字 0」を取り違えてはならない——null なら
+     * 取り違えようがない。速度起因の切替が [startCandidateFrom] まで進んで
+     * 候補を見つけられないと [enterExhausted] に落ち、繋がってはいた（ただ遅い）
+     * トンネルをバックオフのあいだ失う。遅いままの接続より悪い結果であり、
+     * この機能の目的にも反する。
+     *
+     * 判定できるのは呼んだ瞬間の除外集合と供給関数の答えについてだけである
+     * ことに注意する。[ConnectResult.Failed] による除外は `vpn.connect()` を
+     * 呼んで初めて分かるので、この関数が「ある」と答えた候補が起動時に失敗する
+     * ことはありうる。
      *
      * [fromIndex] の下限を 0 に丸めるのは防御でしかない。負の値が来る経路は
      * 現在存在しない（[stopBeforeStarting] が置く `failedIndex = -1` は
@@ -655,7 +728,7 @@ class FailoverController(
      * 読まれず、読まれる経路では必ず `failedIndex + 1 >= 0` になる）。
      * 丸めの有無で到達しうる振る舞いは変わらない。
      */
-    private fun nextStartableIndex(group: FailoverGroup, fromIndex: Int, unattended: Boolean): Int {
+    private fun nextStartableIndex(group: FailoverGroup, fromIndex: Int, unattended: Boolean): Int? {
         var index = fromIndex.coerceAtLeast(0)
         while (index < group.memberUuids.size) {
             val uuid = group.memberUuids[index]
@@ -663,7 +736,7 @@ class FailoverController(
             if (!skip) return index
             index++
         }
-        return group.memberUuids.size
+        return null
     }
 
     /**
@@ -671,10 +744,10 @@ class FailoverController(
      * 候補が無ければ Exhausted に入る。
      */
     private fun startCandidateFrom(group: FailoverGroup, fromIndex: Int, unattended: Boolean): FailoverState {
-        var index = fromIndex
+        var from = fromIndex
         while (true) {
-            index = nextStartableIndex(group, index, unattended)
-            if (index >= group.memberUuids.size) break
+            val index = nextStartableIndex(group, from, unattended)
+                ?: return enterExhausted(group.id, attempt = exhaustionAttempt)
             val uuid = group.memberUuids[index]
             currentCandidatePassedAuth = false
             currentCandidateReachedAuth = false
@@ -683,9 +756,10 @@ class FailoverController(
             sawCoreConnecting = false
             expectingDisconnect = false
             currentCandidateUuid = uuid
+            candidateConnectedAtMs = null
             probeImmediatelyOnNetworkRecovery = false
-            return when (vpn.connect(uuid)) {
-                ConnectResult.Started -> FailoverState.Connecting(
+            when (vpn.connect(uuid)) {
+                ConnectResult.Started -> return FailoverState.Connecting(
                     groupId = group.id,
                     candidateIndex = index,
                     startedAtMs = clock.nowMs(),
@@ -693,17 +767,18 @@ class FailoverController(
 
                 ConnectResult.NeedsUserConsent -> {
                     needsUserConsent = true
-                    FailoverState.Idle
+                    return FailoverState.Idle
                 }
 
+                // 起動を試みて初めて失敗が分かった。S1 の除外に加えて次の候補へ進む
+                // （以前の `continue` と同じ意味。選択そのものは
+                // nextStartableIndex に任せる）。
                 ConnectResult.Failed -> {
                     _excludedUuids.add(uuid)
-                    index++
-                    continue
+                    from = index + 1
                 }
             }
         }
-        return enterExhausted(group.id, attempt = exhaustionAttempt)
     }
 
     private fun onVpnState(core: VpnCoreState, uuid: String?): FailoverState {
@@ -727,6 +802,10 @@ class FailoverController(
         if (core == VpnCoreState.Authenticated || core == VpnCoreState.Connected) {
             currentCandidatePassedAuth = true
         }
+
+        // 仕様書 4-4: トンネルが張れた時刻を覚えておく（速度の判定を猶予期間の
+        // あとに限るために使う。詳細は candidateConnectedAtMs の KDoc）。
+        if (core == VpnCoreState.Connected) candidateConnectedAtMs = clock.nowMs()
 
         // Ruling 23: 認証段階まで到達したことを覚えておく（S1 の誤判定を防ぐ）。
         // Authenticating は TLS 接続が成功しサーバが認証フォームを返したことを、
@@ -934,7 +1013,18 @@ class FailoverController(
      * 可能性がある場合。[alreadyDown] が true なら Disconnected 起因なので待つ
      * 対象が無く、直接次候補へ進む）。
      */
-    private fun failOver(groupId: String, failedIndex: Int, alreadyDown: Boolean): FailoverState {
+    private fun failOver(
+        groupId: String,
+        failedIndex: Int,
+        alreadyDown: Boolean,
+        /**
+         * 仕様書 4-3: この切替の理由がスループット低下か。[onSlowLinkSwitch] だけが
+         * true を渡す。値は [FailoverState.FailingOver.bySlowLink] にそのまま載り、
+         * UI が理由を表示するために使う。**切替の手順は一切変えない**——速度起因でも
+         * Ruling 25 の2段階切替をそのまま通る。
+         */
+        bySlowLink: Boolean = false,
+    ): FailoverState {
         val group = groupOf(groupId) ?: run {
             // 裁定72-fix(F1): グループが丸ごと削除されていた場合も、他の
             // 「諦めて Idle へ戻る」経路（!autoFailoverEnabled の直後）と同じく
@@ -978,6 +1068,7 @@ class FailoverController(
             failedIndex = failedIndex,
             awaitingUuid = awaiting,
             startedAtMs = clock.nowMs(),
+            bySlowLink = bySlowLink,
         )
     }
 
@@ -1037,7 +1128,11 @@ class FailoverController(
     private fun onTick(): FailoverState = when (val s = state) {
         is FailoverState.Connecting -> onUnattendedPromptTimeout(s) ?: onConnectTimeout(s)
         is FailoverState.Verifying -> onUnattendedPromptTimeout(s) ?: s
-        is FailoverState.Healthy -> onUnattendedPromptTimeout(s) ?: s
+        // 仕様書 4-3: 速度の判定は、この tick で状態を `Healthy` のまま残した
+        // 経路の**後ろ**に足す。前に置くと、除外を伴う裁定30 の判定
+        // （onUnattendedPromptTimeout）より先に候補を畳んでしまい、既存の
+        // 評価順序（＝どちらの理由で切替が起きるか）を変えることになる。
+        is FailoverState.Healthy -> onUnattendedPromptTimeout(s) ?: onSlowLinkSwitch(s) ?: s
         is FailoverState.FailingOver -> onFailingOverTimeout(s)
         is FailoverState.Exhausted -> onExhaustedRetry(s)
         FailoverState.Idle -> state
@@ -1110,6 +1205,128 @@ class FailoverController(
      */
     private fun userPromptWaitMs(groupId: String): Long =
         minOf(USER_PROMPT_WAIT_MS, configOf(groupId).connectTimeoutSec * 1_000L / 2)
+
+    /**
+     * 仕様書 4-3/4-4/4-5: いまの候補が「生きてはいるが遅い」なら、その候補を
+     * 諦めて次候補へ進む。切り替えないなら null を返し、`Healthy` を保つ。
+     *
+     * **新しい切替経路は作らない。** 判定が真なら既存の [failOver] に入り、
+     * Ruling 25 の2段階切替（切断要求 → 完了確認 → 次候補の起動）をそのまま
+     * 通る。速度起因であることは [FailoverState.FailingOver.bySlowLink] に
+     * 残るだけで、手順には影響しない。
+     *
+     * 判定しない条件（仕様書 4-4。いずれも [slowLinkProvider] を呼ぶ前に返す）:
+     *
+     * - グループの `autoFailoverEnabled` が false: R6 により自動では切り替えない。
+     *   ここで [failOver] に入れてしまうと、そちらは「切り替え先が無い」として
+     *   切断して `Idle` へ落ちる——**自動切替を切っている利用者の接続を、
+     *   速度を理由に切る**ことになる
+     * - 安全策 S2: 下層ネットワークが無い。遅いのは当然であり、切り替えても
+     *   次候補が繋がるはずがない
+     * - 接続直後の猶予（`graceAfterConnectSec`）が明けていない。トンネル確立
+     *   直後は経路のウォームアップや DNS の往復で速度が出ないのが普通で、
+     *   ここで判定すると健全な候補を次々に畳む。S4 が疎通判定で同じ理由から
+     *   猶予を置いているのと同じ趣旨
+     * - 裁定94: いま人が認証ダイアログに答えている（[awaitingHumanAuthInput]）。
+     *   セッション中の再認証でコアが `UserPrompt` に入っても状態は `Healthy` の
+     *   ままなので、ここに同じガードが無いと**利用者がパスワードを打っている
+     *   最中に速度を理由に切替が起き、ダイアログごと消える。** 裁定94 が
+     *   `onConnectTimeout` で防いだのとまったく同じ結末であり、tick 駆動の
+     *   引き金である以上ここも同じ形のガードを持つ必要がある。この状態が
+     *   無限に続かない根拠は [awaitingHumanAuthInput] の KDoc にある（時間の
+     *   しきい値を足して解決してはならない——裁定78）
+     * - 仕様書 4-5: そのグループの一周ぶんの切替をすでに行った
+     *   （[slowLinkLapAvailable]）
+     * - **次に起動できる候補が無い**（[nextStartableIndex] が null）。行き先の
+     *   無い切替は [startCandidateFrom] で候補を見つけられず [enterExhausted] に
+     *   落ち、**繋がってはいた（ただ遅い）トンネルをバックオフのあいだ失う。**
+     *   遅い接続のままでいるより悪い結果であり、この機能の目的
+     *   （遅い接続先から次候補へ移す）にも反する。単一メンバーのグループ、
+     *   死活切替で最後の候補まで来ている場合、他のメンバーが S1 で除外されて
+     *   いる場合に踏む。ここでは `unattended = true` で引く——速度起因の切替は
+     *   **エンジン自身の判断**であり人の操作ではないので、初回ログインが未了の
+     *   メンバー（[needsFirstLoginProvider]）は「起動できる候補」に数えない。
+     *   数えてしまうと、このガードを通り抜けた切替が
+     *   [startCandidateFrom]（そちらも `unattended = true`）でその候補を飛ばし、
+     *   結局 [enterExhausted] に落ちて上の事故を起こす。加えて、無人で
+     *   起動できない候補へ移そうとすること自体が裁定93/94 の
+     *   「利用者の認証ダイアログを消さない」に反する
+     */
+    private fun onSlowLinkSwitch(s: FailoverState.Healthy): FailoverState? {
+        val group = groupOf(s.groupId) ?: return null
+        if (!group.autoFailoverEnabled) return null
+        if (!network.hasUnderlyingNetwork()) return null
+        if (awaitingHumanAuthInput()) return null
+
+        val connectedAt = candidateConnectedAtMs ?: return null
+        if (clock.nowMs() - connectedAt < group.config.graceAfterConnectSec * 1_000L) return null
+
+        if (!slowLinkLapAvailable(group)) return null
+        if (nextStartableIndex(group, s.candidateIndex + 1, unattended = true) == null) return null
+        if (!slowLinkProvider()) return null
+
+        recordSlowLinkSwitch(group)
+        return failOver(s.groupId, s.candidateIndex, alreadyDown = false, bySlowLink = true)
+    }
+
+    /**
+     * 仕様書 4-5: このグループでまだ速度起因の切替を行ってよいか。**問い合わせる
+     * だけで記録は変えない**（記録の更新は [recordSlowLinkSwitch]）。
+     *
+     * 上限は「候補の数 - 1 回の切替」である。仕様書 4-5 が数えているのは
+     * 「グループの全候補を一度ずつ試しても（遅いままなら止める）」であり、
+     * N 件の候補を先頭から一度ずつ試すのに必要な切替は **N-1 回**だから。
+     * N 回にすると最後の候補からもう一度切り替えることになり、その切替には
+     * 行き先が無い（[onSlowLinkSwitch] の [nextStartableIndex] のガードが
+     * 別途それを止めるが、**予算の側でも数え間違えない**）。
+     *
+     * 記録していたメンバー構成と現在の構成が違えば、記録は無効なものとして
+     * 扱い数え直す（候補の集合が変わったのだから「全部試した」という記録は
+     * もう意味を持たない）。参照のたびに突き合わせるので、構成変更を別途
+     * 通知してもらう必要が無い。
+     */
+    private fun slowLinkLapAvailable(group: FailoverGroup): Boolean {
+        val lap = slowLinkLaps[group.id]
+        val switches = if (lap != null && lap.memberUuids == group.memberUuids) lap.switches else 0
+        return switches < group.memberUuids.size - 1
+    }
+
+    /**
+     * 仕様書 4-5: 速度起因の切替を1回行ったことを記録する（[slowLinkLapAvailable]
+     * が読む側）。記録していた構成と違っていれば 1 から数え直す。
+     *
+     * ついでに、もう存在しないグループの記録を捨てる。`FailoverService` は端末が
+     * 起きているあいだ生き続け、グループは UI から削除されうるので、誰も読まない
+     * 記録を持ち続ける理由が無い（解除の2経路——[onUserConnect] と
+     * [onSlowLinkSettingsChanged]——はどちらも全消しなので、残るのはこの経路だけ
+     * を通る場合である）。
+     */
+    private fun recordSlowLinkSwitch(group: FailoverGroup) {
+        val liveIds = groups.mapTo(mutableSetOf()) { it.id }
+        slowLinkLaps.keys.retainAll(liveIds)
+
+        val lap = slowLinkLaps[group.id]
+        val switches = if (lap != null && lap.memberUuids == group.memberUuids) lap.switches else 0
+        slowLinkLaps[group.id] = SlowLinkLap(group.memberUuids, switches + 1)
+    }
+
+    /**
+     * 仕様書 4-5: スループット切替の設定（[SlowLinkSettings]）が変わったので、
+     * 一周して止まっていた記録を解除する。`FailoverService` が設定の読み直しから
+     * 呼ぶ。
+     *
+     * しきい値の変更は**利用者からの新しい指示**であり、[onUserConnect] と同じ
+     * 「新しいセッションの意思表示」として扱う。ここで解除しないと、一周して
+     * 止まったあとにしきい値を上げ下げしても何も起きず、**設定が壊れているように
+     * 見える**（利用者には一周の記録という内部状態が見えない）。機能を無効に
+     * したあと再び有効にした場合も同じで、無効だった間の記録を引きずる理由が無い。
+     *
+     * 時間による再武装ではないので仕様書 4-5 の禁止（時間で自動解除しない）には
+     * 触れない。呼ぶのは人の操作に対応した1回だけである。
+     */
+    fun onSlowLinkSettingsChanged() {
+        slowLinkLaps.clear()
+    }
 
     /** Ruling 25: 切断完了の確認が来ないまま [DISCONNECT_WAIT_MS] を過ぎたら先へ進む。 */
     private fun onFailingOverTimeout(s: FailoverState.FailingOver): FailoverState {

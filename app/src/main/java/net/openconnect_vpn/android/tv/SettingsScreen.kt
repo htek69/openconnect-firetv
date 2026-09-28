@@ -26,6 +26,17 @@ import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.ProbeSchedule
 import net.openconnect_vpn.android.failover.ProbeTarget
+import net.openconnect_vpn.android.failover.SlowLinkSettings
+import net.openconnect_vpn.android.failover.SlowLinkThresholds
+
+/**
+ * 裁定R24: 速度を均す窓の長さ（秒）。この画面の説明文が出す「検知までの時間」を
+ * 判定器の既定値そのものから取るための参照で、数字を画面側に書き写さない。
+ * 窓の長さは利用者に変えさせない定数（仕様書 5）であり、`FailoverService` も
+ * `SlowLinkThresholds` の既定値のまま判定器を作るため、ここで既定値を読むのが
+ * 実際に効いている値である。
+ */
+private val SLOW_LINK_WINDOW_SEC = SlowLinkThresholds().windowSec
 
 /**
  * 設定画面。疎通確認の宛先・間隔・失敗閾値、VPN 許可の取得・切断、
@@ -82,6 +93,12 @@ fun SettingsScreen(
     }
     var failureThreshold by remember {
         mutableStateOf(SettingsStepper.clampFailureThreshold(storedSchedule.failureThreshold))
+    }
+
+    val storedSlowLink = remember { groupStore.loadSlowLinkSettings() }
+    var slowLinkEnabled by remember { mutableStateOf(storedSlowLink.enabled) }
+    var slowRxKbps by remember {
+        mutableStateOf(SettingsStepper.clampSlowRxKbps(storedSlowLink.slowRxKbps))
     }
 
     var message by remember { mutableStateOf<String?>(null) }
@@ -171,6 +188,55 @@ fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
         )
 
+        // 仕様書 6-1: 何を見て切り替えるか（VPN トンネルの受信速度）と、
+        // 低ビットレート再生の誤判定リスクの両方に触れる。ソフトを弱めた
+        // 「注意書き」ではなく、有効化するかどうかを利用者が判断するための
+        // 警告として書く。
+        // 最終再レビューの指摘7（FIX 2）: 裁定R20（窓全体の平均で判定）以降、
+        // 低ビットレート再生の誤判定は縁の事例ではなく主要な経路になった
+        // （仕様書 §6-1 参照）。「することがあります」では「稀に起きる」に
+        // 読めてしまうため、「されやすい」＋「接続先の実際の速度に関わらず」
+        // に強め、TV の画面でも読み切れる長さに収める。
+        Text(
+            "VPN 経由の受信速度を見て、下の値を下回り続けたら接続先を切り替えます。" +
+                "音声のみの再生や低画質の動画は、接続先の実際の速度に関わらず" +
+                "「遅い」と誤判定されやすい点にご注意ください。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        // 見た目・操作は GroupEditScreen の「自動切替」トグルと同じ:
+        // Card 全体をボタンとして扱い、現在値をラベルの ON/OFF で表す
+        // （tv-material に Switch 相当が無いため、この画面のほかのトグルも
+        // この形で統一してある）。OFF のときも下のステッパーは操作でき、
+        // 「保存」を押せば値は書き込まれる（あとで ON にしたときに効く）。
+        Card(onClick = { slowLinkEnabled = !slowLinkEnabled }) {
+            Text(
+                if (slowLinkEnabled) "速度低下で切り替える: ON" else "速度低下で切り替える: OFF",
+                modifier = Modifier.padding(20.dp),
+            )
+        }
+
+        TvStepperRow(
+            label = "受信速度の下限",
+            value = slowRxKbps,
+            valueText = "${slowRxKbps}kbps",
+            onDecrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, -1) },
+            onIncrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, +1) },
+        )
+
+        // 裁定R24: 上の死活側（「最短 X秒・最長 Y秒でダウンを検知します」）と同じ
+        // 体裁で、速度側の検知までの時間も書く。窓の長さは利用者が変えられない
+        // 定数（仕様書 5）なので、数字はその定数から出して二重管理にしない。
+        // 「約60秒」と書かないと、有効にして20秒待った利用者が壊れていると
+        // 判断する（切替そのものの時間が後ろに付くことも書く）。
+        Text(
+            "速度は${SLOW_LINK_WINDOW_SEC}秒ぶんを均して判断するため、" +
+                "遅くなってから「遅い」と判定するまで約${SLOW_LINK_WINDOW_SEC}秒かかります。" +
+                "実際に別の接続先で見られるようになるのは、そこに切替そのものの時間が" +
+                "加わったあとです。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+
         message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
 
         Button(onClick = {
@@ -186,6 +252,12 @@ fun SettingsScreen(
                         ProbeSchedule(
                             probeIntervalSec = probeIntervalSec,
                             failureThreshold = failureThreshold,
+                        ),
+                    )
+                    groupStore.saveSlowLinkSettings(
+                        SlowLinkSettings(
+                            enabled = slowLinkEnabled,
+                            slowRxKbps = slowRxKbps,
                         ),
                     )
                     // 裁定86（M4）: 以前は「次回のサービス起動から反映されます」と
@@ -315,4 +387,35 @@ object SettingsStepper {
 
     fun stepFailureThreshold(current: Int, steps: Int): Int =
         clampFailureThreshold(current + steps * FAILURE_THRESHOLD_STEP)
+
+    /**
+     * 「速度低下で切り替える」の受信速度下限（[SlowLinkSettings.slowRxKbps]）の
+     * ステッパーが使う範囲・刻み幅（task-6）。単位は kbps。
+     *
+     * 範囲の選び方: 仕様書 6-1 は「音声のみの再生や低画質の動画では受信が
+     * 1 Mbps を下回るのが正常」と明記している。[SLOW_RX_KBPS_MIN] を
+     * これより大きく下げても、実際の動画・音声再生よりさらに細い通信しか
+     * 検知できなくなり、切替がほとんど発火しない値になってしまうので実用上の
+     * 意味がない。逆に [SLOW_RX_KBPS_MAX] を大きく上げると、通常のビットレートの
+     * 再生まで「遅い」と誤判定して切り替えてしまう範囲に踏み込む。
+     *
+     * **最悪ケース（上限 5000kbps まで上げた場合）:** 数 Mbps 程度の普通の動画
+     * 再生でも「遅い」と誤判定され、実際には生きている接続先を延々と
+     * 乗り換え続けかねない。この値を上げるのは、仕様書 6-1 の誤判定を
+     * 承知のうえで行う操作であることが前提になる。
+     *
+     * 最良ケース（下限 250kbps のまま）: 低ビットレートの音声のみの再生
+     * （仕様書 6-1）程度の通信は「遅い」と判定されにくく、実際に受信がほぼ
+     * 止まっている場合だけを拾いやすい。既定値 1000kbps はその中間。
+     */
+    const val SLOW_RX_KBPS_MIN = 250
+    const val SLOW_RX_KBPS_MAX = 5000
+    const val SLOW_RX_KBPS_STEP = 250
+
+    fun clampSlowRxKbps(value: Int): Int =
+        value.coerceIn(SLOW_RX_KBPS_MIN, SLOW_RX_KBPS_MAX)
+
+    /** [steps] は +1（右／＋）または -1（左／－）を渡す想定。刻み幅は [SLOW_RX_KBPS_STEP]。 */
+    fun stepSlowRxKbps(current: Int, steps: Int): Int =
+        clampSlowRxKbps(current + steps * SLOW_RX_KBPS_STEP)
 }

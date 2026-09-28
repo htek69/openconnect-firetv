@@ -27,6 +27,17 @@ data class ProbeSchedule(
     val failureThreshold: Int,
 )
 
+/**
+ * スループット低下による切替の設定（仕様書 5）。グループ単位ではなく全体の設定。
+ *
+ * **既定は無効。** 仕様書 6 の誤判定を承知のうえで有効化してもらうため。
+ */
+@Serializable
+data class SlowLinkSettings(
+    val enabled: Boolean = false,
+    val slowRxKbps: Int = 1000,
+)
+
 /** フェイルオーバーの挙動を決めるパラメータ。 */
 @Serializable
 data class FailoverConfig(
