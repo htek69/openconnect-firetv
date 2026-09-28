@@ -290,10 +290,26 @@ class FailoverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONNECT_GROUP -> intent.getStringExtra(EXTRA_GROUP_ID)?.let { groupId ->
+                // [EXTRA_MEMBER_UUID] が付いていれば「このメンバーから始めよ」
+                // （一覧の行の「初回ログイン」）。付いていなければ従来どおり
+                // グループの先頭から始める。新しい action は作らず、既存の意図の
+                // 配送に乗せる。
+                val memberUuid = intent.getStringExtra(EXTRA_MEMBER_UUID)
+                // uuid → 添字の解決はここ（サービス側）の責任である。
+                // FailoverController にグループ検索の責務を増やさないため、
+                // 渡すのは添字だけにする。
+                val fromIndex = if (memberUuid == null) 0 else memberIndexOf(groupId, memberUuid)
+                if (fromIndex == null) {
+                    // 指定されたメンバーがこのグループに見当たらない（画面が
+                    // 読んだ一覧とここが持つ一覧がずれていた）。先頭から繋ぎ直すと
+                    // 利用者が指したのとは別の接続先が起動するので、何もしない
+                    // （Ruling 18 の記録も更新しない）。
+                    return@let
+                }
                 // Ruling 18: 次回 onCreate（プロセス kill 後の復帰）で同じグループへ
                 // 自動的に再接続できるよう、要求された時点で記録する。
                 groupStore.saveActiveGroupId(groupId)
-                dispatchExternal(FailoverEvent.UserConnectGroup(groupId))
+                dispatchExternal(FailoverEvent.UserConnectGroup(groupId, fromIndex))
             }
 
             ACTION_DISCONNECT -> {
@@ -302,6 +318,21 @@ class FailoverService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * [uuid] が [groupId] のグループの何番目のメンバーかを、**このサービスが
+     * 実際に [controller] へ供給している [groups]** から解決する。見当たらなければ
+     * null。
+     *
+     * [groups] を使うのは、その一覧こそ [FailoverController] が候補選択に使うもの
+     * だからである（画面側は `GroupStore` から別のタイミングで読み直しており、
+     * 世代がずれる余地がある: 裁定65/72-fix(F4)）。ずれた一覧の添字を渡すと、
+     * 利用者が指したのとは別の接続先を起動してしまう。
+     */
+    private fun memberIndexOf(groupId: String, uuid: String): Int? {
+        val group = groups.firstOrNull { it.id == groupId } ?: return null
+        return group.memberUuids.indexOf(uuid).takeIf { it >= 0 }
     }
 
     /**
@@ -554,6 +585,13 @@ class FailoverService : Service() {
         const val EXTRA_GROUP_ID = "net.openconnect_vpn.android.failover.GROUP_ID"
 
         /**
+         * [ACTION_CONNECT_GROUP] に任意で付ける「このメンバーから始めよ」の指定
+         * （一覧の行の「初回ログイン」）。**新しい action は作らない。**
+         * 無ければ従来どおりグループの先頭から始める。
+         */
+        const val EXTRA_MEMBER_UUID = "net.openconnect_vpn.android.failover.MEMBER_UUID"
+
+        /**
          * 裁定86（L2）: Task 13 の検証ハーネス（`FailoverDebugReceiver`・
          * `ACTION_SET_PROBE_TARGET`・`logHarnessState`・`setProbeTarget`）は
          * 削除した。ハーネス自身の KDoc が「TV UI が `connectGroup` /
@@ -575,11 +613,20 @@ class FailoverService : Service() {
         /** Ruling 25: 切替中（FailingOver）の tick 間隔。 */
         private const val TICK_INTERVAL_SWITCHING_MS = 1_000L
 
-        /** 計画2 の TV UI から呼ぶ入口。 */
-        fun connectGroup(context: Context, groupId: String) {
+        /**
+         * 計画2 の TV UI から呼ぶ入口。
+         *
+         * [memberUuid] を渡すと、そのメンバーから起動を試し始める
+         * （一覧の行の「初回ログイン」。有人の接続は常に先頭メンバーから
+         * 始まるため、2番目以降にある未ログインの接続先へ到達する手段が
+         * 無かった穴を埋める）。既定の null は従来どおり「グループの先頭から」で、
+         * 既存の呼び出し元は無改変でよい。
+         */
+        fun connectGroup(context: Context, groupId: String, memberUuid: String? = null) {
             val intent = Intent(context, FailoverService::class.java).apply {
                 action = ACTION_CONNECT_GROUP
                 putExtra(EXTRA_GROUP_ID, groupId)
+                memberUuid?.let { putExtra(EXTRA_MEMBER_UUID, it) }
             }
             startCompat(context, intent)
         }
