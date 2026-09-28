@@ -100,16 +100,40 @@ fun HomeScreen(
     // いないかを照合するために使う。
     val engineActiveGroup by FailoverStateHolder.activeGroup.collectAsStateWithLifecycle()
 
-    val rows = remember(reloadToken, profileList, groupList, failoverState, engineActiveGroup) {
+    // 初回ログインが未完了の接続先には行に注記を出す（HomeRows.firstLoginNotice）。
+    // この判定だけは rows とは別の remember に分け、**failoverState そのものを
+    // キーにしない**。判定は prefs の読み直しを伴うのに、Healthy.lastProbeAtMs は
+    // 疎通確認ごと（既定30秒）に変わるため、rows と同じキーにすると接続中に
+    // ホームを開いているあいだ30秒ごとにメインスレッドで shared_prefs を
+    // 走査し続けることになる（裁定16 によりこの経路はメインスレッドに固定
+    // されているので、逃がすのではなく回数を減らす）。
+    //
+    // 引き直す契機は「接続先の一覧が変わったとき」（reloadToken / profileList）と
+    // 「接続の節目」（HomeRows.firstLoginRecheckKey。状態の種類・グループ・候補が
+    // 変わったとき）だけ。初回ログインが通った直後に注記が消えることは
+    // Connecting → Verifying → Healthy の遷移で鍵が変わることで保たれる
+    // （詳細は firstLoginRecheckKey の KDoc）。
+    val needsFirstLoginByUuid = remember(
+        reloadToken,
+        profileList,
+        HomeRows.firstLoginRecheckKey(failoverState),
+    ) {
+        profileList.associate { it.uuid to profiles.needsFirstLogin(it.uuid) }
+    }
+
+    val rows = remember(
+        reloadToken,
+        profileList,
+        groupList,
+        failoverState,
+        engineActiveGroup,
+        needsFirstLoginByUuid,
+    ) {
         val built = HomeRows.build(
             groupList,
             profileList,
             failoverState,
-            // 初回ログインが未完了の接続先には行に注記を出す。自動切替が
-            // その接続先を飛ばしていることを利用者から見えるようにするため
-            // （HomeRows.firstLoginNotice の KDoc）。rows を作り直すときだけ
-            // 引くので、行の描画ごとに prefs を読むことはない。
-            needsFirstLogin = { uuid -> profiles.needsFirstLogin(uuid) },
+            needsFirstLogin = { uuid -> needsFirstLoginByUuid[uuid] == true },
         )
         HomeRows.withTrustworthyMemberNames(built, groupList, engineActiveGroup)
     }

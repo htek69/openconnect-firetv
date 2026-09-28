@@ -263,6 +263,42 @@ object HomeRows {
         }
 
     /**
+     * 初回ログインの判定（`ProfileRepository.needsFirstLogin`）を**引き直してよい
+     * 節目**を表す鍵。画面側はこの値を `remember` のキーに使い、
+     * [FailoverState] そのものはキーにしない。
+     *
+     * なぜ必要か: `rows` の `remember` は [FailoverState] をキーに含む（バッジと
+     * 候補名がそれで決まる）。しかし [FailoverState.Healthy] は `lastProbeAtMs` を
+     * 持ち、疎通確認ごと（既定30秒）に値が変わる。判定は `SharedPreferences` の
+     * 読み直し（`ProfileManager.init` による `shared_prefs` の列挙 × プロファイル数）を
+     * 伴うので、そのままでは**接続中にホームを開いているあいだ30秒ごとに、
+     * メインスレッドでディスクを走査し続ける**（裁定16 によりこの経路はメイン
+     * スレッドに固定されているので、逃がすのではなく回数を減らす）。
+     *
+     * そこで**時刻と失敗回数を鍵から外し、接続の節目だけを残す**:
+     * 状態の種類・対象グループ・候補インデックス（`Exhausted` は再試行回数）。
+     *
+     * 初回ログインが通った直後に注記が消えること（アプリの再起動が要らないこと）は
+     * これで保たれる。認証が通ると候補は `Connecting` →（`Connected` の観測で）
+     * `Verifying` → `Healthy` と進み、**状態の種類が変わるので鍵が変わる**。
+     * 認証後に落ちた場合も次候補の `Connecting`（`candidateIndex` が違う）か
+     * `FailingOver` / `Exhausted` へ移るので、やはり鍵が変わる。
+     * 加えて画面遷移（接続先やグループの編集）はこの画面をコンポジションから
+     * 外すため、戻ってきた時点で `remember` ごと作り直される。
+     *
+     * [FailoverState] の6ケースすべてを網羅し、将来ケースが増えたときに
+     * コンパイルエラーで気づけるよう `else` は使わない。
+     */
+    fun firstLoginRecheckKey(state: FailoverState): String = when (state) {
+        FailoverState.Idle -> "idle"
+        is FailoverState.Connecting -> "connecting:${state.groupId}:${state.candidateIndex}"
+        is FailoverState.Verifying -> "verifying:${state.groupId}:${state.candidateIndex}"
+        is FailoverState.Healthy -> "healthy:${state.groupId}:${state.candidateIndex}"
+        is FailoverState.FailingOver -> "failingOver:${state.groupId}:${state.failedIndex}"
+        is FailoverState.Exhausted -> "exhausted:${state.groupId}:${state.attempt}"
+    }
+
+    /**
      * 裁定84（fix8）: 削除確認オーバーレイで削除を実行したあと、フォーカスを
      * どの行に戻すかを決める純粋ロジック。
      *

@@ -430,4 +430,53 @@ class HomeRowsTest {
 
         assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().none { it.needsFirstLogin })
     }
+
+    @Test
+    fun `疎通確認のたびに初回ログインの再判定を起こさない`() {
+        // Healthy の lastProbeAtMs は既定30秒ごとに変わる。これが鍵に入っていると、
+        // ホームを開いているあいだ30秒ごとに prefs の再走査が走る。
+        assertEquals(
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.Healthy("g1", 0, consecutiveFailures = 0, lastProbeAtMs = 1_000L),
+            ),
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.Healthy("g1", 0, consecutiveFailures = 2, lastProbeAtMs = 999_000L),
+            ),
+        )
+        // 猶予期間中・接続中の時刻も同じ理由で鍵に入れない。
+        assertEquals(
+            HomeRows.firstLoginRecheckKey(FailoverState.Verifying("g1", 0, connectedAtMs = 1L)),
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.Verifying("g1", 0, connectedAtMs = 500L, consecutiveFailures = 1),
+            ),
+        )
+        assertEquals(
+            HomeRows.firstLoginRecheckKey(FailoverState.Connecting("g1", 0, startedAtMs = 1L)),
+            HomeRows.firstLoginRecheckKey(FailoverState.Connecting("g1", 0, startedAtMs = 900L)),
+        )
+    }
+
+    @Test
+    fun `接続の節目では初回ログインを再判定する`() {
+        // 初回ログインが通ると Connecting → Verifying → Healthy と進む。
+        // この遷移で鍵が変われば、注記はアプリの再起動なしに消える。
+        val keys = listOf(
+            HomeRows.firstLoginRecheckKey(FailoverState.Idle),
+            HomeRows.firstLoginRecheckKey(FailoverState.Connecting("g1", 0, startedAtMs = 0L)),
+            HomeRows.firstLoginRecheckKey(FailoverState.Verifying("g1", 0, connectedAtMs = 0L)),
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.Healthy("g1", 0, consecutiveFailures = 0, lastProbeAtMs = 0L),
+            ),
+            // 候補が変わる・グループが変わる・切替待ちに入る・枯渇の再試行が進む
+            HomeRows.firstLoginRecheckKey(FailoverState.Connecting("g1", 1, startedAtMs = 0L)),
+            HomeRows.firstLoginRecheckKey(FailoverState.Connecting("g2", 0, startedAtMs = 0L)),
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.FailingOver("g1", 0, awaitingUuid = "uuid-a", startedAtMs = 0L),
+            ),
+            HomeRows.firstLoginRecheckKey(FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 0L)),
+            HomeRows.firstLoginRecheckKey(FailoverState.Exhausted("g1", attempt = 1, retryAtMs = 0L)),
+        )
+
+        assertEquals("すべて異なる鍵になること", keys.size, keys.toSet().size)
+    }
 }
