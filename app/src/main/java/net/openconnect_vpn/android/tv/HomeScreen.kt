@@ -1,6 +1,5 @@
 package net.openconnect_vpn.android.tv
 
-import android.net.VpnService
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +34,8 @@ import androidx.tv.material3.Text
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.FailoverStateHolder
 import net.openconnect_vpn.android.failover.GroupStore
+import net.openconnect_vpn.android.failover.OpenConnectVpnController
+import net.openconnect_vpn.android.failover.VpnController
 
 /**
  * 接続先とグループの一覧画面。
@@ -63,12 +64,19 @@ fun HomeScreen(
     val context = LocalContext.current
     val requestConsent = rememberVpnConsentLauncher()
     val lifecycleOwner = LocalLifecycleOwner.current
-    var needsConsent by remember { mutableStateOf(VpnService.prepare(context) != null) }
+    // レビュー5（low）: 「VPN 許可が無い」の判定は業務規則であり、写しを2つ持たない。
+    // 実体は [VpnController.needsUserConsent]（Android API を呼ぶのは実装側）で、
+    // 状態機械が `ConnectResult.NeedsUserConsent` を返す条件と**同じ1か所**である。
+    // 以前はこの画面が `VpnService.prepare(context) != null` を独立に書いていた。
+    // 型は port にしてあるので、この画面からは接続・切断を呼べない（許可の有無を
+    // 尋ねるだけ。接続の指示は従来どおり `FailoverService` 経由である）。
+    val vpn: VpnController = remember(context) { OpenConnectVpnController(context) }
+    var needsConsent by remember { mutableStateOf(vpn.needsUserConsent()) }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                needsConsent = VpnService.prepare(context) != null
+                needsConsent = vpn.needsUserConsent()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -407,10 +415,9 @@ fun HomeScreen(
                     row = target.row,
                     freshGroups = freshGroups,
                     profileExists = target.row.uuid in freshUuids,
-                    // OpenConnectVpnController.connect が NeedsUserConsent を返す
-                    // のと同じ条件。この画面が起動時に見ているのと同じ API で、
-                    // 新しい経路は作らない。
-                    vpnConsentMissing = VpnService.prepare(context) != null,
+                    // connect が NeedsUserConsent を返す条件そのもの（port の
+                    // needsUserConsent。判定の写しを増やさないための1か所）。
+                    vpnConsentMissing = vpn.needsUserConsent(),
                 )
                 if (refusal == null) {
                     // **この操作そのもの**で行の操作を押せなくする（接続の節目の到着を

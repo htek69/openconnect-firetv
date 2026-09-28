@@ -20,9 +20,17 @@ import net.openconnect_vpn.android.core.ProfileManager
  */
 class OpenConnectVpnController(private val context: Context) : VpnController {
 
+    /**
+     * VPN 許可の有無を判定する**唯一の場所**（[VpnController.needsUserConsent] の
+     * KDoc 参照）。`VpnService.prepare` はパッケージ／uid で判定するので、どの
+     * `Context` から呼んでも結果は同じである——それでも写しを増やさないのは、
+     * 同じ業務規則が2か所にあると片方だけが変わっても誰も気づかないからである。
+     */
+    override fun needsUserConsent(): Boolean = VpnService.prepare(context) != null
+
     override fun connect(uuid: String): ConnectResult {
         // 未許可なら自動接続はできない。UI 側で許可を取ってもらう。
-        if (VpnService.prepare(context) != null) return ConnectResult.NeedsUserConsent
+        if (needsUserConsent()) return ConnectResult.NeedsUserConsent
 
         if (ProfileManager.get(uuid) == null) return ConnectResult.Failed
 

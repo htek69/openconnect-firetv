@@ -151,6 +151,35 @@ class FailoverControllerSafetyTest {
         assertTrue(controller.needsUserConsent)
     }
 
+    @Test
+    fun `許可の判定は connect が NeedsUserConsent を返す条件と同じ1か所から来る`() {
+        // レビュー5（low）: 「VPN 許可が無い」は業務規則であり、写しを2つ持たない。
+        // port に [VpnController.needsUserConsent] を置き、実装は connect の冒頭で
+        // それを使い、画面側（HomeScreen の「初回ログイン」の事前確認）も同じ問いを
+        // 使う。ここで固定するのはその不変条件——**同じ問いが true のあいだ、
+        // connect は必ず NeedsUserConsent を返す**——であり、片方だけが変わって
+        // 画面と状態機械が食い違うことを防ぐ。
+        vpn.consentMissing = true
+        assertTrue(vpn.needsUserConsent())
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+
+        // nextResult は Started のままだが、許可が無いので起動していない。
+        assertEquals(ConnectResult.Started, vpn.nextResult)
+        assertTrue(controller.state is FailoverState.Idle)
+        assertTrue(controller.needsUserConsent)
+
+        // 許可が戻れば同じ問いが false になり、次の指示で実際に起動する。
+        vpn.consentMissing = false
+        assertFalse(vpn.needsUserConsent())
+
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+
+        assertEquals(listOf("uuid-a", "uuid-a"), vpn.connectCalls)
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertFalse(controller.needsUserConsent)
+    }
+
     // --- Ruling 13: S3 with UUID correlation ---
 
     @Test

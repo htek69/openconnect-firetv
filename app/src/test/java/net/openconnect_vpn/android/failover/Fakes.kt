@@ -29,8 +29,19 @@ class FakeVpnController : VpnController {
 
     var nextResult: ConnectResult = ConnectResult.Started
 
+    /**
+     * port の [VpnController.needsUserConsent] が返す値。
+     * true のあいだ [connect] も必ず [ConnectResult.NeedsUserConsent] を返す
+     * ——実装（`OpenConnectVpnController`）が connect の冒頭で同じ判定を使うのと
+     * 同じ規則である（レビュー5・low: この業務規則の写しを2つ持たない）。
+     */
+    var consentMissing: Boolean = false
+
+    override fun needsUserConsent(): Boolean = consentMissing
+
     override fun connect(uuid: String): ConnectResult {
         _connectCalls.add(uuid)
+        if (needsUserConsent()) return ConnectResult.NeedsUserConsent
         return nextResult
     }
 
