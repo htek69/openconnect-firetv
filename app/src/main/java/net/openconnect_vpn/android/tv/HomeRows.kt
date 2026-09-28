@@ -479,9 +479,8 @@ object HomeRows {
      * そこで**自分のダイヤルを観測したか**（[sawConnecting]）で2段に分ける:
      *
      * - **1段目（[sawConnecting] が false）**: まだ自分のダイヤルを見ていない。
-     *   `FailingOver`（切断待ち）・`Idle`・`Exhausted`（起動待ち）・確認時点と同じ鍵
-     *   （まだ何も publish されていない）はすべて
-     *   [FirstLoginAttemptProgress.WaitingToStart] のまま進行中に数える。
+     *   `FailingOver`（切断待ち）と、確認時点と同じ鍵（まだ何も publish されて
+     *   いない）は [FirstLoginAttemptProgress.WaitingToStart] のまま進行中に数える。
      *   [attemptGroupId] の `Connecting` を観測したら
      *   [FirstLoginAttemptProgress.Dialing] へ進む（呼び出し側が [sawConnecting] を
      *   立てる）。
@@ -498,21 +497,38 @@ object HomeRows {
      * `startedAtMs` の置き直し（裁定94）も [firstLoginRecheckKey] は時刻を鍵に
      * 入れていないので鍵を動かさない）。
      *
-     * ### 1段目で降ろす唯一の場合
+     * ### 1段目で降ろす2つの場合
      *
-     * **別のグループの生きた候補**（[attemptGroupId] 以外の
-     * `Connecting`/`Verifying`/`Healthy`）が publish されたとき。自分の指示は
-     * 横取りされており、待ち続けても始まらないので降ろす（利用者は押し直せる）。
-     * ただし**確認時点の鍵と同じあいだは降ろさない**——別グループに繋いだまま
-     * この操作を実行した場合、確認の直後にその状態が（疎通確認などで）もう一度
-     * publish されることがあり、それを「横取り」と読むと自分のダイヤルの前に
-     * 印が消えてしまう。
+     * どちらも**確認時点の鍵と同じあいだは降ろさない**（上の鍵一致の分岐が先に
+     * 評価される）。別グループや `Exhausted` に繋いだまま／留まったままこの操作を
+     * 実行した場合、確認の直後にその同じ状態が（疎通確認やバックオフの再評価で）
+     * もう一度 publish されることがあり、それを「終わった」と読むと**自分の
+     * ダイヤルが始まる前に印が消える**（＝二度押しの窓が戻る）。
      *
-     * 1段目に留まったまま何も起きない経路は2つだけで、どちらも時計を使わずに
-     * 片付く: 指したメンバーがグループから外れていた場合は
+     * 1. **`Idle` または `Exhausted` に変わった**（＝鍵が確認時点から動いている）。
+     *    どちらも「生きている候補が1つも無い」状態であり、
+     *    [FailoverState.FailingOver] のような「これから起動する」含意を持たない。
+     *    自分の指示が**実際に終わってしまった**経路がここに落ちる（レビュー3 の
+     *    指摘。いずれも時計なしで観測できる）:
+     *    - 切断待ちのあと `advanceAfterFailingOver` が範囲外の保留を拒否して
+     *      `Idle` を返した（`FailoverController` の該当分岐）
+     *    - `vpn.connect()` がプロファイルを見つけられず全候補が起動に失敗して
+     *      `Exhausted` に入った
+     *    - `startService` が失敗した等で状態機械が指示を受け取れなかった
+     *    - 裁定44 の消灯で `UserDisconnect` → `Idle` になった
+     *    ここで降ろさないと、**何も進んでいないのに**行は
+     *    「初回ログイン中 …（押し直し不要）」と嘘をつき続ける（画面を離れるまで）。
+     *    嘘をやめるほうが安全側である: `Idle`/`Exhausted` では生きている候補が
+     *    無いので、利用者が操作を押し直しても畳まれる認証ダイアログが存在しない。
+     * 2. **別のグループの生きた候補**（[attemptGroupId] 以外の
+     *    `Connecting`/`Verifying`/`Healthy`）が publish された。自分の指示は
+     *    横取りされており、待ち続けても始まらないので降ろす（利用者は押し直せる）。
+     *
+     * **時計は使わない。** 1段目に留まるのは「切断待ち（`FailingOver`）」と
+     * 「まだ何も publish されていない」の2つだけで、前者は状態機械が必ず次へ進め、
+     * 後者は次の publish で解ける。指したメンバーがグループから外れていた場合は
      * `HomeScreen` が**確認の時点で読み直して拒否**する（[firstLoginRefusal]。
-     * 印は立てない）。VPN 許可が失われていた場合は `Idle` のまま残るが、
-     * 許可を取り直すには画面を離れるしかなく、離れればこの印ごと消える。
+     * 印をそもそも立てない）。
      */
     fun firstLoginAttemptProgress(
         attemptGroupId: String,
@@ -527,6 +543,9 @@ object HomeRows {
 
         firstLoginRecheckKey(state) == startedAtRecheckKey ->
             FirstLoginAttemptProgress.WaitingToStart
+
+        state is FailoverState.Idle || state is FailoverState.Exhausted ->
+            FirstLoginAttemptProgress.Ended
 
         liveGroupIdOf(state)?.let { it != attemptGroupId } == true ->
             FirstLoginAttemptProgress.Ended

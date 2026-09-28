@@ -641,14 +641,13 @@ class HomeRowsTest {
     }
 
     @Test
-    fun `ダイヤル前の切断待ちや起動待ちは決着ではない`() {
-        // どれも「自分のダイヤルがまだ始まっていない」だけで、失敗ではない。
+    fun `ダイヤル前の切断待ちは決着ではない`() {
+        // 「自分のダイヤルがまだ始まっていない」だけで、失敗ではない
+        // （FailingOver は Ruling 25 の2段階切替の1枚目で、次に起動が続く）。
         // ここで降ろすと、ダイヤルから認証ダイアログまでの窓が無防備になる。
         listOf(
             FailoverState.FailingOver("g1", 0, awaitingUuid = "uuid-a", startedAtMs = 1L),
             FailoverState.FailingOver("g9", -1, awaitingUuid = "uuid-z", startedAtMs = 1L),
-            FailoverState.Idle,
-            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
         ).forEach { state ->
             assertEquals(
                 "$state で降りてはならない",
@@ -661,6 +660,119 @@ class HomeRowsTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `ダイヤル前に何も生きていない状態へ変わったら降りる`() {
+        // レビュー3 の指摘（low）: Idle / Exhausted は「生きている候補が1つも無い」
+        // 状態で、FailingOver のような「これから起動する」含意を持たない。指示が
+        // 実際に終わってしまった経路（切断待ちのあとの範囲外の拒否、プロファイルが
+        // 見つからず全候補が起動に失敗、startService の失敗、裁定44 の消灯）は
+        // すべてここに落ちる。降ろさないと**何も進んでいないのに**行が
+        // 「初回ログイン中（押し直し不要）」と嘘をつき続ける。
+        // 時計は使わない——鍵が確認時点から動いたことだけを見る。
+        listOf(
+            FailoverState.Idle,
+            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
+        ).forEach { state ->
+            assertEquals(
+                "$state で降りるべき",
+                FirstLoginAttemptProgress.Ended,
+                HomeRows.firstLoginAttemptProgress(
+                    attemptGroupId = "g1",
+                    sawConnecting = false,
+                    startedAtRecheckKey = "healthy:g1:0",
+                    state = state,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `切断待ちのあとに拒否されて Idle へ戻った順序で降りる`() {
+        // 接続済みから実行 → FailingOver（切断待ち）→ 保留が範囲外で拒否されて
+        // Idle。ダイヤルは一度も起きないので、ここで印が残ると永久に嘘になる。
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "healthy:g1:0",
+            states = listOf(
+                FailoverState.Healthy("g1", 0, consecutiveFailures = 0, lastProbeAtMs = 9_000L),
+                FailoverState.FailingOver("g1", 0, awaitingUuid = "uuid-a", startedAtMs = 9_100L),
+                FailoverState.Idle,
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.Ended,
+            ),
+            progress,
+        )
+    }
+
+    @Test
+    fun `起動が全部失敗して枯渇へ落ちた順序で降りる`() {
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "idle",
+            states = listOf(
+                FailoverState.Idle,
+                FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
+            ),
+        )
+
+        assertEquals(
+            listOf(FirstLoginAttemptProgress.WaitingToStart, FirstLoginAttemptProgress.Ended),
+            progress,
+        )
+    }
+
+    @Test
+    fun `消灯で Idle へ戻った順序で降りる`() {
+        // 裁定44: 画面が消えると UserDisconnect → Idle。ダイヤル前でも後でも
+        // 進行中ではなくなる（この画面が生き残っている限り印を降ろす）。
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "exhausted:g1:2",
+            states = listOf(
+                FailoverState.Exhausted("g1", attempt = 2, retryAtMs = 120_000L),
+                FailoverState.Idle,
+            ),
+        )
+
+        assertEquals(
+            listOf(FirstLoginAttemptProgress.WaitingToStart, FirstLoginAttemptProgress.Ended),
+            progress,
+        )
+    }
+
+    @Test
+    fun `確認時点が Idle や枯渇のままなら本物の起動待ちとして進行中を保つ`() {
+        // 鍵が確認時点と同じあいだは降ろさない。ここを落とすと、切断状態や
+        // 再試行待ちから実行したとき——同じ状態がもう一度 publish されるだけで——
+        // 自分のダイヤルが始まる前に印が消える（＝二度押しの窓が戻る）。
+        assertEquals(
+            FirstLoginAttemptProgress.WaitingToStart,
+            HomeRows.firstLoginAttemptProgress(
+                attemptGroupId = "g1",
+                sawConnecting = false,
+                startedAtRecheckKey = "idle",
+                state = FailoverState.Idle,
+            ),
+        )
+        assertEquals(
+            FirstLoginAttemptProgress.WaitingToStart,
+            HomeRows.firstLoginAttemptProgress(
+                attemptGroupId = "g1",
+                sawConnecting = false,
+                startedAtRecheckKey = "exhausted:g1:1",
+                // retryAtMs は鍵に入らないので、バックオフの再評価で値が
+                // 変わっても同じ鍵＝進行中のまま。
+                state = FailoverState.Exhausted("g1", attempt = 1, retryAtMs = 999_000L),
+            ),
+        )
     }
 
     @Test
