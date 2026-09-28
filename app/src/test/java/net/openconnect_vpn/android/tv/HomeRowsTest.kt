@@ -534,68 +534,240 @@ class HomeRowsTest {
         assertTrue(rows.filterIsInstance<HomeRow.ProfileRow>().none { it.firstLoginInProgress })
     }
 
+    /**
+     * `HomeScreen` が印を進める手順をそのまま写した歩き方。状態が publish される
+     * たびに [HomeRows.firstLoginAttemptProgress] を引き、`Dialing` を観測したら
+     * `sawConnecting` を立てる（画面側の `LaunchedEffect` と同じ）。
+     * 返すのは各段の判定で、`Ended` が出たら画面は試行を捨てるのでそこで終わり。
+     */
+    private fun walkAttempt(
+        attemptGroupId: String,
+        startedAtRecheckKey: String,
+        states: List<FailoverState>,
+    ): List<FirstLoginAttemptProgress> {
+        var sawConnecting = false
+        val progress = mutableListOf<FirstLoginAttemptProgress>()
+        for (state in states) {
+            val step = HomeRows.firstLoginAttemptProgress(
+                attemptGroupId = attemptGroupId,
+                sawConnecting = sawConnecting,
+                startedAtRecheckKey = startedAtRecheckKey,
+                state = state,
+            )
+            progress += step
+            if (step == FirstLoginAttemptProgress.Dialing) sawConnecting = true
+            if (step == FirstLoginAttemptProgress.Ended) break
+        }
+        return progress
+    }
+
     @Test
-    fun `接続の節目が動くまでの隙間も進行中とみなす`() {
-        // 立てた直後は状態機械がまだ Connecting を publish していない。この隙間を
-        // 進行中に含めないと、そこで操作を押せてしまう（＝欠陥の原因そのもの）。
-        assertTrue(
-            HomeRows.firstLoginAttemptInFlight(
-                attemptGroupId = "g1",
-                startedAtRecheckKey = "idle",
-                state = FailoverState.Idle,
+    fun `接続済みから実行しても切替の1枚目で印が降りない`() {
+        // レビュー2・指摘2（high）の欠陥。いま VPN に繋がっている状態から実行すると
+        // 状態機械が最初に publish するのは必ず FailingOver（Ruling 25 の2段階）で、
+        // それを「決着」と読むと認証ダイアログが出る前に操作が押せる状態に戻る
+        // ——確認の文面が想定している状況でだけ二度押しの窓が開いていた。
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "healthy:g1:0",
+            states = listOf(
+                // 確認の直後。疎通確認で同じ状態がもう一度 publish されうる。
+                FailoverState.Healthy("g1", 0, consecutiveFailures = 0, lastProbeAtMs = 9_000L),
+                // Ruling 25 の1枚目（切断待ち）。ここで降りてはならない。
+                FailoverState.FailingOver("g1", 0, awaitingUuid = "uuid-a", startedAtMs = 9_100L),
+                // 自分のダイヤル。
+                FailoverState.Connecting("g1", 2, startedAtMs = 12_000L),
+                // 認証ダイアログ（UserPrompt は FailoverState を変えない）。
+                FailoverState.Connecting("g1", 2, startedAtMs = 12_000L),
+                // 認証を通った＝決着。
+                FailoverState.Verifying("g1", 2, connectedAtMs = 40_000L),
             ),
         )
-        assertTrue(
-            HomeRows.firstLoginAttemptInFlight(
-                attemptGroupId = "g1",
-                startedAtRecheckKey = "healthy:g1:0",
-                state = FailoverState.Healthy(
-                    "g1",
-                    0,
-                    consecutiveFailures = 0,
-                    lastProbeAtMs = 9_000L,
-                ),
+
+        assertEquals(
+            listOf(
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.Dialing,
+                FirstLoginAttemptProgress.Dialing,
+                FirstLoginAttemptProgress.Ended,
             ),
+            progress,
         )
     }
 
     @Test
-    fun `認証ダイアログが出ている窓は進行中のまま`() {
-        // 既存コアの UserPrompt は FailoverState を変えない（裁定94 により人が
-        // 答えているあいだ Connecting のまま留まる）。ここで降ろすと二度押しが
-        // できてしまう。
-        assertTrue(
-            HomeRows.firstLoginAttemptInFlight(
-                attemptGroupId = "g1",
-                startedAtRecheckKey = "idle",
-                state = FailoverState.Connecting("g1", 2, startedAtMs = 5_000L),
+    fun `切断状態から実行した順序でも印が生きる`() {
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "idle",
+            states = listOf(
+                FailoverState.Idle,
+                FailoverState.Connecting("g1", 1, startedAtMs = 1_000L),
+                FailoverState.Connecting("g1", 1, startedAtMs = 1_000L),
+                FailoverState.Healthy("g1", 1, consecutiveFailures = 0, lastProbeAtMs = 9_000L),
             ),
+        )
+
+        assertEquals(
+            listOf(
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.Dialing,
+                FirstLoginAttemptProgress.Dialing,
+                FirstLoginAttemptProgress.Ended,
+            ),
+            progress,
         )
     }
 
     @Test
-    fun `試行が決着したら成功でも失敗でも進行中を降ろす`() {
-        // 成功だけで降ろす印は、失敗したあとに再試行の手段を奪うので欠陥より悪い。
-        val ended = listOf(
-            FailoverState.Verifying("g1", 2, connectedAtMs = 6_000L, consecutiveFailures = 0),
-            FailoverState.Healthy("g1", 2, consecutiveFailures = 0, lastProbeAtMs = 7_000L),
-            FailoverState.FailingOver("g1", 2, awaitingUuid = "uuid-b", startedAtMs = 6_000L),
-            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
+    fun `枯渇の再試行待ちから実行した順序でも印が生きる`() {
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "exhausted:g1:1",
+            states = listOf(
+                FailoverState.Exhausted("g1", attempt = 1, retryAtMs = 60_000L),
+                FailoverState.Connecting("g1", 2, startedAtMs = 2_000L),
+            ),
+        )
+
+        assertEquals(
+            listOf(FirstLoginAttemptProgress.WaitingToStart, FirstLoginAttemptProgress.Dialing),
+            progress,
+        )
+    }
+
+    @Test
+    fun `ダイヤル前の切断待ちや起動待ちは決着ではない`() {
+        // どれも「自分のダイヤルがまだ始まっていない」だけで、失敗ではない。
+        // ここで降ろすと、ダイヤルから認証ダイアログまでの窓が無防備になる。
+        listOf(
+            FailoverState.FailingOver("g1", 0, awaitingUuid = "uuid-a", startedAtMs = 1L),
+            FailoverState.FailingOver("g9", -1, awaitingUuid = "uuid-z", startedAtMs = 1L),
             FailoverState.Idle,
-            // 別のグループへ移っていれば、この試行はもう追われていない。
-            FailoverState.Connecting("g2", 0, startedAtMs = 6_000L),
-        )
-
-        ended.forEach { state ->
-            assertFalse(
-                "$state で進行中のままになっている",
-                HomeRows.firstLoginAttemptInFlight(
+            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 30_000L),
+        ).forEach { state ->
+            assertEquals(
+                "$state で降りてはならない",
+                FirstLoginAttemptProgress.WaitingToStart,
+                HomeRows.firstLoginAttemptProgress(
                     attemptGroupId = "g1",
-                    startedAtRecheckKey = "connecting:g1:0",
+                    sawConnecting = false,
+                    startedAtRecheckKey = "healthy:g1:0",
                     state = state,
                 ),
             )
         }
+    }
+
+    @Test
+    fun `ダイヤルを観測したあとは成功でも失敗でも降りる`() {
+        // 成功でしか降りない印は、失敗したあとに再試行の手段を奪うので
+        // 元の欠陥より悪い。
+        listOf(
+            FailoverState.Verifying("g1", 2, connectedAtMs = 1L),
+            FailoverState.Healthy("g1", 2, consecutiveFailures = 0, lastProbeAtMs = 1L),
+            FailoverState.FailingOver("g1", 2, awaitingUuid = "uuid-b", startedAtMs = 1L),
+            FailoverState.Exhausted("g1", attempt = 0, retryAtMs = 1L),
+            FailoverState.Idle,
+            FailoverState.Connecting("g2", 0, startedAtMs = 1L),
+        ).forEach { state ->
+            assertEquals(
+                "$state で降りるべき",
+                FirstLoginAttemptProgress.Ended,
+                HomeRows.firstLoginAttemptProgress(
+                    attemptGroupId = "g1",
+                    sawConnecting = true,
+                    startedAtRecheckKey = "connecting:g1:2",
+                    state = state,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `別グループの接続に横取りされたら降りる`() {
+        // 待ち続けても自分のダイヤルは始まらない。押し直せるように降ろす。
+        assertEquals(
+            FirstLoginAttemptProgress.Ended,
+            HomeRows.firstLoginAttemptProgress(
+                attemptGroupId = "g1",
+                sawConnecting = false,
+                startedAtRecheckKey = "idle",
+                state = FailoverState.Healthy("g2", 0, consecutiveFailures = 0, lastProbeAtMs = 1L),
+            ),
+        )
+    }
+
+    @Test
+    fun `別グループに繋いだまま実行した場合はその状態を横取りとみなさない`() {
+        // 確認時点の状態がそのまま publish され直しただけ（疎通確認など）。
+        // ここで降ろすと、自分のダイヤルが始まる前に印が消える。
+        val progress = walkAttempt(
+            attemptGroupId = "g1",
+            startedAtRecheckKey = "healthy:g2:0",
+            states = listOf(
+                FailoverState.Healthy("g2", 0, consecutiveFailures = 0, lastProbeAtMs = 9_000L),
+                FailoverState.FailingOver("g2", 0, awaitingUuid = "uuid-x", startedAtMs = 9_100L),
+                FailoverState.Connecting("g1", 3, startedAtMs = 12_000L),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.WaitingToStart,
+                FirstLoginAttemptProgress.Dialing,
+            ),
+            progress,
+        )
+    }
+
+    @Test
+    fun `押した時点でメンバーが外れていたら実行せず理由を出す`() {
+        // レビュー2・指摘4: FailoverService は添字を解決できないと何も dispatch
+        // せずに捨てる。画面はそれを知らないので、行が「初回ログイン中」と嘘をつく。
+        // 実行の直前に読み直して、外れていたら理由を出して実行しない。
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertEquals(
+            "「sv2」はグループ「自宅優先」から外れています。一覧を読み直します。",
+            HomeRows.firstLoginRefusal(row, listOf(group.copy(memberUuids = listOf("uuid-a")))),
+        )
+    }
+
+    @Test
+    fun `押した時点でグループごと無くなっていたら実行せず理由を出す`() {
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertEquals(
+            "グループ「自宅優先」が見つかりません。一覧を読み直します。",
+            HomeRows.firstLoginRefusal(row, emptyList()),
+        )
+    }
+
+    @Test
+    fun `メンバーのままなら実行を拒まない`() {
+        val row = profileRow(needsFirstLogin = true, group = firstLoginGroup)
+
+        assertNull(HomeRows.firstLoginRefusal(row, listOf(group)))
+    }
+
+    @Test
+    fun `行の状態が古ければ実行せず理由を出す`() {
+        // 経路が無い／もう初回ログインが要らない行から来た（＝一覧が古い）。
+        assertNotNull(
+            HomeRows.firstLoginRefusal(
+                profileRow(needsFirstLogin = true, group = null),
+                listOf(group),
+            ),
+        )
+        assertNotNull(
+            HomeRows.firstLoginRefusal(
+                profileRow(needsFirstLogin = false, group = firstLoginGroup),
+                listOf(group),
+            ),
+        )
     }
 
     @Test

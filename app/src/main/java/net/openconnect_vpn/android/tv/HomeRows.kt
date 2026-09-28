@@ -75,7 +75,8 @@ sealed interface HomeRow {
          *
          * この印は**確認そのもので立てる**（状態の到着を待たない。その隙間が
          * 欠陥の原因だから）。消えるのは試行が決着したときで、成功したときだけで
-         * なく**失敗したときも消える**（[HomeRows.firstLoginAttemptInFlight]）。
+         * なく**失敗したときも消える**（[HomeRows.firstLoginAttemptProgress]。
+         * 自分のダイヤルを観測する前と後で「決着」の意味が変わるので2段になっている）。
          * 成功時にしか消えない印は欠陥より悪い（retry する手段が無くなる）。
          *
          * 画面側だけの印なので、[needsFirstLogin] の判定を引き直す回数は増えない。
@@ -92,6 +93,29 @@ sealed interface HomeRow {
  * 文面に出す（どのグループが繋ぎ直されるのかを利用者に見せるため）。
  */
 data class FirstLoginGroup(val id: String, val name: String)
+
+/**
+ * 確認で始めた初回ログインの試行の進み具合（[HomeRows.firstLoginAttemptProgress]）。
+ *
+ * [WaitingToStart] と [Dialing] を分けているのは、**自分のダイヤルを観測する前と
+ * 後で「決着」の意味が変わる**からである（観測前に届く
+ * [FailoverState.FailingOver] は Ruling 25 の2段階切替の1枚目であって決着ではない。
+ * 詳細は [HomeRows.firstLoginAttemptProgress] の KDoc）。
+ */
+enum class FirstLoginAttemptProgress {
+    /** 指示は出したが、自分のダイヤル（そのグループの `Connecting`）はまだ観測していない。 */
+    WaitingToStart,
+
+    /** 自分のダイヤルが進行中（認証ダイアログが出ている窓もここに入る）。 */
+    Dialing,
+
+    /** 決着した（成功・失敗・中断・横取りのいずれでも）。印を降ろす。 */
+    Ended,
+    ;
+
+    /** 印（[HomeRow.ProfileRow.firstLoginInProgress]）を立てておくべきか。 */
+    val inFlight: Boolean get() = this != Ended
+}
 
 /**
  * この行を一意に識別する安定したキー。[HomeRow.SectionHeader] はフォーカス対象では
@@ -426,48 +450,140 @@ object HomeRows {
     }
 
     /**
-     * 確認で始めた初回ログインの試行が**まだ進行中か**（`HomeScreen` の
-     * `FirstLoginAttempt`。true の間だけ [HomeRow.ProfileRow.firstLoginInProgress] を
-     * 立てる）。
+     * 確認で始めた初回ログインの試行の進み具合（`HomeScreen` の `FirstLoginAttempt`）。
+     * [FirstLoginAttemptProgress.Ended] 以外のあいだだけ
+     * [HomeRow.ProfileRow.firstLoginInProgress] を立てる。
      *
-     * 立てる契機は確認そのものであり、ここは**降ろす契機だけ**を決める。
-     * 進行中と見なすのは次の2つのどちらかである:
+     * 立てる契機は確認そのもので、ここは**進み方と降ろす契機だけ**を決める。
      *
-     * 1. [startedAtRecheckKey]（確認した時点の [firstLoginRecheckKey]）と現在の鍵が
-     *    同じ。まだ接続の節目が1つも動いていない＝指示が状態機械へ届いて
-     *    `Connecting` が publish されるまでの隙間。**この隙間を進行中に含めることが
-     *    この関数の目的である**（含めないと、隙間のあいだ操作が押せてしまう）。
-     * 2. 状態が [attemptGroupId] のグループの [FailoverState.Connecting]。
-     *    これが認証ダイアログが出ている窓である（既存コアの `UserPrompt` は
-     *    [FailoverState] を変えず、裁定94 により人が答えているあいだ
-     *    `Connecting` のまま留まる）。
+     * ### なぜ2段なのか（レビュー2・指摘2 の欠陥）
      *
-     * それ以外は**決着した**とみなして降ろす:
+     * 前の版は「`Connecting`（そのグループ）か、鍵が確認時点と同じなら進行中」
+     * という1段の条件だった。ところが**利用者がいま VPN に繋がっている状態から
+     * この操作を実行すると、状態機械が最初に publish するのは必ず
+     * [FailoverState.FailingOver] である**（Ruling 25 の2段階切替。
+     * `FailoverController.stopBeforeStarting` の `Connecting`/`Verifying`/`Healthy`
+     * 枝）。`FailingOver` は「決着」に分類されていたので、**確認の文面が想定して
+     * いる状況——いまの接続を切って繋ぎ直す——でだけ印が即座に降り**、切断確認から
+     * 認証ダイアログまでの数秒〜数十秒のあいだ操作が押せたままだった。
+     * つまり閉じたはずの二度押しの窓が、最も普通の状態からは閉じていなかった。
      *
-     * - [FailoverState.Verifying] / [FailoverState.Healthy]: 認証を通った
-     *   （成功。この場合はそもそも次の再判定で `needsFirstLogin` が false になり
-     *   注記も操作も消える）。
-     * - [FailoverState.FailingOver] / [FailoverState.Exhausted] /
-     *   [FailoverState.Idle] / 別グループ: **失敗・中断**。ここで降ろすので、
-     *   利用者は操作をもう一度押して再試行できる。**成功したときだけ降ろす印には
-     *   していない**（それでは失敗したあとに手段が無くなり、元の欠陥より悪い）。
+     * そこで**自分のダイヤルを観測したか**（[sawConnecting]）で2段に分ける:
      *
-     * 同じグループの `Connecting` が続く限り（自分の候補が落ちて次の候補が
-     * 起動した場合など）は進行中のままだが、`Connecting` は Ruling 22 の45秒で
-     * 必ず打ち切られ、候補の切替は [FailoverState.FailingOver] を経るので
-     * そこで降りる。したがって**印が無期限に残ることはない**。
-     * 指示がどこにも届かなかった場合（画面のグループ一覧が古く、
-     * `FailoverService` が添字を解決できずに何も dispatch しなかった場合）だけは
-     * 鍵が動かないので 1. のまま残る。それは `HomeScreen` 側の
-     * `FIRST_LOGIN_STALL_MS` の取り下げが回収する。
+     * - **1段目（[sawConnecting] が false）**: まだ自分のダイヤルを見ていない。
+     *   `FailingOver`（切断待ち）・`Idle`・`Exhausted`（起動待ち）・確認時点と同じ鍵
+     *   （まだ何も publish されていない）はすべて
+     *   [FirstLoginAttemptProgress.WaitingToStart] のまま進行中に数える。
+     *   [attemptGroupId] の `Connecting` を観測したら
+     *   [FirstLoginAttemptProgress.Dialing] へ進む（呼び出し側が [sawConnecting] を
+     *   立てる）。
+     * - **2段目（[sawConnecting] が true）**: 観測したダイヤルが続いているあいだ
+     *   （[attemptGroupId] の `Connecting`）は [FirstLoginAttemptProgress.Dialing]。
+     *   そこから外れたら [FirstLoginAttemptProgress.Ended]——**成功でも失敗でも
+     *   降りる**（`Verifying`/`Healthy` は認証を通った、
+     *   `FailingOver`/`Exhausted`/`Idle` は失敗・中断。成功でしか降りない印は
+     *   失敗後に再試行の手段を奪うので元の欠陥より悪い）。
+     *
+     * 認証ダイアログが出ている窓が `Dialing` に収まるのは、既存コアの `UserPrompt` が
+     * [FailoverState] を変えないためである（`FailoverController.onVpnState` に
+     * `UserPrompt` の分岐は無く `else -> s` に落ちる。人が答えたときの
+     * `startedAtMs` の置き直し（裁定94）も [firstLoginRecheckKey] は時刻を鍵に
+     * 入れていないので鍵を動かさない）。
+     *
+     * ### 1段目で降ろす唯一の場合
+     *
+     * **別のグループの生きた候補**（[attemptGroupId] 以外の
+     * `Connecting`/`Verifying`/`Healthy`）が publish されたとき。自分の指示は
+     * 横取りされており、待ち続けても始まらないので降ろす（利用者は押し直せる）。
+     * ただし**確認時点の鍵と同じあいだは降ろさない**——別グループに繋いだまま
+     * この操作を実行した場合、確認の直後にその状態が（疎通確認などで）もう一度
+     * publish されることがあり、それを「横取り」と読むと自分のダイヤルの前に
+     * 印が消えてしまう。
+     *
+     * 1段目に留まったまま何も起きない経路は2つだけで、どちらも時計を使わずに
+     * 片付く: 指したメンバーがグループから外れていた場合は
+     * `HomeScreen` が**確認の時点で読み直して拒否**する（[firstLoginRefusal]。
+     * 印は立てない）。VPN 許可が失われていた場合は `Idle` のまま残るが、
+     * 許可を取り直すには画面を離れるしかなく、離れればこの印ごと消える。
      */
-    fun firstLoginAttemptInFlight(
+    fun firstLoginAttemptProgress(
         attemptGroupId: String,
+        sawConnecting: Boolean,
         startedAtRecheckKey: String,
         state: FailoverState,
-    ): Boolean =
-        firstLoginRecheckKey(state) == startedAtRecheckKey ||
-            (state is FailoverState.Connecting && state.groupId == attemptGroupId)
+    ): FirstLoginAttemptProgress = when {
+        state is FailoverState.Connecting && state.groupId == attemptGroupId ->
+            FirstLoginAttemptProgress.Dialing
+
+        sawConnecting -> FirstLoginAttemptProgress.Ended
+
+        firstLoginRecheckKey(state) == startedAtRecheckKey ->
+            FirstLoginAttemptProgress.WaitingToStart
+
+        liveGroupIdOf(state)?.let { it != attemptGroupId } == true ->
+            FirstLoginAttemptProgress.Ended
+
+        else -> FirstLoginAttemptProgress.WaitingToStart
+    }
+
+    /**
+     * 「初回ログイン」を実行してよいかを、**実行の直前に読み直したグループ一覧**
+     * [freshGroups] で確かめる。実行してよければ null、できなければ利用者に出す
+     * 理由の文面を返す（`HomeScreen` の `statusMessage`。既存の仕組みをそのまま使い、
+     * 新しい通知経路は作らない）。
+     *
+     * なぜ要るか（レビュー2・指摘4）: uuid → 添字の解決は `FailoverService` 側に
+     * あり、指したメンバーがそのグループに見当たらなければ**何も dispatch せずに
+     * 黙って捨てる**。画面はそれを知らないので、行は
+     * 「初回ログイン中 …」と嘘を表示し続ける。行が描かれてから決定が押されるまでに
+     * メンバーがグループから外れることは実際に起こる（別の画面や旧 UI での編集、
+     * プロファイルの削除に伴う [GroupStore.loadGroups] のふるい落とし）。
+     *
+     * そこで**捨てられる前に画面側で気づく**: 決定の時点で一覧を読み直し、
+     * その接続先がまだ [HomeRow.ProfileRow.firstLoginGroup] のグループに
+     * 属しているかを確かめる。属していなければ理由を出して実行しない
+     * （印も立てないので「進行中」の嘘も出ない）。時計で取り下げる必要も無くなる。
+     *
+     * 判定は3つ:
+     * - もう初回ログインが要らない／経路が無い行（[firstLoginApplies] が false）:
+     *   一覧が古いということなので、読み直しを促す文面を返す。
+     * - そのグループ自体が無くなっている: グループごと消えた（最後のメンバーが
+     *   削除された等）。
+     * - グループはあるがメンバーから外れている: 一番起こりやすい場合。
+     */
+    fun firstLoginRefusal(
+        row: HomeRow.ProfileRow,
+        freshGroups: List<FailoverGroup>,
+    ): String? {
+        val group = row.firstLoginGroup
+        if (group == null || !row.needsFirstLogin) {
+            return "「${row.name}」の状態が変わりました。一覧を読み直します。"
+        }
+        val fresh = freshGroups.firstOrNull { it.id == group.id }
+            ?: return "グループ「${group.name}」が見つかりません。一覧を読み直します。"
+        if (row.uuid !in fresh.memberUuids) {
+            return "「${row.name}」はグループ「${group.name}」から外れています。一覧を読み直します。"
+        }
+        return null
+    }
+
+    /**
+     * その状態で**生きている候補**があるなら、そのグループ ID。
+     * `Connecting`/`Verifying`/`Healthy` は生きている。`FailingOver` は切断待ちで
+     * （次の候補はまだ起動していないので）生きている候補として数えない。
+     * `Idle`/`Exhausted` は何も起動していない。
+     *
+     * [FailoverState] の6ケースすべてを網羅し、将来ケースが増えたときに
+     * コンパイルエラーで気づけるよう `else` は使わない。
+     */
+    private fun liveGroupIdOf(state: FailoverState): String? = when (state) {
+        FailoverState.Idle -> null
+        is FailoverState.Connecting -> state.groupId
+        is FailoverState.Verifying -> state.groupId
+        is FailoverState.Healthy -> state.groupId
+        is FailoverState.FailingOver -> null
+        is FailoverState.Exhausted -> null
+    }
 
     /**
      * 裁定84（fix8）: 削除確認オーバーレイで削除を実行したあと、フォーカスを
