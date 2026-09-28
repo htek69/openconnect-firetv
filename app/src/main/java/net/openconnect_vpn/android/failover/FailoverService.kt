@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
-import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -63,6 +62,16 @@ class FailoverService : Service() {
     private val wakeLoop = Channel<Unit>(Channel.CONFLATED)
 
     private lateinit var controller: FailoverController
+
+    /**
+     * 既存コアへのアダプタ。[controller] に渡すのと**同じインスタンス**をここでも
+     * 持つ。このサービスが「VPN の利用許可があるか」を尋ねる先をこれ1つにするため
+     * である（[VpnController.needsUserConsent]。以前は [onScreenOn] と
+     * [restoreActiveGroupIfAny] が `VpnService.prepare(this)` を独立に書いており、
+     * 同じ業務規則の写しがこのファイルにも2つ残っていた）。
+     * 接続・切断の指示は従来どおり [controller] だけが出す。
+     */
+    private lateinit var vpn: VpnController
     private lateinit var probe: HealthProbe
     private lateinit var groupStore: GroupStore
 
@@ -185,7 +194,10 @@ class FailoverService : Service() {
     private fun onScreenOn() {
         if (controller.state !is FailoverState.Idle) return
         val activeGroupId = groupStore.loadActiveGroupId() ?: return
-        if (VpnService.prepare(this) != null) {
+        // 許可の有無は port（[VpnController.needsUserConsent]）に尋ねる。
+        // `OpenConnectVpnController.connect` が `ConnectResult.NeedsUserConsent` を
+        // 返す条件と同じ1か所であり、判定の写しをここに置かない。
+        if (vpn.needsUserConsent()) {
             FailoverNotifications.alert(this, "VPN の許可が必要です。アプリを開いて許可してください。")
             return
         }
@@ -216,10 +228,11 @@ class FailoverService : Service() {
 
         groups = groupStore.loadGroups(knownUuids)
         profiles = ProfileRepository(this, groupStore)
+        vpn = OpenConnectVpnController(this)
         controller = FailoverController(
             groupsProvider = { groups },
             clock = SystemClock(),
-            vpn = OpenConnectVpnController(this),
+            vpn = vpn,
             network = networkGate,
             // 裁定93: 「人が認証ダイアログに答えられるか」を供給する。Android API を
             // 参照するのはこちら側の責任で、FailoverController は真偽値だけを見る。
@@ -358,7 +371,9 @@ class FailoverService : Service() {
             Log.d(LOG_TAG, "restore skipped: screen is off")
             return
         }
-        if (VpnService.prepare(this) == null) {
+        // [onScreenOn] と同じ問い（port の [VpnController.needsUserConsent]）を、
+        // 向きだけ反転させて使う——許可が**ある**ときだけ繋ぎ直す。
+        if (!vpn.needsUserConsent()) {
             // ループ起動前に一度だけ走るため、dispatchExternal の合図（早起こし）は
             // 不要（Ruling 27b 参照）。
             dispatch(FailoverEvent.AutoConnectGroup(activeGroupId))

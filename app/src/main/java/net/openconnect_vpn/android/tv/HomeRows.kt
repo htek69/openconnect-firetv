@@ -641,8 +641,8 @@ object HomeRows {
      * 戻るだけなので、**起動が失敗する条件を実行の前に見て、そもそも指示しない**。
      * どちらも画面側から確かめられる:
      *
-     * - `NeedsUserConsent`（`OpenConnectVpnController.connect` が
-     *   `VpnService.prepare(...) != null` のときに返す値）→ [vpnConsentMissing]。
+     * - `NeedsUserConsent`（`VpnController.needsUserConsent` が true のときに
+     *   `connect` が返す値。判定はその port の実装にだけある）→ [vpnConsentMissing]。
      *   これは利用者に**伝えるべきこと**でもある（許可を取り直さないと、この操作に
      *   限らず一切繋がらない）。文面でそう言う。
      * - `Failed`（`ProfileManager.get(uuid)` が null＝プロファイルが消えている）

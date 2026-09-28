@@ -64,10 +64,12 @@ fun HomeScreen(
     val context = LocalContext.current
     val requestConsent = rememberVpnConsentLauncher()
     val lifecycleOwner = LocalLifecycleOwner.current
-    // レビュー5（low）: 「VPN 許可が無い」の判定は業務規則であり、写しを2つ持たない。
+    // レビュー5（low）: 「VPN 許可が無い」の判定は業務規則であり、写しを持たない。
     // 実体は [VpnController.needsUserConsent]（Android API を呼ぶのは実装側）で、
     // 状態機械が `ConnectResult.NeedsUserConsent` を返す条件と**同じ1か所**である。
-    // 以前はこの画面が `VpnService.prepare(context) != null` を独立に書いていた。
+    // 以前はこの画面と `FailoverService` の2か所（点灯時の繋ぎ直しとプロセス復帰）が
+    // `VpnService.prepare(...)` を独立に書いていた（写しの全部は port の KDoc に一覧
+    // がある）。
     // 型は port にしてあるので、この画面からは接続・切断を呼べない（許可の有無を
     // 尋ねるだけ。接続の指示は従来どおり `FailoverService` 経由である）。
     val vpn: VpnController = remember(context) { OpenConnectVpnController(context) }
