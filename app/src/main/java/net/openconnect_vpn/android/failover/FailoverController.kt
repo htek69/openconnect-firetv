@@ -1477,6 +1477,23 @@ class FailoverController(
      */
     private fun onExhaustedRetry(s: FailoverState.Exhausted): FailoverState {
         if (clock.nowMs() < s.retryAtMs) return s
+
+        // 安全策 S2: 下層ネットワークが無いあいだは再試行しない。網が無ければ
+        // この起動は**成功しえない**ので、無駄に候補を1つ消費し、さらに
+        // 裁定43 の `PARTIAL_WAKE_LOCK` を「決して繋がらない `Connecting`」の
+        // あいだ握り続ける（`requiresCpuAwake()` は `Connecting` で true）。
+        //
+        // 同じ判断をする他の3か所と**同じ形**で書く（4か所が別々に育つのを防ぐ）:
+        // [onDisconnected] / [advanceAfterFailingOver] / [onSlowLinkSwitch]。
+        //
+        // 回復の経路: `retryAtMs` は既に過ぎているので、`Exhausted` に留まったまま
+        // `FailoverService` のティックループが投げる**次の Tick** でここが再評価され、
+        // 網が戻っていればその場で起動する（そのループは同じ周回で
+        // [FailoverEvent.UnderlyingNetworkChanged] を投げてから Tick を投げる）。
+        // [exhaustionAttempt] を進めるのはこの門の**後ろ**なので、網が無いあいだに
+        // バックオフが伸びることもない。
+        if (!network.hasUnderlyingNetwork()) return s
+
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
 
         // 裁定35b: グループの全メンバーが除外済みなら再試行しない。除外は認証失敗を
