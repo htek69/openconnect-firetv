@@ -1465,6 +1465,21 @@ class FailoverController(
      * ある。認証失敗による除外（[onDisconnected] の Ruling 23 判定、および
      * 無人候補に対する [onUnattendedPromptTimeout]）はこの値に関係なく従来どおり
      * 効く。
+     *
+     * **止めるのは「締切」だけである（意図した非対称）。** この判定が止めるのは
+     * [onConnectTimeout] の45秒と [onSlowLinkSwitch] の速度起因の切替であり、
+     * **プローブ連続失敗（`failureThreshold`）による切替は止めない**
+     * （[onProbeResult] はこの判定を引かない）。遅さは**誤りうる判断**で、
+     * 仕様書 6 がその誤判定を列挙している——だから人が答えられるあいだは待つ。
+     * 連続失敗はトンネルが**もう無い**証拠であり、消えたトンネルに向けて
+     * ダイアログを開いたままにしてもパスワードはサーバへ届かない。次候補で
+     * 認証を出し直すほうが良い。
+     *
+     * この非対称は、利用者の目には「入力中に認証ダイアログが消える」という、
+     * 裁定93/94 で直した欠陥と**同じ見え方**をする。区別できるのは実装を知る側
+     * だけなので、**期待された振る舞いである旨を `docs/MANUAL-TEST.md` 節11
+     * （未確認の項目）に明記してある。** 不変条件テスト側の対応する例外は
+     * `FailoverControllerInvariantTest` の I3 の `deadTunnelEvidence` である。
      */
     private fun awaitingHumanAuthInput(): Boolean =
         userPromptSinceMs != null && dialogHostAttachedProvider()
