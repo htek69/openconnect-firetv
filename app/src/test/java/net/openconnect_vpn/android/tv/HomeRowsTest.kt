@@ -503,8 +503,16 @@ class HomeRowsTest {
         // 本体カードの要求幅が伸びて、右の「初回ログイン」カードを押し出す方向に
         // 働く（潰れると「表示は出るのに操作に到達できない」＝この機能が埋めた
         // はずの穴が戻る）。幅の保証は ProfileCard の weight(1f) で行っているが、
-        // 文言の側にも上限を置いて余裕を確保する。30文字は、1080p・density 2・
-        // 左右 48dp の余白で操作カードの実寸が残るようにとった目安である。
+        // 文言の側にも上限を置いて余裕を確保する。
+        //
+        // 統合レビューの所見4（low）: **規則は下の 32 文字である**（以前この
+        // コメントだけが「30文字」と書いていて、アサーションと食い違っていた）。
+        // 32 文字は、1080p・density 2・左右 48dp の余白で操作カードの実寸が残る
+        // ようにとった目安（もとは 30 文字）に、いま最も長い文言
+        //「初回ログイン中 / 認証画面で入力してください（押し直し不要）」の 31 文字が
+        // 収まるだけの余地を足した値である。**余裕は1文字しかない。** これ以上
+        // 長い文言を足すなら、目安の根拠（上の実寸の見積り）から引き直すこと
+        // ——アサーションの数字だけを上げてはならない。
         val notices = listOfNotNull(
             HomeRows.firstLoginNotice(profileRow(needsFirstLogin = true, group = firstLoginGroup)),
             HomeRows.firstLoginNotice(
@@ -1124,5 +1132,42 @@ class HomeRowsTest {
         )
 
         assertEquals("すべて異なる鍵になること", keys.size, keys.toSet().size)
+    }
+
+    /**
+     * 統合レビューの所見5（追加すべきテスト2）: 切替の**理由**
+     * （`FailingOver.bySlowLink`）は初回ログインの再判定の鍵を動かしてはならない。
+     *
+     * 鍵が決めているのは「`ProfileRepository.needsFirstLogin`（プロファイルの
+     * prefs の走査）を引き直してよい節目か」だけである。速度起因かどうかは
+     * 資格情報の状態と無関係なので、これで鍵が動いても見落としが減ることは無く、
+     * **切替のたびに prefs の走査が1回増える**だけになる（疎通確認ごとの走査を
+     * 止めた以前の修正と同じ性質の後退である）。
+     *
+     * 上の「すべて異なる鍵になること」はこの性質を守れない——鍵に `bySlowLink` を
+     * 足しても、すべての鍵が相異なるままなので通ってしまう。
+     */
+    @Test
+    fun `切替の理由では初回ログインの再判定を起こさない`() {
+        assertEquals(
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.FailingOver(
+                    "g1",
+                    0,
+                    awaitingUuid = "uuid-a",
+                    startedAtMs = 0L,
+                    bySlowLink = false,
+                ),
+            ),
+            HomeRows.firstLoginRecheckKey(
+                FailoverState.FailingOver(
+                    "g1",
+                    0,
+                    awaitingUuid = "uuid-a",
+                    startedAtMs = 0L,
+                    bySlowLink = true,
+                ),
+            ),
+        )
     }
 }
