@@ -1,5 +1,6 @@
 package net.openconnect_vpn.android.failover
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -61,8 +62,10 @@ class SlowLinkDetectorPropertyTest {
      * - [ROLLBACK]: 上に加えてカウンタの巻き戻し（トンネル作り直し・受信のみの巻き戻し）。
      * - [GAP]: 上に加えて採取が数分止まる（`/proc/net/dev` が読めない等）。
      * - [ALL_FAST]: **どの区間も受信速度が床以上**の列（P4 の前提を狙い撃ちする）。
-     * - [HUGE_JUMP]: [ALL_FAST] に `/proc/net/dev` が極端な値を返した場合の前方への
-     *   飛びを混ぜる（Long の上限近く。P4b）。
+     * - [HUGE_JUMP]: [ALL_FAST] に前方への巨大な飛びを混ぜる。上限は物理から
+     *   導いた [MAX_PRODUCIBLE_DELTA]（3PB）で、**旧式の桁あふれの境
+     *   （1.15PB）の両側**を狙う（P4b / P5b。半分は「受信は床未満・送信だけが
+     *   巨大」の形にして、取りこぼしの側からも境をまたぐ）。
      * - [HOSTILE]: 時刻の重複・逆行、カウンタの減少、0 と Long の上限近く。
      * - [SHORT]: 窓の長さに届かない幅しか持たない列（P1 の前提）。
      */
@@ -230,6 +233,83 @@ class SlowLinkDetectorPropertyTest {
             mismatches.isEmpty(),
         )
         assertTrue("突き合わせた組が少なすぎる（$pairs 組）。生成器が窓を作れていない", pairs > 10_000)
+    }
+
+    /**
+     * **桁あふれの境を知識として記録する。** これは性質ではない——境の**向こう側**で
+     * 正しく振る舞うことは要求しない（要求できない。あふれた積に意味は無い）。
+     * 要求するのは「境がどこにあるか」と「生成器がその内側にとどまっていること」である。
+     *
+     * ## 経緯（「この計算はあふれないのか？」と考えた読者のために）
+     *
+     * 最初の提出でこの性質テストは P4b / P5b の破れを報告した。原因は当時の
+     * `dRx * 8 * 1000 / spanMs / 1000` の `* 1000` で、中間結果が1000倍になるため
+     * デルタが `Long.MAX_VALUE / 8000`（≒1.15PB）を超えると積があふれ、
+     * 受信・送信の速度が無意味な値になって**誤検知と取りこぼしの両方**が出た。
+     * 裁定は3点:
+     *
+     * 1. 式を `dRx * 8 / spanMs` に簡約する（`* 1000` と `/ 1000` は非負整数では
+     *    相殺するので、**コードが減って余裕が1000倍になる**）。**等価であることの
+     *    証明は P9** が旧式と新式の突き合わせとして持っている。
+     * 2. **その桁あふれは実機では到達しない。** 60秒で 1.15PB は約153Tbps を要する。
+     * 3. **入力の域の指定（「Long の上限近く」）が誤りだった。** カウンタはカーネルが
+     *    単調に増やすので、デルタは実際に流れた通信量で抑えられる。作り直された
+     *    インターフェースは小さい値から始まり、それは負のデルタ＝既存の
+     *    巻き戻しの門が捨てる場合である。よって生成器の上限を物理から導いた
+     *    [MAX_PRODUCIBLE_DELTA] に狭めた（導出はその KDoc）。
+     *
+     * **赤かったのは製品の欠陥ではなく、入力の域の指定の誤りである。**
+     */
+    @Test
+    fun `桁あふれの境の記録 これを超えるデルタでは演算が厳密でなくなる`() {
+        val newBound = Long.MAX_VALUE / 8L // いまの式 `d * 8 / span` の境
+        val oldBound = Long.MAX_VALUE / 8_000L // 旧式 `d * 8 * 1000 / span / 1000` の境
+        assertEquals("旧式の境は新式の境の 1000 分の1であった", 1_000L, newBound / oldBound)
+
+        // 境の内側では Long の演算が厳密（BigInteger と一致する）。
+        for (span in listOf(1L, 999L, 1_000L, 60_000L, 120_000L, 240_000L)) {
+            assertEquals(
+                "新式は境（$newBound）まで厳密であること",
+                BigInteger.valueOf(newBound).multiply(EIGHT).divide(BigInteger.valueOf(span)),
+                BigInteger.valueOf(newBound * 8 / span),
+            )
+            assertEquals(
+                "旧式は旧い境（$oldBound）まで厳密であったこと",
+                BigInteger.valueOf(oldBound).multiply(EIGHT).divide(BigInteger.valueOf(span)),
+                BigInteger.valueOf(oldBound * 8 * 1000 / span / 1000),
+            )
+        }
+        // 境の1つ外では積が回り込む。ここから先の判定に意味は無い（だから性質にしない）。
+        assertTrue("新式は境の1つ外で回り込む", (newBound + 1) * 8 < 0L)
+        assertTrue("旧式は旧い境の1つ外で回り込んだ", (oldBound + 1) * 8 * 1000 < 0L)
+
+        // 生成器が境の内側にとどまっていること（判定が下される形の列について）。
+        // ここが破れたら、性質の破れではなく **[MAX_PRODUCIBLE_DELTA] の導出を
+        // 見直す合図**である。
+        var windows = 0
+        var largest = 0L
+        for (case in allCases()) {
+            if (case.mode !in JUDGED_MODES) continue
+            val windowMs = case.thresholds.windowSec * 1_000L
+            case.ticks.forEachIndexed { i, tick ->
+                val oldestIndex = oldestInWindow(case.ticks, i, windowMs) ?: return@forEachIndexed
+                val oldest = case.ticks[oldestIndex]
+                windows++
+                largest = maxOf(largest, tick.rxBytes - oldest.rxBytes, tick.txBytes - oldest.txBytes)
+            }
+        }
+        assertTrue("窓を1つも見ていない（生成器が窓を作れていない）", windows > 1_000)
+        assertTrue(
+            "生成器が新式の境（$newBound）を超える窓のデルタを作っている（最大 $largest）。" +
+                "性質の破れではなく、MAX_PRODUCIBLE_DELTA=$MAX_PRODUCIBLE_DELTA の導出を見直すこと",
+            largest <= newBound,
+        )
+        // 旧い境は**またいでいる**こと（またいでいなければ P4b / P5b が空回りする）。
+        assertTrue(
+            "生成器が旧い境（$oldBound）を超える窓のデルタを1つも作っていない。" +
+                "P4b / P5b が空回りしている（境の記録として意味が無い）。最大 $largest",
+            largest > oldBound,
+        )
     }
 
     /**
@@ -401,6 +481,43 @@ class SlowLinkDetectorPropertyTest {
          * 巻き戻らずに増えるだけなので、負にしてはならない。
          */
         private val NEAR_MAX_BASE = Long.MAX_VALUE - (1L shl 40)
+
+        /**
+         * **1回の前方への飛び（デルタ）の上限。物理から導く。**
+         *
+         * 最初の提出では上限を `Long.MAX_VALUE` の近くまで取っていた（依頼書が
+         * 「Long の上限近く」を敵対的な縁として名指していたため）。裁定により
+         * **これは入力の域の指定が誤りだった**: `/proc/net/dev` のカウンタは
+         * カーネルが単調に増やすものなので、デルタは**実際に流れた通信量**で
+         * 抑えられる。作り直されたインターフェースは**小さい値**から始まり、
+         * それは負のデルタ＝既存の巻き戻しの門が捨てる場合である。
+         *
+         * 導出:
+         *
+         * 1. 対象は2017年の Fire TV Stick（実測は数十Mbps）。**この端末が決して
+         *    見ない速さ**として **100Gbps** を採る（ギガビット LAN の100倍、
+         *    端末の無線の約1000倍）。
+         * 2. 判定がもたれる最長の区間は、ここで試す最長の窓 **120秒** ×
+         *    古さの上限 [STALE_SPAN_FACTOR]（2倍）= **240秒**。
+         * 3. 100Gbps × 240秒 = 24Tbit = 3TB = **3e12 バイト**。
+         * 4. そこへ**3桁の余裕**を積んで **3e15 バイト（3PB）**を上限とする。
+         *
+         * この値の位置づけ（どちらの境からも離れていることが要点）:
+         *
+         * - 旧式 `d * 8 * 1000` の桁あふれの境 `Long.MAX_VALUE / 8000` ≒ 1.15PB の
+         *   **約2.6倍**。つまり P4b / P5b の前提（旧式があふれる域）は**いまも
+         *   踏まれる**——境がどこにあったかの記録が空回りしない。
+         * - いまの式 `d * 8` の境 `Long.MAX_VALUE / 8` ≒ 1.15EB の**約384分の1**。
+         *   窓が最大13サンプルぶん積んでも `d * 8` はあふれない
+         *   （13 × 3e15 × 8 = 3.1e17 < 9.2e18）。この関係は
+         *   `桁あふれの境の記録…` のテストが毎回確かめる。
+         */
+        private const val MAX_PRODUCIBLE_DELTA = 3_000_000_000_000_000L
+
+        /** 判定が下される形の列を作る種類（時刻が増え、カウンタが単調な列を狙うもの）。 */
+        private val JUDGED_MODES = listOf(
+            Mode.REALISTIC, Mode.ROLLBACK, Mode.GAP, Mode.ALL_FAST, Mode.HUGE_JUMP,
+        )
 
         // -------------------------------------------------------------- 性質
 
@@ -814,6 +931,13 @@ class SlowLinkDetectorPropertyTest {
             val divisor = listOf(12, 6, 4, 2)[rnd.nextInt(4)]
             val baseTick = (windowMs / divisor).coerceAtLeast(200L)
             val count = 2 * divisor + 2 + rnd.nextInt(divisor + 1)
+            /**
+             * [huge] の半分は「**受信は床未満・送信だけが巨大**」という形にする。
+             * 受信まで床以上にすると P5 の前提（窓平均の受信が床未満）が立たず、
+             * P5b が空回りしてしまう——旧式の境を**取りこぼしの側から**踏むには
+             * この形が要る。
+             */
+            val slowRx = huge && rnd.nextBoolean()
             var at = startTime(rnd)
             var rx = 0L
             var tx = 0L
@@ -822,11 +946,15 @@ class SlowLinkDetectorPropertyTest {
             repeat(count) {
                 val dt = jitter(rnd, baseTick)
                 at += dt
-                val least = ceilDiv(th.slowRxKbps.toLong() * dt, 8L)
-                var dRx = add(least, rnd.nextLong(0, 1L + least.coerceAtMost(1_000_000L)))
+                var dRx = if (slowRx) {
+                    bytesFor(rnd.nextInt(0, (th.slowRxKbps / 2).coerceAtLeast(1)), dt)
+                } else {
+                    val least = ceilDiv(th.slowRxKbps.toLong() * dt, 8L)
+                    add(least, rnd.nextLong(0, 1L + least.coerceAtMost(1_000_000L)))
+                }
                 var dTx = bytesFor(pick(rnd, band(rnd, th.demandTxKbps + 1), burst = false), dt)
                 if (huge && rnd.nextInt(100) < 40) {
-                    dRx = hugeDelta(rnd)
+                    if (!slowRx) dRx = hugeDelta(rnd)
                     dTx = hugeDelta(rnd)
                 }
                 rx = add(rx, dRx)
@@ -923,15 +1051,21 @@ class SlowLinkDetectorPropertyTest {
             else -> NEAR_MAX_BASE
         }
 
-        /** 桁あふれの境（`Long.MAX_VALUE / 8000` ≒ 1.15e15）の周りを狙う巨大なデルタ。 */
+        /**
+         * 前方への巨大な飛び。**旧式の桁あふれの境（`Long.MAX_VALUE / 8000`
+         * ≒ 1.15PB）をまたぐ**値を狙い、上限は物理から導いた
+         * [MAX_PRODUCIBLE_DELTA]（3PB）で止める。境の**両側**を引くので、
+         * 「境がどこにあったか」の記録として働く。
+         */
         private fun hugeDelta(rnd: Random): Long {
             val boundary = Long.MAX_VALUE / 8_000L
-            return when (rnd.nextInt(5)) {
+            return when (rnd.nextInt(6)) {
                 0 -> boundary
                 1 -> boundary + rnd.nextLong(1, 1_000_000L)
                 2 -> boundary - rnd.nextLong(0, 1_000_000L)
-                3 -> 1L shl (50 + rnd.nextInt(13))
-                else -> rnd.nextLong(boundary, Long.MAX_VALUE)
+                3 -> 1L shl 50 // 境の少し下（1.13PB）
+                4 -> 1L shl 51 // 境の少し上（2.25PB）
+                else -> rnd.nextLong(boundary, MAX_PRODUCIBLE_DELTA)
             }
         }
 
