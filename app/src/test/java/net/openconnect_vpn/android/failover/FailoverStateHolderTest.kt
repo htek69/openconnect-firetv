@@ -16,17 +16,61 @@ import org.junit.Test
  */
 class FailoverStateHolderTest {
 
-    private val group = FailoverGroup(
-        id = "g1",
-        name = "自宅優先",
-        memberUuids = listOf("uuid-a", "uuid-b"),
-        autoFailoverEnabled = true,
-        config = FailoverConfig(),
-    )
+    /** 速度起因の切替の途中でメンバーが消える経路を作るため可変にしてある。 */
+    private var members = listOf("uuid-a", "uuid-b")
+
+    private val group
+        get() = FailoverGroup(
+            id = "g1",
+            name = "自宅優先",
+            memberUuids = members,
+            autoFailoverEnabled = true,
+            config = FailoverConfig(),
+        )
 
     @After
     fun tearDown() {
         FailoverStateHolder.reset()
+    }
+
+    /**
+     * 速度起因の切替が進行中で、`FailoverService.dispatch` が理由を投影へ
+     * 書き終えた状態を作る。ここから先の「その切替をどう抜けるか」が
+     * 各テストの対象である。
+     *
+     * 実物の [FailoverController] を動かすので、状態遷移は本番と同じものになる
+     * （理由の消える条件を、投影の入力だけを手で組み立てて確かめると、
+     * 状態機械が実際にその状態へ来るのかを検査できない）。
+     */
+    private fun startedSlowLinkSwitch(
+        clock: FakeClock,
+        vpn: FakeVpnController,
+    ): FailoverController {
+        // 「遅い」は常に真でよい。slowLinkProvider を引くのは onSlowLinkSwitch
+        // （`Healthy` の Tick）だけで、下の Healthy までの道に Tick は無い。
+        val controller = FailoverController(
+            groupsProvider = { listOf(group) },
+            clock = clock,
+            vpn = vpn,
+            network = FakeNetworkGate(available = true),
+            slowLinkProvider = { true },
+        )
+
+        // uuid-a を Healthy まで進める（接続直後の猶予も越える）。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        clock.advance(16_000L) // graceAfterConnectSec = 15 を越える
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        assertTrue(controller.state is FailoverState.Healthy)
+
+        // 速度低下による切替が始まり、dispatch が理由を投影へ書く。
+        controller.handle(FailoverEvent.Tick)
+        assertTrue((controller.state as FailoverState.FailingOver).bySlowLink)
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        return controller
     }
 
     @Test
@@ -143,29 +187,7 @@ class FailoverStateHolderTest {
     fun `統合レビュー所見1 - 保留に横取りされた速度起因の切替の理由は残らない`() {
         val clock = FakeClock(1_000L)
         val vpn = FakeVpnController()
-        var slow = false
-        val controller = FailoverController(
-            groupsProvider = { listOf(group) },
-            clock = clock,
-            vpn = vpn,
-            network = FakeNetworkGate(available = true),
-            slowLinkProvider = { slow },
-        )
-
-        // uuid-a を Healthy まで進める（接続直後の猶予も越える）。
-        controller.handle(FailoverEvent.UserConnectGroup("g1"))
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
-        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
-        clock.advance(16_000L) // graceAfterConnectSec = 15 を越える
-        controller.handle(FailoverEvent.ProbeResult(reachable = true))
-        assertTrue(controller.state is FailoverState.Healthy)
-
-        // 速度低下による切替が始まり、dispatch が理由を投影へ書く。
-        slow = true
-        controller.handle(FailoverEvent.Tick)
-        assertTrue((controller.state as FailoverState.FailingOver).bySlowLink)
-        FailoverStateHolder.onFailoverStateChanged(controller.state)
-        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+        val controller = startedSlowLinkSwitch(clock, vpn)
 
         // 切断確認を待っているあいだ（DISCONNECT_WAIT_MS = 3秒）に利用者が
         // 明示的に接続する。ACTION_CONNECT_GROUP の順序どおり、先に理由を消し、
@@ -179,6 +201,138 @@ class FailoverStateHolderTest {
         assertFalse((controller.state as FailoverState.FailingOver).bySlowLink)
         assertNull(
             "利用者の明示的な接続が消した理由を、同じ dispatch で書き戻してはならない",
+            FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
+        )
+    }
+
+    /**
+     * 追加審議の経路1（**実際に居座るのはこれ**）: 消灯による切断。
+     *
+     * 裁定44 により TV の画面が消えると `FailoverService.onScreenOff` が
+     * `UserDisconnect` を流す（`ACTION_DISCONNECT` もまったく同じ経路）。
+     * 速度起因の `FailingOver` の最中にこれが来ると `onUserDisconnect` は
+     * 保留を捨てて `Idle` を返すので、**その切替は次候補へ前進しない。**
+     * 画面が消えているあいだは誰も見ていないため、この経路の誤表示だけは
+     * 消えずに残り、次に利用者がホームを開いたときに読まれる。
+     */
+    @Test
+    fun `消灯で切断したら前進しなかった速度起因の切替の理由は残らない`() {
+        val clock = FakeClock(1_000L)
+        val vpn = FakeVpnController()
+        val controller = startedSlowLinkSwitch(clock, vpn)
+
+        // 消灯（裁定44）。ACTION_DISCONNECT も同じイベントを流す。
+        controller.handle(FailoverEvent.UserDisconnect)
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+
+        assertEquals(FailoverState.Idle, controller.state)
+        assertNull(
+            "前進しなかった切替の理由を、切断後の行に出してはならない",
+            FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
+        )
+    }
+
+    /**
+     * 追加審議の経路1の続き: 「消灯 → 点灯でそのまま `Connecting`」。
+     *
+     * 点灯すると裁定44 により `AutoConnectGroup` が飛ぶ。待つべき放棄候補が
+     * 無いので `stopBeforeStarting` は null を返し、状態は `FailingOver` を
+     * 経ずに**いきなり `Connecting`** になる。`Connecting` は「切替が前進した
+     * 先」なので投影は理由に触らない——つまりこの経路で理由が消えるかどうかは
+     * 消灯時（`Idle`）に消えたかどうかだけで決まる。
+     *
+     * しかも点灯後の再接続は**グループの先頭候補**から始まるので、ここに
+     * 「速度低下で切替」が出ていると、今のセッションでは起きていない切替を
+     * 説明することになる。
+     */
+    @Test
+    fun `消灯から点灯で繋ぎ直しても切替理由は戻らない`() {
+        val clock = FakeClock(1_000L)
+        val vpn = FakeVpnController()
+        val controller = startedSlowLinkSwitch(clock, vpn)
+
+        controller.handle(FailoverEvent.UserDisconnect)
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        // 点灯（裁定44）。先頭候補から無人で繋ぎ直す。
+        controller.handle(FailoverEvent.AutoConnectGroup("g1"))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+
+        val state = controller.state as FailoverState.Connecting
+        assertEquals(0, state.candidateIndex) // 先頭から繋ぎ直している
+        assertNull(
+            "点灯後の接続は別の出来事であり、前の切替の理由を引き継がない",
+            FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
+        )
+    }
+
+    /**
+     * 追加審議で見つかった**3つめ**の抜け道: `Exhausted` に着地する場合。
+     *
+     * `onSlowLinkSwitch` は行き先があることを確かめてから切替を始めるが、
+     * 切断確認を待つ3秒の窓の中で行き先が消えることはある（据え置きの残件
+     * R11。ここではその窓でメンバーが削除された場合を作る）。すると
+     * `advanceAfterFailingOver` → `startCandidateFrom` が起動できる候補を
+     * 見つけられず `Exhausted` に落ちる——**切替は前進せず、遅くはあっても
+     * 繋がっていたトンネルまで失う。**
+     *
+     * 経路ごとの特例を足していく形ではこれを取り落とす。投影が見るのは
+     * 「前進したか」であって経路の種類ではない、という形にしてある。
+     */
+    @Test
+    fun `行き先が消えて枯渇に落ちたら前進しなかった切替の理由は残らない`() {
+        val clock = FakeClock(1_000L)
+        val vpn = FakeVpnController()
+        val controller = startedSlowLinkSwitch(clock, vpn)
+
+        // 切断確認を待っている窓の中で uuid-b がグループから外された。
+        members = listOf("uuid-a")
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+
+        assertTrue(controller.state is FailoverState.Exhausted)
+        assertEquals("起動できる候補が無いので何も繋いでいない", 1, vpn.connectCalls.size)
+        assertNull(
+            "前進しなかった切替の理由を、枯渇中の行に出してはならない",
+            FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
+        )
+    }
+
+    /**
+     * 上の3件の裏返し: **前進した**切替の理由は、切替が作った接続が生きている
+     * あいだ残る（仕様書 5 の目的そのもの）。`Connecting` → `Verifying` →
+     * `Healthy` のどこでも消えない。
+     *
+     * これが無いと「常に消す」実装でも上の3件が通ってしまう。
+     */
+    @Test
+    fun `前進した速度起因の切替の理由は接続が生きているあいだ残る`() {
+        val clock = FakeClock(1_000L)
+        val vpn = FakeVpnController()
+        val controller = startedSlowLinkSwitch(clock, vpn)
+
+        // 切断確認 → 次候補（uuid-b）が起動する＝切替が前進した。
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertEquals("uuid-b", vpn.connectCalls.last())
+        assertTrue(controller.state is FailoverState.Connecting)
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-b"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-b"))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertTrue(controller.state is FailoverState.Verifying)
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        clock.advance(16_000L)
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertTrue(controller.state is FailoverState.Healthy)
+        assertEquals(
+            "切替が作った接続が生きているあいだは理由を出し続ける",
+            "g1",
             FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
         )
     }

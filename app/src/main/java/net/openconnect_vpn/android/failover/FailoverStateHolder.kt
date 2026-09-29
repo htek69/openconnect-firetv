@@ -77,10 +77,12 @@ object FailoverStateHolder {
      * ないので、状態機械（真実）の形は変わらない——ここは元から
      * [FailoverService] が持つ投影であり、状態と同じ場所に置くのが最も安い。
      *
-     * 寿命は「次に利用者が明示的に接続するまで」。理由を消すのは
-     * [clearSlowLinkSwitch] の1か所だけで、[FailoverService.onStartCommand] の
-     * `ACTION_CONNECT_GROUP` から呼ぶ（仕様書 4-5 が一周の記録の解除に使う
-     * のと同じ「利用者の明示的な操作」であり、時間による自動消去はしない）。
+     * 寿命は**切替が作った接続が生きているあいだ**である。消すのは
+     * [clearSlowLinkSwitch] の1か所だけで、呼ぶのは次の2つの入口から:
+     * [FailoverService.onStartCommand] の `ACTION_CONNECT_GROUP`（利用者の
+     * 明示的な接続。仕様書 4-5 が一周の記録の解除に使うのと同じ「利用者の
+     * 明示的な操作」）と、[onFailoverStateChanged]（状態が切替の前進を表さなく
+     * なったとき。条件の全体はそちらの KDoc）。**時間による自動消去はしない。**
      */
     val lastSlowLinkSwitchGroupId: StateFlow<String?> = mutableLastSlowLinkSwitchGroupId.asStateFlow()
 
@@ -139,13 +141,70 @@ object FailoverStateHolder {
      * 理由が分からない自動切替より、**間違った理由が表示される自動切替の方が
      * 悪い**（仕様書 5 の「理由の分からない自動切替を作らない」の趣旨に反する）。
      *
-     * `FailingOver` 以外の状態（`Healthy` など）ではどちらも呼ばない。切替の
-     * 理由は「次に FailingOver が始まるまで」有効な値として運ぶものであり、
-     * 切替と切替の間の定常状態でこの値を書き換える理由が無い。
+     * ## 条件は「切替が前進したか」であり、状態の種類の列挙ではない
+     *
+     * 統合レビューの所見1 の追加審議: FIX 1 で `bySlowLink == true` の意味は
+     * **「この切替はこれから次候補へ前進する」**に定まった（保留に横取りされた
+     * 時点で `FailoverController.stopBeforeStarting` が false に落とす）。
+     * であれば、その `FailingOver` を**前進せずに**抜けた先でも理由は消えるべき
+     * である。前進せずに抜ける経路は1つではなく、少なくとも5つある:
+     *
+     * 1. `UserDisconnect`（`ACTION_DISCONNECT`、および裁定44 の消灯）→ `Idle`
+     * 2. `advanceAfterFailingOver` でグループ自体が消えていた → `Idle`
+     *    （裁定72-fix(F1)。3秒の窓の中でグループが削除された）
+     * 3. `startCandidateFrom` が起動できる候補を見つけられない → `Exhausted`
+     *    （窓の中でメンバーが削除された・資格情報が消された・S1 で除外された）
+     * 4. `startCandidateFrom` が `NeedsUserConsent` を受けた → `Idle`
+     *    （VPN 許可が取り消されていた）
+     * 5. 残りの候補がすべて `ConnectResult.Failed` → `Exhausted`
+     *
+     * これを経路ごとの特例で消していくと、経路が増えるたびに同じ欠陥が戻る。
+     * そこで**状態の側で**言い切る: 切替が前進した先は `Connecting` だけであり
+     * （`FailingOver` から出る遷移は `advanceAfterFailingOver` の
+     * `startCandidateFrom` を通る以外に無い）、`Connecting` から先の
+     * `Verifying` / `Healthy` はその接続の続きである。上の5経路はすべて
+     * `Idle` か `Exhausted` に着地する。よって:
+     *
+     * - `Connecting` / `Verifying` / `Healthy`: **触らない。** ここが理由の
+     *   表示される寿命そのものである（切替が作った接続が生きているあいだ）。
+     * - `Idle` / `Exhausted`: **消す。** 切替は前進しなかった、あるいは
+     *   その接続はもう無い。説明すべき接続が画面に無いのに理由だけが残るのは
+     *   裁定R19 が禁じた「間違った理由」に当たる。
+     *
+     * これは裁定R19 の「消去点は1つ」に反しない。あの制約は**書き込みと消去を
+     * コードベースに散らさない**ことであり、消す条件をこの1か所で正しく言うのは
+     * その趣旨そのものである（新しい消去点は作っていない。時計も使っていない
+     * ——見ているのは状態の種類だけである）。
+     *
+     * 副作用として、**完了した**切替の理由も接続が終われば消える（例: 速度切替の
+     * あと利用者が手で切断した、または消灯した）。理由が正しかった場面で寿命が
+     * 短くなる向きだが、この向きを選ぶ: 切断後に残った理由は、次に点灯して
+     * `AutoConnectGroup` が**先頭の候補から**繋ぎ直したあとの行にも出てしまい、
+     * 「今のセッションでは起きていない切替」を説明することになる。
+     * 「理由が無い」より「間違った理由」の方が悪い、という裁定R19 の原則に従って
+     * 安全側（消す側）に倒す。
+     *
+     * `when` を網羅（`else` 無し）にしてあるのは、[FailoverState] にケースが
+     * 増えたときに**この判断をやり直させる**ためである（`firstLoginRecheckKey`
+     * や `withCandidateIndex` と同じ作法）。
      */
     internal fun onFailoverStateChanged(newState: FailoverState) {
-        (newState as? FailoverState.FailingOver)?.let {
-            if (it.bySlowLink) publishSlowLinkSwitch(it.groupId) else clearSlowLinkSwitch()
+        when (newState) {
+            is FailoverState.FailingOver ->
+                if (newState.bySlowLink) {
+                    publishSlowLinkSwitch(newState.groupId)
+                } else {
+                    clearSlowLinkSwitch()
+                }
+
+            // 切替が前進して作った接続。理由が意味を持つのはこのあいだだけ。
+            is FailoverState.Connecting,
+            is FailoverState.Verifying,
+            is FailoverState.Healthy -> Unit
+
+            // 切替は前進しなかった（または、その接続はもう無い）。
+            FailoverState.Idle,
+            is FailoverState.Exhausted -> clearSlowLinkSwitch()
         }
     }
 
