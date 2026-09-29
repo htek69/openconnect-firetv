@@ -23,6 +23,14 @@ class FailoverControllerSlowLinkTest {
     private var autoFailover = true
     private var dialogHostAttached = false
 
+    /**
+     * 統合レビューの所見5: これまでこのスイートは `needsFirstLoginProvider` を
+     * 渡していなかった（既定の `{ false }`）ため、**両機能を同時に動かすテストが
+     * 1件も無かった。** 既定は空集合＝誰も飛ばさないので、既存のテストの振る舞いは
+     * 無改変である。
+     */
+    private var needsFirstLogin: Set<String> = emptySet()
+
     private val group
         get() = FailoverGroup(
             id = "g1",
@@ -40,12 +48,14 @@ class FailoverControllerSlowLinkTest {
         slow = false
         autoFailover = true
         dialogHostAttached = false
+        needsFirstLogin = emptySet()
         controller = FailoverController(
             groupsProvider = { listOf(group) },
             clock = clock,
             vpn = vpn,
             network = network,
             dialogHostAttachedProvider = { dialogHostAttached },
+            needsFirstLoginProvider = { uuid -> uuid in needsFirstLogin },
             slowLinkProvider = { slow },
         )
     }
@@ -187,6 +197,54 @@ class FailoverControllerSlowLinkTest {
 
         assertTrue(controller.state is FailoverState.Healthy)
         assertEquals(before, vpn.connectCalls.size)
+    }
+
+    /**
+     * 統合レビューの §8 テスト1（最重要）: **両機能を同時に動かす唯一のテスト。**
+     *
+     * 速度起因の切替は**エンジン自身の判断**（人の操作ではない）なので、初回
+     * ログインが未了のメンバー——認証情報が保存されておらず、人が居なければ
+     * 絶対に成功しない相手——を行き先に数えてはならない。数えてしまうと
+     * `onSlowLinkSwitch` の行き先の門を通り抜けた切替が `startCandidateFrom`
+     * （そちらは `unattended = true`）でその候補を飛ばし、結局 `Exhausted` に落ちて
+     * **繋がってはいた（ただ遅い）トンネルをバックオフのあいだ失う。** 加えて、
+     * 無人で起動できない候補へ移そうとすること自体が裁定93/94 の
+     * 「利用者の認証ダイアログを畳まない」に反する。
+     *
+     * 固定する不変条件は `onSlowLinkSwitch` の行き先の門を
+     * **`unattended = true` で引くこと**である。`false` に変えても（門を消しても）
+     * 既存のどのテストも落ちなかった。ここがその唯一の守り手になる。
+     */
+    @Test
+    fun `初回ログインが未了のメンバーしか残っていなければ遅くても切り替えない`() {
+        needsFirstLogin = setOf("uuid-b")
+        toHealthyOnA()
+        // 起動したのは uuid-a の1回だけで、切断はまだ一度も要求していない
+        // （Idle から始めたので Ruling 25 の切断待ちを踏んでいない）。
+        assertEquals(listOf("uuid-a"), vpn.connectCalls)
+        assertEquals(0, vpn.disconnectCalls)
+
+        slow = true
+        repeat(5) {
+            clock.advance(1_000L) // TICK_INTERVAL_SWITCHING_MS 相当
+            controller.handle(FailoverEvent.Tick)
+        }
+
+        // 何度打っても切替は始まらない。uuid-b は「起動できる候補」に数えられない。
+        assertTrue(controller.state is FailoverState.Healthy)
+        assertEquals("遅い切替のために切断を要求してはならない", 0, vpn.disconnectCalls)
+        assertEquals("新しい候補を起動してはならない", listOf("uuid-a"), vpn.connectCalls)
+        // 飛ばしは S1 の除外とは別物なので、集合には何も足さない。
+        assertFalse("uuid-b" in controller.excludedUuids)
+
+        // 止めていたのが供給関数（初回ログインの飛ばし）であって別の門ではない
+        // ことを示す: 利用者が初回ログインを終えたら、次の tick で切替が起きる。
+        needsFirstLogin = emptySet()
+        controller.handle(FailoverEvent.Tick)
+        assertTrue((controller.state as FailoverState.FailingOver).bySlowLink)
+        assertEquals(1, vpn.disconnectCalls)
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        assertEquals("uuid-b", vpn.connectCalls.last())
     }
 
     /**
