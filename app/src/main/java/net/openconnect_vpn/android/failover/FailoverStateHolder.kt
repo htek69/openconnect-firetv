@@ -111,9 +111,25 @@ object FailoverStateHolder {
     }
 
     /**
-     * 最終再レビューの指摘4（FIX 1）: [FailoverState.FailingOver] が新しく
-     * 始まるたびに [FailoverService.dispatch] から呼ぶ。理由の書き込み・消去を
-     * 1か所にまとめ、両分岐を必ず対にする。
+     * 最終再レビューの指摘4（FIX 1）: 理由の書き込み・消去を1か所にまとめ、
+     * 両分岐を必ず対にする。
+     *
+     * **[FailoverService.dispatch] の毎回**（＝状態機械へイベントを1つ流すたび）
+     * 呼ばれる。「`FailingOver` が新しく始まったとき」だけではない: 状態が同じ
+     * `FailingOver` に留まっている数ティックのあいだも、値の変わらない再評価が
+     * 繰り返される（[MutableStateFlow] は同じ値の代入を購読者に流さないので
+     * 冪等ではあるが、**呼ばれる回数は1回ではない**）。
+     *
+     * 統合レビューの所見1（medium）: この「毎回呼ばれる」という事実が、以前の
+     * この KDoc（「新しく始まるたび」）と食い違っていたために欠陥を1つ許していた。
+     * 利用者の明示的な接続が [clearSlowLinkSwitch] で消した理由が、**同じ
+     * dispatch の中で**この関数によって書き戻されていたのである
+     * （`FailoverController.stopBeforeStarting` の `FailingOver` 分岐は裁定26 の
+     * ため同じ状態をそのまま返すので、`bySlowLink = true` が残っていた）。
+     * 直したのは状態機械の側で、いまはその分岐が `bySlowLink = false` に落とす
+     * ——よって**ここが毎回呼ばれても**、書き戻しは起きない。この関数を
+     * 「新しく始まったときだけ」に絞る作りには**していない**（呼ばれた回数を
+     * 数える状態をこの投影に持たせないため）。
      *
      * `bySlowLink == true` なら [publishSlowLinkSwitch] で記録するが、
      * それ以外（**死活起因の切替**）では [clearSlowLinkSwitch] で必ず消す。
