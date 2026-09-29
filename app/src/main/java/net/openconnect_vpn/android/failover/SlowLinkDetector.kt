@@ -109,8 +109,19 @@ class SlowLinkDetector(private val thresholds: SlowLinkThresholds) {
         // 作らないための保険として残す。
         if (dRx < 0 || dTx < 0) return false
 
-        val rxKbps = dRx * 8 * 1000 / spanMs / 1000
-        val txKbps = dTx * 8 * 1000 / spanMs / 1000
+        // kbps は「バイト数 * 8 / 経過ミリ秒」で出る。**ここに `* 1000 / 1000` を
+        // 書き足さないこと。** 以前は `dRx * 8 * 1000 / spanMs / 1000` と書いていたが、
+        // 非負の整数では両者は**厳密に等しい**（a = q*b + r, 0 <= r < b とおくと
+        // floor(a*1000/b) = 1000q + floor(1000r/b) で 0 <= floor(1000r/b) <= 999 なので、
+        // さらに 1000 で割ると繰り上がり無しで q に戻る）。等しいのに `* 1000` は
+        // 中間結果を1000倍するので、桁あふれまでの余裕を3桁ぶん捨てていた
+        // （デルタが Long.MAX_VALUE / 8000 ≒ 1.15PB を超えると積があふれ、
+        // 受信・送信の速度が無意味な値になって誤検知・取りこぼしの両方を作る）。
+        // この書き換えは式を減らしただけで判定は変えない——等価であることは
+        // `SlowLinkDetectorPropertyTest` の P9 が、旧式と新式を
+        // あふれない域の全入力で突き合わせて押さえている。
+        val rxKbps = dRx * 8 / spanMs
+        val txKbps = dTx * 8 / spanMs
         return rxKbps < thresholds.slowRxKbps && txKbps > thresholds.demandTxKbps
     }
 
