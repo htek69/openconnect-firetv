@@ -3,8 +3,10 @@ package net.openconnect_vpn.android.failover
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -119,6 +121,66 @@ class FailoverStateHolderTest {
         )
 
         assertNull(FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+    }
+
+    /**
+     * 統合レビューの所見1（medium）: 速度起因の `FailingOver` の**最中に**利用者の
+     * 明示的な接続（グループ行の決定、または行の「初回ログイン」）が届いたときの
+     * 切替理由。
+     *
+     * `FailoverService.onStartCommand` は先に [FailoverStateHolder.clearSlowLinkSwitch]
+     * を呼び（唯一の消去点）、続けて dispatch する。その dispatch は
+     * [FailoverStateHolder.onFailoverStateChanged] を**毎回**通るので、
+     * `stopBeforeStarting` が返す状態に `bySlowLink = true` が残っていると、
+     * **消したばかりの理由が同じ dispatch の中で書き戻る。** 残った理由が指すのは
+     * 保留（`pendingConnect`）に横取りされて**完了しなかった**切替であり、
+     * 裁定R19 が避けようとしている「間違った理由」そのものである。
+     *
+     * ここは投影の側ではなく状態機械の側（`stopBeforeStarting` が
+     * `bySlowLink = false` に落とす）で直してある。この順序をそのまま踏む。
+     */
+    @Test
+    fun `統合レビュー所見1 - 保留に横取りされた速度起因の切替の理由は残らない`() {
+        val clock = FakeClock(1_000L)
+        val vpn = FakeVpnController()
+        var slow = false
+        val controller = FailoverController(
+            groupsProvider = { listOf(group) },
+            clock = clock,
+            vpn = vpn,
+            network = FakeNetworkGate(available = true),
+            slowLinkProvider = { slow },
+        )
+
+        // uuid-a を Healthy まで進める（接続直後の猶予も越える）。
+        controller.handle(FailoverEvent.UserConnectGroup("g1"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        clock.advance(16_000L) // graceAfterConnectSec = 15 を越える
+        controller.handle(FailoverEvent.ProbeResult(reachable = true))
+        assertTrue(controller.state is FailoverState.Healthy)
+
+        // 速度低下による切替が始まり、dispatch が理由を投影へ書く。
+        slow = true
+        controller.handle(FailoverEvent.Tick)
+        assertTrue((controller.state as FailoverState.FailingOver).bySlowLink)
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+        assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
+
+        // 切断確認を待っているあいだ（DISCONNECT_WAIT_MS = 3秒）に利用者が
+        // 明示的に接続する。ACTION_CONNECT_GROUP の順序どおり、先に理由を消し、
+        // 続けて同じ dispatch が状態を投影する。
+        FailoverStateHolder.clearSlowLinkSwitch()
+        controller.handle(FailoverEvent.UserConnectGroup("g1", fromIndex = 1))
+        FailoverStateHolder.onFailoverStateChanged(controller.state)
+
+        // 状態は裁定26 のとおり切断待ちのまま（保留先だけが差し替わる）。
+        // ただしこの切替はもう次候補へ進まないので、速度起因の印は降りている。
+        assertFalse((controller.state as FailoverState.FailingOver).bySlowLink)
+        assertNull(
+            "利用者の明示的な接続が消した理由を、同じ dispatch で書き戻してはならない",
+            FailoverStateHolder.lastSlowLinkSwitchGroupId.value,
+        )
     }
 
     @Test

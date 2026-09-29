@@ -625,7 +625,23 @@ class FailoverController(
             // startedAtMs を更新したりすると、指示が繰り返されるたびに上限が
             // 延び続け、上限が上限でなくなる。保留先だけを差し替える。
             pendingConnect = PendingConnect(groupId, unattended, fromIndex)
-            return current
+            // 統合レビューの所見1（medium）: 保留先を差し替えた時点で、進行中だった
+            // 切替は [advanceAfterFailingOver] の保留優先（pendingConnect 分岐が
+            // 必ず先に評価される）によって**次候補へ進まないまま終わる。** つまり
+            // 「速度低下を理由に次候補へ移った」という出来事はもう起きない。
+            // 理由は状態が運ぶ値なので、起きなくなった切替の理由は状態から降ろす
+            // ——降ろさないと、投影側（[FailoverStateHolder.onFailoverStateChanged]
+            // は毎 dispatch で呼ばれる）がこの同じ状態を見て理由を書き戻し、
+            // 利用者の明示的な接続が消したはずの理由（`ACTION_CONNECT_GROUP` の
+            // [FailoverStateHolder.clearSlowLinkSwitch]）が**同じ dispatch の中で
+            // 復活する。** 結果、完了しなかった切替の理由が居座る。
+            // 裁定R19 が守ろうとしているのは「間違った理由は理由が無いより悪い」
+            // であり、ここで false に落とすことがその唯一の担保である。
+            // 新しい経路も時計も増やさない: 既にある状態の1フィールドを、
+            // 事実（切替は起きない）に合わせるだけである。
+            // startedAtMs / awaitingUuid / failedIndex は触らないので裁定26 の
+            // 上限はそのまま有界である。
+            return current.copy(bySlowLink = false)
         }
 
         // Connecting / Verifying / Healthy: 現在の候補（まだ生きている可能性がある）
