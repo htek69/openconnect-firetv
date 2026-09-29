@@ -153,6 +153,86 @@ class SlowLinkDetectorPropertyTest {
     fun `P8 同じ列なら判定は完全に一致し isSlow は状態を変えない`() = assertHolds("P8")
 
     /**
+     * **窓平均の式の書き換えが判定を変えないことの証明。**
+     *
+     * `SlowLinkDetector.isSlow()` は以前 `d * 8 * 1000 / spanMs / 1000` と書いていた
+     * ものを `d * 8 / spanMs` に変えた（P4b / P5b が見つけた桁あふれの余裕を
+     * 3桁ぶん取り戻すため）。非負の整数では両者は厳密に等しい——
+     * `a = q*b + r`（`0 <= r < b`）とおくと
+     * `floor(a*1000/b) = 1000q + floor(1000r/b)` で `0 <= floor(1000r/b) <= 999`
+     * なので、さらに 1000 で割ると繰り上がり無しで `q` に戻る。
+     *
+     * **その等式を主張ではなく検査として置く。** 旧式があふれない域
+     * （デルタ <= [SAFE_DELTA]）の全入力で、
+     *
+     * 1. 縁（0・1・7・8・999・1000・1001・[SAFE_DELTA] の前後）と無作為の組、
+     * 2. **この性質テストが生成する列が実際に作る窓**（[allCases] を流し直して、
+     *    各時点の窓の `dRx` / `dTx` と幅をそのまま使う）
+     *
+     * の両方について、旧式・新式・[BigInteger] による厳密な `floor(8d/span)` の
+     * 3つが**完全に一致する**ことを要求する。将来「`* 1000` を書き戻しても
+     * 同じでは？」と考えた読者がここを読めば、同じではない理由（余裕が3桁減る）と
+     * 同じである理由（値は変わらない）の両方が分かる。
+     */
+    @Test
+    fun `P9 窓平均の式の書き換えは判定を変えない`() {
+        var pairs = 0
+        val mismatches = mutableListOf<String>()
+
+        fun compare(dBytes: Long, spanMs: Long, where: String) {
+            // 旧式があふれる域は比較の対象にならない（あふれた値と比べても意味が無い）。
+            if (dBytes < 0 || dBytes > SAFE_DELTA || spanMs <= 0) return
+            pairs++
+            val old = dBytes * 8 * 1000 / spanMs / 1000
+            val new = dBytes * 8 / spanMs
+            val exact = BigInteger.valueOf(dBytes).multiply(EIGHT).divide(BigInteger.valueOf(spanMs))
+            if (old != new || BigInteger.valueOf(new) != exact) {
+                if (mismatches.size < 10) {
+                    mismatches.add("d=$dBytes span=$spanMs 旧式=$old 新式=$new 厳密=$exact （$where）")
+                }
+            }
+        }
+
+        // (1) 縁の総当たりと無作為の組。
+        val edgeDeltas = listOf(
+            0L, 1L, 7L, 8L, 9L, 999L, 1_000L, 1_001L, 8_191L, 8_192L,
+            125_000L, 1_000_000L, 1_000_000_007L,
+            SAFE_DELTA - 1, SAFE_DELTA, SAFE_DELTA / 2, SAFE_DELTA / 8,
+        )
+        val edgeSpans = listOf(
+            1L, 2L, 7L, 8L, 999L, 1_000L, 1_001L, 4_999L, 5_000L, 30_000L,
+            60_000L, 60_001L, 119_999L, 120_000L, 3_600_000L, 86_400_000L,
+        )
+        for (d in edgeDeltas) for (span in edgeSpans) compare(d, span, "縁")
+        for (seed in SEEDS) {
+            val rnd = Random(seed)
+            repeat(500) {
+                compare(rnd.nextLong(0, SAFE_DELTA), rnd.nextLong(1, 200_000), "無作為")
+            }
+        }
+
+        // (2) 生成された列が実際に作る窓。判定がもたれる (デルタ, 幅) の組そのもの。
+        for (case in allCases()) {
+            val windowMs = case.thresholds.windowSec * 1_000L
+            case.ticks.forEachIndexed { i, tick ->
+                val oldestIndex = oldestInWindow(case.ticks, i, windowMs) ?: return@forEachIndexed
+                val oldest = case.ticks[oldestIndex]
+                val span = tick.atMs - oldest.atMs
+                compare(tick.rxBytes - oldest.rxBytes, span, "生成された窓 seed=${case.seed} 列=${case.index}")
+                compare(tick.txBytes - oldest.txBytes, span, "生成された窓 seed=${case.seed} 列=${case.index}")
+            }
+        }
+
+        assertTrue(
+            "旧式と新式が食い違う組がある（$pairs 組を突き合わせた）。" +
+                "**製品コードを直してはならない。性質を緩めてもならない。**\n  " +
+                mismatches.joinToString("\n  "),
+            mismatches.isEmpty(),
+        )
+        assertTrue("突き合わせた組が少なすぎる（$pairs 組）。生成器が窓を作れていない", pairs > 10_000)
+    }
+
+    /**
      * **網に歯があることの確認。** 生成器が興味の無いところだけを回っていたら、
      * 性質は「破れない」のではなく「試されていない」だけである。各性質の前提が
      * 実際に踏まれていること、そして**判定が真になる場面に届いていること**を
@@ -892,24 +972,35 @@ class SlowLinkDetectorPropertyTest {
         /** 全シードぶんを一度だけ流す（すべてのテストが同じ結果を読む）。 */
         val corpus: Corpus by lazy { buildCorpus() }
 
-        private fun buildCorpus(): Corpus {
-            val corpus = Corpus()
-            val startedAt = System.nanoTime()
+        /**
+         * 検査する列の全体。シードと列番号から種を作るので、**この関数を何度呼んでも
+         * 同じ列が同じ順番で出る**（[buildCorpus] と P9 が同じ列を見られる）。
+         */
+        fun allCases(): List<Case> {
+            val out = ArrayList<Case>(SEEDS.size * CASES_PER_SEED)
             for (seed in SEEDS) {
                 for (index in 0 until CASES_PER_SEED) {
                     val rnd = Random(seed * 1_000_003L + index)
                     val mode = MODES[index % MODES.size]
                     val thresholds = THRESHOLDS[rnd.nextInt(THRESHOLDS.size)]
-                    val case = Case(seed, index, mode, thresholds, generate(rnd, mode, thresholds))
-                    corpus.cases++
-                    corpus.ticks += case.ticks.size
-                    for (name in RUN_ORDER) {
-                        val violation = CHECKS.getValue(name)(case, corpus.coverage) ?: continue
-                        corpus.counts[violation.key] = (corpus.counts[violation.key] ?: 0) + 1
-                        val known = corpus.worst[violation.key]
-                        if (known == null || violation.case.ticks.size < known.case.ticks.size) {
-                            corpus.worst[violation.key] = violation
-                        }
+                    out.add(Case(seed, index, mode, thresholds, generate(rnd, mode, thresholds)))
+                }
+            }
+            return out
+        }
+
+        private fun buildCorpus(): Corpus {
+            val corpus = Corpus()
+            val startedAt = System.nanoTime()
+            for (case in allCases()) {
+                corpus.cases++
+                corpus.ticks += case.ticks.size
+                for (name in RUN_ORDER) {
+                    val violation = CHECKS.getValue(name)(case, corpus.coverage) ?: continue
+                    corpus.counts[violation.key] = (corpus.counts[violation.key] ?: 0) + 1
+                    val known = corpus.worst[violation.key]
+                    if (known == null || violation.case.ticks.size < known.case.ticks.size) {
+                        corpus.worst[violation.key] = violation
                     }
                 }
             }
