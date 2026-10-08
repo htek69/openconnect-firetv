@@ -821,7 +821,22 @@ class FailoverController(
 
         // 仕様書 4-4: トンネルが張れた時刻を覚えておく（速度の判定を猶予期間の
         // あとに限るために使う。詳細は candidateConnectedAtMs の KDoc）。
-        if (core == VpnCoreState.Connected) candidateConnectedAtMs = clock.nowMs()
+        //
+        // **最初の Connected だけで書く（`== null` の条件を外さないこと）。**
+        // 既存コアは `Connected` を一度ではなく**繰り返し**通知する:
+        // `OpenVpnService.setStats()` が `wakeUpActivity()` を呼び、それが現在の
+        // 状態を再アナウンスし、`onStatsUpdate` は OpenConnect ライブラリが
+        // **通信中に定期的に**呼ぶ。毎回書き換えると猶予が永久に経過せず、
+        // 速度起因の切替が二度と起きない（実機で確認。診断ログでは
+        // `clock.nowMs() - candidateConnectedAtMs` が常に 9ms 前後で、判定が
+        // `SLOW` を出していても門が 143 回連続で猶予中で止まっていた）。
+        //
+        // この欠陥は**この機能を自分の発火条件の下で不可能にしていた**——判定には
+        // 送信側の通信が必要で、その通信そのものが猶予を押し戻すからである。
+        // 候補ごとに測り直すのは `startCandidateFrom` が null に戻すことで保たれる。
+        if (core == VpnCoreState.Connected && candidateConnectedAtMs == null) {
+            candidateConnectedAtMs = clock.nowMs()
+        }
 
         // Ruling 23: 認証段階まで到達したことを覚えておく（S1 の誤判定を防ぐ）。
         // Authenticating は TLS 接続が成功しサーバが認証フォームを返したことを、

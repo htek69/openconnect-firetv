@@ -690,7 +690,16 @@ class FailoverControllerInvariantTest {
                 if (uuid != null && uuid in sessions) sessions[uuid] = event.state
                 if (uuid == null || uuid == candidateBefore) {
                     promptOpen = event.state == VpnCoreState.UserPrompt
-                    if (event.state == VpnCoreState.Connected) connectedAtMs = clock.nowMs()
+                    // 既存コアは Connected を繰り返し通知する（OpenVpnService.setStats
+                    // -> wakeUpActivity -> 状態の再アナウンス）。製品側は**最初の
+                    // Connected だけ**で記録するので、鏡も同じにする。毎回更新すると
+                    // 猶予が永久に経過せず、I10 が「切替は起きないはず」と主張して
+                    // しまう——それは実機で確認された欠陥そのものである
+                    // （FailoverControllerSlowLinkTest の「Connected が繰り返し届いても」）。
+                    // 候補の起動（下の newConnects）で null に戻るのも製品と同じ。
+                    if (event.state == VpnCoreState.Connected && connectedAtMs == null) {
+                        connectedAtMs = clock.nowMs()
+                    }
                 }
             }
             if (stateAfter is FailoverState.FailingOver && stateBefore !is FailoverState.FailingOver) {

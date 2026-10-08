@@ -95,6 +95,50 @@ class FailoverControllerSlowLinkTest {
         assertEquals("uuid-b", vpn.connectCalls.last())
     }
 
+    /**
+     * 実機の欠陥（2026-10-08）。**既存コアは `Connected` を一度ではなく繰り返し
+     * 通知する。** `OpenVpnService.setStats()` が `wakeUpActivity()` を呼び、それが
+     * 現在の状態を再アナウンスし、`onStatsUpdate` は OpenConnect ライブラリが
+     * **通信中に定期的に**呼ぶ。
+     *
+     * 以前は `VpnCoreState.Connected` が届くたびに「トンネルが張れた時刻」を
+     * 今に書き換えていたため、`graceAfterConnectSec` の猶予が**永久に経過しなかった**。
+     * 実機の診断ログでは `clock.nowMs() - candidateConnectedAtMs` が常に 9ms 前後で、
+     * 判定が `SLOW` を出していても切替の門が 143 回連続で `within-grace` で
+     * 止まっていた。
+     *
+     * **この欠陥は「速度低下による切替」を自分の発火条件の下で不可能にしていた。**
+     * 判定には送信側の通信（`demandTxKbps`）が必要で、その通信そのものが
+     * 猶予を押し戻すからである。
+     *
+     * **既存のテストがすり抜けた理由: どれも `Connected` を1回だけ送っていた。**
+     */
+    @Test
+    fun `接続中に Connected が繰り返し届いても猶予は延びない`() {
+        toHealthyOnA()
+        slow = true
+
+        // 通信が流れている実機の形: 5秒ごとに Connected の再通知 + Tick。
+        // 切替が始まったらそこで止める（その先は Ruling 25 の2段階切替に進む）。
+        var switched: FailoverState.FailingOver? = null
+        repeat(5) {
+            if (switched == null) {
+                clock.advance(5_000L)
+                controller.handle(
+                    FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"),
+                )
+                controller.handle(FailoverEvent.Tick)
+                switched = controller.state as? FailoverState.FailingOver
+            }
+        }
+
+        assertTrue(
+            "Connected の再通知で猶予が延びてはならない（最後の状態: ${controller.state}）",
+            switched != null,
+        )
+        assertTrue(switched!!.bySlowLink)
+    }
+
     @Test
     fun `機能が無効なら遅くても切り替えない`() {
         toHealthyOnA()
