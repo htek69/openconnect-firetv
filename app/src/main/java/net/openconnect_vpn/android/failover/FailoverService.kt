@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.openconnect_vpn.android.core.ProfileManager
 import net.openconnect_vpn.android.tv.ProfileRepository
@@ -89,6 +90,26 @@ class FailoverService : Service() {
     private lateinit var bridge: VpnStatusBridge
     private lateinit var networkGate: NetworkGate
     private lateinit var throughputSource: ThroughputSource
+    private lateinit var vpnIfaceSource: VpnInterfaceNameSource
+
+    /**
+     * 直前に [sampleThroughput] が解決した VPN のインターフェース名（[vpnIfaceSource]）。
+     * [throughputSource] はこの値を参照のたびに読む。
+     *
+     * **名前が変わったら窓を捨てる。** 別のインターフェースの累計バイト数を同じ窓に
+     * 混ぜると、差分が2つのカウンタの差になって**速度が跳ねる**（上へ跳べば
+     * 「遅くない」と取りこぼし、下へ跳べば `onSample` の巻き戻し検知が窓を
+     * 捨てる）。トンネルが張り替わるときは `syncSlowLinkCandidate` も
+     * `Connecting` で鍵が null になることで測り直させるが、**あちらは候補の
+     * 入れ替わりを見ているだけ**で、同じ候補へ繋ぎ直して名前だけが変わる場合を
+     * 捕まえない。ここはインターフェースそのものの入れ替わりを見る。
+     *
+     * `@Volatile` にしているのは、書くのがメインスレッド（[sampleThroughput]）で、
+     * 読むのが `Dispatchers.IO`（[ProcNetDevThroughputSource.read] の中の
+     * 供給関数）だからである。
+     */
+    @Volatile
+    private var lastVpnIface: String? = null
     private var probeTarget: ProbeTarget = ProbeTarget()
 
     /**
@@ -263,7 +284,10 @@ class FailoverService : Service() {
         probeTarget = groupStore.loadProbeTarget()
 
         // 仕様書 4: 採取元と判定器。判定器の閾値は保存された設定から作る。
-        throughputSource = ProcNetDevThroughputSource()
+        // 測る対象の名前は固定しない（`docs/DECISIONS.md` 項目15）。解決は
+        // [sampleThroughput] が毎ティック行い、ここでは供給関数を渡すだけである。
+        vpnIfaceSource = ConnectivityVpnInterfaceName(this)
+        throughputSource = ProcNetDevThroughputSource { lastVpnIface }
         slowLinkSettings = groupStore.loadSlowLinkSettings()
         slowLinkDetector = SlowLinkDetector(
             SlowLinkThresholds(slowRxKbps = slowLinkSettings.slowRxKbps),
@@ -568,6 +592,22 @@ class FailoverService : Service() {
      */
     private suspend fun sampleThroughput() {
         if (!slowLinkSettings.enabled) return
+
+        // `docs/DECISIONS.md` 項目15: 測る対象を毎ティック解決する。固定名
+        // （以前の `tun0`）だと、再接続で番号が進んだ時点から死んだ
+        // インターフェースを測り続け、切替が二度と起きなくなる。
+        // 裁定R21 に合わせて binder 越しの問い合わせも `Dispatchers.IO` で行う。
+        val iface = withContext(Dispatchers.IO) { vpnIfaceSource.currentName() }
+        if (iface != lastVpnIface) {
+            lastVpnIface = iface
+            slowLinkDetector.reset()
+        }
+        if (iface == null) {
+            // 「測れない」を「遅い」と解釈しない（裁定R20: 測れなければ窓を捨てる）。
+            slowLinkDetector.reset()
+            return
+        }
+
         val bytes = throughputSource.read()
         if (bytes == null) {
             slowLinkDetector.reset()

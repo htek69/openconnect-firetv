@@ -27,6 +27,25 @@ interface ThroughputSource {
     suspend fun read(): IfaceBytes?
 }
 
+/**
+ * いま生きている VPN トンネルのインターフェース名。決められなければ null。
+ *
+ * **固定名で測ってはいけない**ので port にしてある。Android は VPN を張り直す
+ * たびに新しい `tun` 番号を割り当て、古いものは `DOWN` のまま残る
+ * （`docs/DECISIONS.md` 項目15、[selectVpnInterfaceName] の KDoc）。
+ *
+ * `suspend` ではない。実装（[ConnectivityVpnInterfaceName]）は
+ * `ConnectivityManager` への問い合わせだけで、ファイルを読まない。
+ * それでも binder 越しなので、呼び出し側（`FailoverService.sampleThroughput`）は
+ * 裁定R21 に合わせて `Dispatchers.IO` の中で呼ぶ。
+ *
+ * **null は「測れない」であり「遅い」ではない。** 呼び出し側はそのときサンプルを
+ * 渡さず、窓を捨てる（裁定R20）。
+ */
+fun interface VpnInterfaceNameSource {
+    fun currentName(): String?
+}
+
 enum class ConnectResult {
     /** 接続処理を開始した。 */
     Started,
