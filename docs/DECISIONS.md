@@ -422,10 +422,9 @@ KDoc に、生成器の域・削り込みの手順・**変異を入れてどの�
   なって速度が跳ねる。`syncSlowLinkCandidate` は候補の入れ替わりしか見て
   いないので、同じ候補へ繋ぎ直して名前だけ変わる場合を捕まえない
 
-**まだ実機で確認できていない。** 「生きているのが `tun0` 以外」の状況を狙って
-作れず（正常な切断では名前が再利用される）、修正後の走行はエンジンが `Idle` の
-まま回してしまった。確かめ方は `docs/MANUAL-TEST.md` の「修正後に残っている
-確認」にある。**直したと書いてあることと、動くと確かめたことは別である。**
+**2026-10-09 に実機で確認した。** ただし**この修正だけでは動かなかった**——
+猶予の記録にもう1つ欠陥があり（下の項目16）、2件は互いを隠していた。
+両方を直して 10-3 と 10-6 が通った（`docs/MANUAL-TEST.md` 節 10-3-2）。
 
 **検討して外した選択肢**
 
@@ -444,3 +443,45 @@ KDoc に、生成器の域・削り込みの手順・**変異を入れてどの�
 
 **場所。** `ProcNetDevThroughputSource.kt:26` と `FailoverService.kt` の
 `throughputSource = ProcNetDevThroughputSource()`。
+
+---
+
+## 16. 接続直後の猶予は「最初の `Connected`」だけで記録する（**2026-10-09 に実機で露呈**）
+
+**事実。** `onVpnStateChanged` の
+
+```kotlin
+if (core == VpnCoreState.Connected && candidateConnectedAtMs == null) {
+```
+
+の **`== null` を外してはいけない。** 外すと速度低下による切替が二度と起きない。
+
+**なぜ。** **既存コアは `Connected` を一度ではなく繰り返し通知する。**
+`OpenVpnService.setStats()` が `wakeUpActivity()` を呼び、それが現在の状態を
+再アナウンスし、`onStatsUpdate` は OpenConnect ライブラリが**通信中に定期的に**
+呼ぶ。毎回書き換えると「トンネルが張れた時刻」が常に「いま」になり、
+`graceAfterConnectSec` の猶予が**永久に経過しない。**
+
+実機の診断ログでは `clock.nowMs() - candidateConnectedAtMs` が常に **9ms 前後**で、
+判定が `SLOW` を出していても `onSlowLinkSwitch` の門が **143 回連続**で
+`within-grace` で止まっていた。
+
+**最も重要な性質: この欠陥はこの機能を自分の発火条件の下で不可能にしていた。**
+判定には送信側の通信（`demandTxKbps`）が必要で、**その通信そのものが猶予を
+押し戻す。** 通信が無ければ猶予は進むが、そのときは判定が成立しない。
+
+**項目15 との関係（両方直さないと動かない）。** 2026-10-08 に一度だけ発火したのは、
+項目15 の欠陥で**死んだインターフェースを測っており通信が無かった**ため猶予が
+進めた、という偶然の組み合わせである。**2件は互いを隠していた**——片方だけ直しても
+動かず、片方だけ見ていると「もう直った」と誤認する。
+
+**既存のテストがすり抜けた理由。** `FailoverControllerSlowLinkTest` も
+`FailoverControllerInvariantTest` の I10 も、**`Connected` を1回だけ送っていた。**
+実機の「繰り返し通知」を誰も模していなかった。回帰テスト
+`接続中に Connected が繰り返し届いても猶予は延びない` を足し、I10 の鏡も
+同じ規則（最初の `Connected` だけ）に直した。**毎回更新する鏡は旧コードの誤りを
+写しており、「猶予中だから切替は起きないはず」と主張してしまう。**
+
+**場所。** `FailoverController.kt` の `onVpnStateChanged`（`candidateConnectedAtMs`
+への代入）。候補ごとに測り直すのは `startCandidateFrom` が null に戻すことで
+保たれる。
