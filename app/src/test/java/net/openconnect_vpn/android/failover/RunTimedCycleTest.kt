@@ -112,12 +112,23 @@ class RunTimedCycleTest {
     }
 
     // ---------------------------------------------------------------- 予算（timeoutMs * 2）
+    //
+    // 規則（裁定22）: 2回目以降は「経過時間 + timeoutMs <= 予算」のときだけ始める。
+    // 回を途中で切り詰めない（満額の timeoutMs を得て走るか、走らないか）。
+    // 各回の所要時間は timeoutMs 以下とする（実際の試行は timeoutMs で打ち切られる）。
+
+    /** 偽の時計が進んだ合計（ms）。周期全体の壁時計。 */
+    private fun totalMs(steps: List<Pair<Boolean, Long>>, timeoutMs: Int = 5_000, attempts: Int = 5): Long {
+        val clock = FakeNs()
+        val script = Script(clock, steps)
+        runBlocking { runTimedCycle(timeoutMs, attempts, { clock.nowNs }) { script.attempt(it) } }
+        return clock.nowNs / 1_000_000L
+    }
 
     @Test
-    fun `予算を使い切ったら回数に達していなくても止まる（各回が予算の半分を使う）`() {
-        // timeout 5000 → 予算 10000。各回 5000ms: 1回目で 5000、2回目の開始時 5000 < 10000
-        // で行い 10000。3回目の開始時は 10000 >= 10000 で止まる。
-        // 予算が無い実装なら5回行う。
+    fun `予算を使い切ったら回数に達していなくても止まる`() {
+        // timeout 5000 → 予算 10000。各回 5000ms: 1回目で 5000。2回目は 5000+5000 <= 10000
+        // で行い 10000。3回目は 10000+5000 > 10000 で止まる。予算が無い実装なら5回行う。
         val (o, s) = run(listOf(ok(5_000)), timeoutMs = 5_000)
         assertTrue(o.reachable)
         assertEquals(2, s.calls)
@@ -125,21 +136,31 @@ class RunTimedCycleTest {
     }
 
     @Test
-    fun `予算の境界 ちょうど使い切れば止まり、1ms 残っていれば次を行う`() {
-        // 厳密な「以上で止まる」。5000 x 2 = 10000（ちょうど）→ 2回で止まる。
-        assertEquals(2, run(listOf(ok(5_000))).second.calls)
-        // 4999 x 2 = 9998 < 10000 → 3回目を行い、そこで 14997 になって止まる。
-        assertEquals(3, run(listOf(ok(4_999))).second.calls)
+    fun `残りがちょうど timeoutMs なら次の回を始める`() {
+        // 1回目 2000 + 2回目 3000 = 5000 → 残り 5000 = timeoutMs。3回目は行う。
+        // 「残りが timeoutMs を超えるときだけ」（< の取り違え）の実装なら行わずに落ちる。
+        val (_, s) = run(listOf(ok(2_000), ok(3_000), ok(1)))
+        // 3回目(1ms)のあとは 5001+5000 = 10001 > 10000 なので止まる。
+        assertEquals(3, s.calls)
+    }
+
+    @Test
+    fun `残りが timeoutMs に1ms 足りなければ次の回を始めない`() {
+        // 1回目 2000 + 2回目 3001 = 5001 → 残り 4999 < timeoutMs。3回目は行わない。
+        // 経過時間だけで決める実装（予算内なら始める）は行ってしまい、落ちる。
+        val (o, s) = run(listOf(ok(2_000), ok(3_001), ok(1)))
+        assertEquals(2, s.calls)
+        assertEquals(listOf(2_000L, 3_001L), o.rttMs)
     }
 
     @Test
     fun `予算は1回目の所要時間も含む（累計の壁時計）`() {
-        // 1回目が 9000ms かかった（成功）。残りは 1000ms ぶんしか無い。
-        // 2回目の開始時 9000 < 10000 なので1回行い、そこで 9000 + 9000 > 10000。
-        // 予算を「2回目以降の合計」で数える実装なら、続けて行うので回数が増える。
-        val (o, s) = run(listOf(ok(9_000), ok(9_000)), timeoutMs = 5_000)
+        // 1回目 4000、2回目 4000。2回目の開始時 4000+5000 <= 10000 で行い 8000。
+        // 3回目は 8000+5000 > 10000 で止まる。予算を「2回目以降の合計」で数える実装は
+        // 3回目の開始時の経過を 4000 と見て 9000 <= 10000 で行ってしまい、落ちる。
+        val (o, s) = run(listOf(ok(4_000)), timeoutMs = 5_000)
         assertEquals(2, s.calls)
-        assertEquals(listOf(9_000L, 9_000L), o.rttMs)
+        assertEquals(listOf(4_000L, 4_000L), o.rttMs)
     }
 
     @Test
@@ -148,6 +169,33 @@ class RunTimedCycleTest {
         // 予算を固定値で持つ実装は、timeout を変えるとこの回数が変わらずに落ちる。
         assertEquals(2, run(listOf(ok(1_000)), timeoutMs = 1_000).second.calls)
         assertEquals(2, run(listOf(ok(3_000)), timeoutMs = 3_000).second.calls)
+    }
+
+    @Test
+    fun `周期の壁時計の合計は予算 timeoutMs の2倍を超えない（合計で見る）`() {
+        // 守るもの: 回数ではなく**合計**。回数の表明は、予算の定数が変わっても通ってしまう。
+        // 経過時間だけで開始を決める実装は、4999ms の回を3回行って 14997 > 10000 になる。
+        val timeoutMs = 5_000
+        val budget = timeoutMs * 2L
+        val fixed = listOf(
+            listOf(ok(4_999)),
+            listOf(ok(5_000)),
+            listOf(ok(1), ok(4_999), ok(4_999)),
+            listOf(ok(0), ng(5_000), ng(5_000), ng(5_000)),
+            listOf(ok(2_500)),
+        )
+        for (steps in fixed) {
+            val total = totalMs(steps, timeoutMs)
+            assertTrue("合計 $total ms が予算 $budget ms を超えた: $steps", total <= budget)
+        }
+        // 1回の所要時間が 0..timeoutMs に収まるあらゆる並びで成り立つこと
+        // （再現できるよう固定の種で多数生成する）。
+        val rnd = java.util.Random(20261009L)
+        repeat(2_000) {
+            val steps = List(5) { (if (rnd.nextBoolean()) true else false) to rnd.nextInt(timeoutMs + 1).toLong() }
+            val total = totalMs(listOf(ok(rnd.nextInt(timeoutMs + 1).toLong())) + steps)
+            assertTrue("合計 $total ms が予算 $budget ms を超えた: $steps", total <= budget)
+        }
     }
 
     // ---------------------------------------------------------------- 失敗ログ（周期で最大1行）

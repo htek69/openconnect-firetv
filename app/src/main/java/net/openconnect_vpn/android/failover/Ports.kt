@@ -32,9 +32,19 @@ interface HealthProbe {
      * 戻る（間隔の最小は10秒）。
      *
      * **1回目が成功したら、残りを合計 `timeoutMs * 2` の壁時計予算の範囲で行う。**
-     * 予算を使い切るか [attempts] 回に達したら止める。成功は数ミリ秒で返るので、
-     * まともな経路では全回が入る。予算は「1回目は通ったが以降が詰まる」経路のための上限で、
-     * 予算の確認は各回の**開始前**に行うので、最後の1回ぶんは超えうる。
+     * 予算は**周期全体の上限**であり、超えない。2回目以降は「**この回を最後まで
+     * 待てるだけの予算が残っているときだけ**」開始する（経過時間 + `timeoutMs` が予算以内）。
+     * 経過時間だけを見て開始すると、予算の直前に始めた回が `timeoutMs` まで待って
+     * 予算を超える（最悪 3 倍）。間隔の最小 10 秒（既定の `timeoutMs` 5 秒の 2 倍）に
+     * 収まらなくなり、収まらないあいだ tick ループの採取も他のイベントも止まる。
+     *
+     * **回の途中で `timeoutMs` を切り詰めない。** 残りに合わせて打ち切ると、5 秒以上
+     * かかる経路が 2 秒の応答時間として記録され、測定が歪む。回は満額の `timeoutMs` を
+     * 得て走るか、走らないかのどちらかである。
+     *
+     * 予算の都合で回数が減る（既定で遅い経路は最大3回）のは、サンプルが減って判定が
+     * 偽に寄る方向なので、**誤った切替は生まない**。成功は数ミリ秒で返るので、
+     * まともな経路では全回が入る。
      *
      * **既定実装は [probe] を呼んで時間を測るだけ**である。
      * これにより**既存の実装とテストの Fake は無改変で通る**（裁定72/93 と同じ
@@ -80,8 +90,11 @@ internal suspend fun runTimedCycle(
     if (!reachable) return ProbeOutcome(reachable = false, rttMs = times)
 
     var loggedThisCycle = false
+    val timeoutNs = timeoutMs.coerceAtLeast(0) * 1_000_000L
     for (i in 1 until n) {
-        if (nowNs() - cycleStartNs >= budgetNs) break
+        // この回を満額の timeoutMs まで待てるだけ残っているときだけ始める。
+        // 経過時間だけを見ると、予算の直前に始めた回が予算を超える。
+        if (nowNs() - cycleStartNs + timeoutNs > budgetNs) break
         val startNs = nowNs()
         val ok = attempt(!loggedThisCycle)
         times.add((nowNs() - startNs) / 1_000_000L)
