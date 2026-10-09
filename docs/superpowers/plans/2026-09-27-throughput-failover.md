@@ -508,6 +508,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - **一周したら止める**: そのグループで速度起因の切替を候補数だけ行ったら、以後
   `slowLinkProvider()` を見ない。解除は `onUserConnect`（裁定35 と同じ考え方）と
   グループ構成の変更時。**時間による自動解除は設けない**
+  （**2026-10-09 に覆された。** 改訂版仕様
+  `docs/superpowers/specs/2026-10-09-path-quality-failover-design.md` の §2-B）
 - `onUnattendedPromptTimeout` と `onConnectTimeout` の既存の判定順序を変えない。
   速度の判定は、それらが `Healthy` のままにした経路の**後ろ**に足す
 
