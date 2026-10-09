@@ -90,48 +90,63 @@ class FailoverServiceWiringTest {
 
     @Test
     fun `sampleThroughput の読み取り失敗は受信の窓だけ、張り替えは両方を捨てる`() {
+        // 関数の本体**全体**を見る。区間を `if (iface == null)` から切り出すと、その手前に
+        // ある全捨て（reset）を見落とす——裁定36: 以前は「張り替え」の分岐が先にあり、
+        // 名前が解決できない tick（null != "tunN"）でそちらが走って、この試験は
+        // 名前どおりの性質が偽のまま通っていた。
         val b = body("private suspend fun sampleThroughput()")
 
-        val ifaceChanged = b.indexOf("if (iface != lastVpnIface)")
         val ifaceNull = b.indexOf("if (iface == null)")
+        val ifaceChanged = b.indexOf("if (iface != lastVpnIface)")
         val bytesNull = b.indexOf("if (bytes == null)")
         assertTrue(
-            "sampleThroughput の3つの分岐（張り替え・名前が解決できない・バイト数が読めない）が" +
-                "この順に並んでいない。並べ替えたなら、この試験の区間の切り方を直す",
-            ifaceChanged in 0 until ifaceNull && ifaceNull < bytesNull,
+            "sampleThroughput の3つの分岐は「名前が解決できない」「張り替え」「バイト数が読めない」の" +
+                "順に並べる。名前が解決できない tick を先に処理しないと、張り替えの分岐が先に走って" +
+                "全捨て（reset）になり、受信だけを捨てる性質（裁定17）が失われる。順序を戻す",
+            ifaceNull in 0 until ifaceChanged && ifaceChanged < bytesNull,
         )
 
         val full = "pathQualityDetector.reset()"
         val partial = "pathQualityDetector.resetThroughput()"
 
-        // 3つの分岐それぞれの区間に、意味に合う方がちょうど1回ずつ出る。
-        val changedBlock = b.substring(ifaceChanged, ifaceNull)
-        val nullBlock = b.substring(ifaceNull, bytesNull)
+        // 本体全体での個数: 全捨ては張り替えの1回だけ、受信だけの破棄は失敗の2分岐。
+        assertEquals(
+            "全捨て reset() は張り替えの1か所だけにする。増やすと、測れなかった tick で" +
+                "応答時間の証拠を捨てる経路ができる（裁定17）",
+            1, count(b, full),
+        )
+        assertEquals(
+            "受信だけを捨てる resetThroughput() は、名前が解決できない・バイト数が読めない の2か所",
+            2, count(b, partial),
+        )
+
+        // 名前が解決できない分岐は、全捨てに到達する前に、受信だけを捨てて return する。
+        val nullBlock = b.substring(ifaceNull, ifaceChanged)
         val bytesBlock = b.substring(bytesNull)
-        assertEquals(
-            "張り替えは測る対象が変わるので両方の窓を捨てる。reset() をここに戻す",
-            1, count(changedBlock, full),
+        val changedBlock = b.substring(ifaceChanged, bytesNull)
+        assertTrue(
+            "名前が解決できない tick は resetThroughput() して return する。全捨てへ落とさない",
+            nullBlock.contains(partial) && nullBlock.contains("return"),
         )
+        assertFalse("名前が解決できない tick で全捨て reset() をしてはならない（裁定17・36）", nullBlock.contains(full))
+        assertTrue(
+            "本体の最初の全捨て reset() は、名前が解決できない分岐より後（張り替えの分岐）にある。" +
+                "前にあると null の tick でも走る",
+            b.indexOf(full) > ifaceNull + nullBlock.length - 1,
+        )
+        assertTrue("バイト数を読めない tick は resetThroughput() する", bytesBlock.contains(partial))
+        assertFalse("バイト数を読めない tick で全捨てをしてはならない（裁定17）", bytesBlock.contains(full))
+        assertTrue("張り替えは測る対象が変わるので両方の窓を捨てる。reset() をここに戻す", changedBlock.contains(full))
+        assertFalse("張り替えで resetThroughput() だと前の対象の応答時間が残る。reset() にする", changedBlock.contains(partial))
+
+        // 覚えている名前（lastVpnIface）は null の tick で更新しない。更新すると、同じトンネルの
+        // 名前が解決できたとき張り替えと取り違えて、応答時間の窓まで捨てる（裁定36）。
         assertFalse(
-            "張り替えで resetThroughput() だと前の対象の応答時間が残る。reset() にする",
-            changedBlock.contains(partial),
+            "名前が解決できない分岐で lastVpnIface を更新してはならない。同じトンネルの名前が" +
+                "戻ったとき張り替えと取り違える。この更新を消す",
+            nullBlock.contains("lastVpnIface"),
         )
-        assertEquals(
-            "名前を解決できない tick は受信の窓だけを捨てる（裁定17）。resetThroughput() にする",
-            1, count(nullBlock, partial),
-        )
-        assertFalse(
-            "名前を解決できない tick で応答時間を捨ててはならない（裁定17）。resetThroughput() にする",
-            nullBlock.contains(full),
-        )
-        assertEquals(
-            "バイト数を読めない tick は受信の窓だけを捨てる（裁定17）。resetThroughput() にする",
-            1, count(bytesBlock, partial),
-        )
-        assertFalse(
-            "バイト数を読めない tick で応答時間を捨ててはならない（裁定17）。resetThroughput() にする",
-            bytesBlock.contains(full),
-        )
+        assertTrue("張り替えの分岐が lastVpnIface を更新する", changedBlock.contains("lastVpnIface = iface"))
     }
 
     @Test
@@ -198,6 +213,17 @@ class FailoverServiceWiringTest {
         assertTrue(
             "FailoverController へ slowLinkSettingsProvider を渡す（一周後の許容幅と再開の間隔）",
             code.contains("slowLinkSettingsProvider = { slowLinkSettings }"),
+        )
+        assertTrue(
+            "FailoverController へ slowLinkProvider を渡す（判定器の結果で切り替える）。" +
+                "{ false } にすると機能が丸ごと死ぬのに、他の試験は通ってしまう",
+            code.contains("slowLinkProvider = { slowLinkSettings.enabled && pathQualityDetector.isDegraded() }"),
+        )
+        assertTrue(
+            "トンネルを持たない状態（鍵が null）で測った応答時間は onProbe へ渡さない（裁定40）。" +
+                "ガードは null == null を通すので、素の下層ネットワークの応答時間が窓に入る",
+            Regex("""if \(probeGuardKey\(controller\.state\) != null\) \{\s+pathQualityDetector\.onProbe""")
+                .containsMatchIn(code),
         )
         assertTrue(
             "FailoverController へ lapRttProvider を渡す（一周の記録が応答時間を読む）",

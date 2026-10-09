@@ -388,7 +388,17 @@ class FailoverService : Service() {
                             // 順序: **`onProbe` が先、`dispatch(ProbeResult)` が後。** 逆にすると、
                             // `ProbeResult` が切替を起こした dispatch の測り直しが先に走り、
                             // このサンプルが次の候補の窓へ入る。
-                            pathQualityDetector.onProbe(clock.nowMs(), outcome)
+                            //
+                            // 裁定40: **トンネルを持たない状態（鍵が null）で測った応答時間は
+                            // 判定器へ渡さない。** `probeImmediatelyOnNetworkRecovery` により
+                            // `shouldProbeNow()` はどの状態でも真になりうる。ガードは
+                            // `null == null` を「変わっていない」と見て結果を通すので、素の
+                            // 下層ネットワークの応答時間が窓に入りうる（今は null → 鍵への
+                            // 遷移の測り直しで消えるだけで、守られてはいない）。到達可否は
+                            // 従来どおり渡す。
+                            if (probeGuardKey(controller.state) != null) {
+                                pathQualityDetector.onProbe(clock.nowMs(), outcome)
+                            }
                             dispatch(FailoverEvent.ProbeResult(outcome.reachable))
                         },
                     )
@@ -629,20 +639,32 @@ class FailoverService : Service() {
         // インターフェースを測り続け、切替が二度と起きなくなる。
         // 裁定R21 に合わせて binder 越しの問い合わせも `Dispatchers.IO` で行う。
         val iface = withContext(Dispatchers.IO) { vpnIfaceSource.currentName() }
-        if (iface != lastVpnIface) {
-            lastVpnIface = iface
-            // 測る対象（インターフェース）そのものが変わった。受信の窓も応答時間の窓も
-            // 前の対象のものなので、**両方**捨てる。
-            pathQualityDetector.reset()
-        }
+        // 裁定36: **名前を解決できなかった tick を、張り替えの判定より先に処理する。**
+        // 逆（`iface != lastVpnIface` を先）だと、`null != "tunN"` が真になって
+        // **両方の窓を捨てる `reset()` が先に走り**、下の `resetThroughput()` は空の判定器に
+        // 対する空振りになる。裁定17 の性質（読み取りの失敗1回で応答時間を失わない）が
+        // 2回目の連続する null からしか成り立たず、名前が一瞬戻れば（null → "tunN"）
+        // 張り替えの分岐がもう一度走って、揺らぎ1回に全捨てが2回かかる。
         if (iface == null) {
             // 「測れない」を「遅い」と解釈しない（裁定R20: 測れなければ窓を捨てる）。
             // 捨てるのは**受信の窓だけ**。この tick に測れなかったのはバイト数であって、
             // 応答時間は別の経路（プローブ）で測れている。`reset()` にすると、
             // 一時的な読み取り失敗1回で最大 60 秒ぶんの応答時間の証拠が消える
             // （[PathQualityDetector.resetThroughput] の KDoc に理由）。
+            //
+            // **ここで [lastVpnIface] を null に更新しない。** 覚えている名前を残して
+            // おくのが要点で、同じトンネルの名前がまた解決できたとき `iface == lastVpnIface`
+            // になり、名前解決の一時的な不調を「トンネルが張り替わった」と取り違えて
+            // 応答時間の窓まで捨てることがない。本当に張り替わった（tun4 → tun5）なら
+            // 次の分岐が両方の窓を捨てる。この更新を「整理」して足してはならない。
             pathQualityDetector.resetThroughput()
             return
+        }
+        if (iface != lastVpnIface) {
+            lastVpnIface = iface
+            // 測る対象（インターフェース）そのものが変わった。受信の窓も応答時間の窓も
+            // 前の対象のものなので、**両方**捨てる。
+            pathQualityDetector.reset()
         }
 
         val bytes = throughputSource.read()

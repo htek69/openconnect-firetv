@@ -1372,12 +1372,18 @@ class FailoverController(
         // 操作か、設定の変更が記録を消すまで速度起因では動かない。
         if (peekLap(group)?.stoppedAtMs() != null) return null
 
+        // 判定が偽ならここで終わる。**前へ進む道の計算より先に引く。** 行き先の計算は
+        // 初回ログイン未了の供給関数（[needsFirstLoginProvider]）を候補ごとに引き、
+        // それはプロファイルの初期化と prefs の写しを伴う。機能が無効（既定）の利用者にも
+        // 毎 tick その費用を払わせる理由が無い。[nextStartableIndex] の KDoc の
+        // 「供給関数を引くのは候補選択のときだけ」という約束を守る並びでもある。
+        // 前へ進む道の計算は読むだけなので、順序を入れ替えても結果は変わらない。
+        if (!slowLinkProvider()) return null
+
         // 前へ進む道が残っているか。予算（[slowLinkLapAvailable]）と行き先
         // （[nextStartableIndex]）の**どちらかが尽きれば**一周の終わりである。
         val forwardOpen = slowLinkLapAvailable(group) &&
             nextStartableIndex(group, s.candidateIndex + 1, unattended = true) != null
-
-        if (!slowLinkProvider()) return null
 
         // 一周の終わりでも、判定が真のときだけ動く。**判定が偽なら現候補は健全**で、
         // 一周が尽きたという理由だけでそこから離れる根拠は無い（離れると、
