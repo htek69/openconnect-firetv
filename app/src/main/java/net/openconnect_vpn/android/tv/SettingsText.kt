@@ -36,7 +36,7 @@ object SettingsText {
                 "（待機中は切り替わりません）。"
         } else {
             "受信の下限が 0 なので、何も再生していないときでも判定します" +
-                "（待機中でも切り替わりえます）。"
+                "（待機中でも切り替わることがあります）。"
         }
         val rearm = if (s.rearmAfterLapMin > 0) {
             "一周したあと ${s.rearmAfterLapMin} 分で再開します。" +
