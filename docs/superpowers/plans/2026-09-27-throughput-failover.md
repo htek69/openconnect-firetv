@@ -1,5 +1,11 @@
 # スループット低下による切り替え 実装計画
 
+> **⚠ 2026-10-09: この計画が実装した判定（受信速度と送信速度）は、実機で待機中に誤判定した
+> ため置き換えられた**（`docs/MANUAL-TEST.md` 節 10-5-1）。置き換え後の設計は
+> `docs/superpowers/specs/2026-10-09-path-quality-failover-design.md`、計画は
+> `docs/superpowers/plans/2026-10-09-path-quality-failover.md`。置き換え後の判定は**実機で
+> 未確認**である。以下は歴史として残す。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 繋がってはいるが遅い接続先を検知し、既存の切替経路に載せて次候補へ移す。
