@@ -170,6 +170,23 @@ class HealthProbeTimedTest {
     }
 
     @Test
+    fun `TcpHealthProbe の probeTimed では、全回失敗の5回周期でも各回に実測の所要時間が入る`() = runBlocking {
+        // 失敗のログは周期で1行に抑えているが（TcpHealthProbe.probeTimed の KDoc）、
+        // その抑制が結果を変えないことを確かめる。ログ呼び出し自体は JVM 単体テストでは
+        // 観測できない（unitTests.returnDefaultValues で Log.w は無動作）ため、
+        // ログの行数は TcpHealthProbe の読みで検証する。
+        val closedPort = ServerSocket(0).use { it.localPort }
+        val o = TcpHealthProbe().probeTimed(
+            target = ProbeTarget(loopback(), closedPort),
+            timeoutMs = 5_000,
+            attempts = 5,
+        )
+        assertFalse(o.reachable)
+        assertEquals(5, o.rttMs.size)
+        assertTrue("各回の所要時間は timeoutMs より十分小さいはず（実測 ${o.rttMs}）", o.rttMs.all { it < 5_000L })
+    }
+
+    @Test
     fun `TcpHealthProbe の probeTimed では、attempts が 0 以下でも 1 回だけ試す`() = runBlocking {
         ServerSocket(0).use { server ->
             val probe = TcpHealthProbe()
