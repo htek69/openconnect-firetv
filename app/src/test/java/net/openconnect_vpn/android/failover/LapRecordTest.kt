@@ -117,7 +117,7 @@ class LapRecordTest {
         val r = LapRecord()
         r.record("a", listOf(100L, 100L, 100L, 100L, 400L))  // 中央値 100、ばらつき 300
         r.record("b", listOf(250L, 250L, 250L, 250L, 250L))  // 中央値 250、ばらつき 0
-        // 差 150 == 許容 150。「>=」なら中央値で a。「>」だとばらつきで b になる。
+        // 差 150 == 許容 150。基準（最小中央値 100）からちょうど許容値なので同等に入らず、a が勝つ。
         assertEquals("a", r.bestUuid(order, jitterToleranceMs = 150, minSamples = 5))
     }
 
@@ -176,5 +176,72 @@ class LapRecordTest {
         r.record("c", listOf(100L, 100L, 100L, 100L, 100L))
         // 中央値もばらつきも同じ。order で先の c。英字順なら a になる。
         assertEquals("c", r.bestUuid(listOf("c", "a"), jitterToleranceMs = 150, minSamples = 5))
+    }
+
+    // ---- 修正1（推移性）: 2段の規則。仕様 §2-A の「順位付け」に従う ----
+
+    /**
+     * 循環の例: a(中央値300, ばらつき0) / b(200, 10) / c(100, 20)、許容150。
+     * 2段の規則では最小中央値は c の 100。その許容未満（差 < 150）は b（差100）と c（差0）。
+     * ばらつきは b=10 < c=20 なので **b**。走査順に関係なく b でなければならない。
+     */
+    @Test
+    fun `循環する例でも順序を並べ替えても結果は同じ（推移的）`() {
+        val perms = listOf(
+            listOf("a", "b", "c"),
+            listOf("a", "c", "b"),
+            listOf("b", "a", "c"),
+            listOf("b", "c", "a"),
+            listOf("c", "a", "b"),
+            listOf("c", "b", "a"),
+        )
+        for (p in perms) {
+            val r = LapRecord()
+            r.record("a", listOf(300L, 300L, 300L, 300L, 300L))  // 中央値 300、ばらつき 0
+            r.record("b", listOf(195L, 200L, 200L, 200L, 205L))  // 中央値 200、ばらつき 10
+            r.record("c", listOf(90L, 100L, 100L, 100L, 110L))   // 中央値 100、ばらつき 20
+            assertEquals("order=$p", "b", r.bestUuid(p, jitterToleranceMs = 150, minSamples = 5))
+        }
+    }
+
+    /**
+     * 基準の境界（厳密）: 最小中央値 100 から**ちょうど許容値 150** 離れた候補は同等にならない。
+     * ばらつき0 で勝つ可能性があっても、同等集合に入らないので a（ばらつき300、基準そのもの）が勝つ。
+     */
+    @Test
+    fun `基準からちょうど許容値離れた候補は同等とみなさない`() {
+        val r = LapRecord()
+        r.record("a", listOf(100L, 100L, 100L, 100L, 400L))  // 中央値 100、ばらつき 300
+        r.record("b", listOf(250L, 250L, 250L, 250L, 250L))  // 中央値 250（差 150 == 許容）、ばらつき 0
+        assertEquals("a", r.bestUuid(order, jitterToleranceMs = 150, minSamples = 5))
+    }
+
+    /**
+     * 基準の1つ内側（対照）: 最小中央値 100 から許容値の1つ手前（差 149）の候補は同等になり、
+     * ばらつきで勝つ。上の境界ケースとの対で、「同等」の判定が ちょうど の側だけ狂う誤実装を捕まえる。
+     */
+    @Test
+    fun `基準から許容値の1つ手前の候補は同等とみなし、ばらつきで勝つ`() {
+        val r = LapRecord()
+        r.record("a", listOf(100L, 100L, 100L, 100L, 400L))  // 中央値 100、ばらつき 300
+        r.record("b", listOf(249L, 249L, 249L, 249L, 249L))  // 中央値 249（差 149 < 150）、ばらつき 0
+        assertEquals("b", r.bestUuid(order, jitterToleranceMs = 150, minSamples = 5))
+    }
+
+    /**
+     * 基準（最小中央値）は比較対象の中だけで決める。グループ外の候補や、サンプル不足の候補の
+     * 低い中央値を基準に数えると、同等集合がずれる。
+     */
+    @Test
+    fun `基準の最小値は比較対象の候補だけから取る`() {
+        val r = LapRecord()
+        r.record("a", listOf(400L, 400L, 400L, 400L, 400L))  // 中央値 400、ばらつき 0
+        r.record("b", listOf(200L, 200L, 200L, 200L, 200L))  // 中央値 200、ばらつき 0
+        r.record("c", listOf(90L, 100L, 100L, 100L, 110L))   // 中央値 100、ばらつき 20
+        r.record("zzz", listOf(10L, 10L, 10L, 10L, 10L))     // グループ外。基準に数えると基準が 10 になる
+        r.record("d", listOf(10L, 10L, 10L, 10L))            // グループ内だが 4 < 5 で不足。基準に数えると同じく誤る
+        // 基準は a/b/c の最小 100（c）。同等は b（差100）と c（差0）。a は差300で除外。
+        // b のばらつき 0 < c の 20 なので b。基準を 10 にすると同等は c だけになり c が返る。
+        assertEquals("b", r.bestUuid(listOf("a", "b", "c", "d"), jitterToleranceMs = 150, minSamples = 5))
     }
 }

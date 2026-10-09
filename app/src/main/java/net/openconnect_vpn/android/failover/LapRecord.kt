@@ -24,8 +24,13 @@ class LapRecord {
      * 最良の候補。**[order] に居て、サンプルが [minSamples] 以上ある候補だけ**を
      * 比較する。該当が無ければ null（呼び出し側はグループの先頭へ戻す）。
      *
-     * 順位付け: 中央値の昇順 → 差が [jitterToleranceMs] 未満なら「有意に違わない」
-     * と見なしてばらつきの小さい方 → それも同じなら [order] で先の方。
+     * 順位付け（仕様書 §2-A、2段。1対1の比較を並べない）:
+     * 1. 比較対象の中で最小の中央値を基準とする。
+     * 2. 中央値が基準から [jitterToleranceMs] 未満しか離れていない候補を「同等」と見なし、
+     *    その中でばらつき（最大−最小）が最小のものを採る。
+     * 3. それも同じなら [order] で先の方を採る。
+     *
+     * 基準は一つだけなので、結果は [order] の並べ方に依存しない（推移的）。
      *
      * **新しい定数を導入しない。** 「有意に違うか」の尺度は
      * [SlowLinkSettings.degradedJitterMs] が既に与えている（呼び出し側が渡す）。
@@ -41,11 +46,14 @@ class LapRecord {
         }
         if (entries.isEmpty()) return null
 
-        var best = entries.first()
-        for (e in entries.drop(1)) {
-            if (betterThan(e, best, jitterToleranceMs)) best = e
-        }
-        return best.uuid
+        // 第1段: 基準は比較対象の最小の中央値。
+        val anchor = entries.minOf { it.median }
+        // 第2段: 基準から許容未満の候補が同等。その中でばらつき最小、同じなら順序で先。
+        // 基準そのもの（差0）は、許容値が0以下でも同等に含めて空集合を避ける。
+        return entries
+            .filter { it.median == anchor || it.median - anchor < jitterToleranceMs }
+            .minWith(compareBy<Entry>({ it.spread }, { it.index }))
+            .uuid
     }
 
     private class Entry(
@@ -55,21 +63,6 @@ class LapRecord {
         val median: Long,
         val spread: Long,
     )
-
-    /**
-     * 仕様書 §2-A の順位付け: 中央値の昇順 → 差が [jitterToleranceMs] 未満なら
-     * 「有意に違わない」と見なしてばらつきの小さい方 → それも同じなら [Entry.index]
-     * で先の方。
-     *
-     * **新しい定数を導入しないこと。** 「有意に違うか」の尺度は
-     * [SlowLinkSettings.degradedJitterMs] が既に与えている。
-     */
-    private fun betterThan(a: Entry, b: Entry, jitterToleranceMs: Int): Boolean {
-        val diff = kotlin.math.abs(a.median - b.median)
-        if (diff >= jitterToleranceMs) return a.median < b.median
-        if (a.spread != b.spread) return a.spread < b.spread
-        return a.index < b.index
-    }
 
     fun switches(): Int = switchCount
 
