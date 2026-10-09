@@ -29,12 +29,13 @@ class FailoverControllerLapTest {
     private var settings = SlowLinkSettings(enabled = true)
     private var lapRtt: List<Long> = emptyList()
     private var needsFirstLogin: Set<String> = emptySet()
+    private var members: List<String> = listOf("uuid-a", "uuid-b", "uuid-c")
 
     private val group
         get() = FailoverGroup(
             id = "g1",
             name = "自宅優先",
-            memberUuids = listOf("uuid-a", "uuid-b", "uuid-c"),
+            memberUuids = members,
             autoFailoverEnabled = true,
             config = FailoverConfig(),
         )
@@ -48,6 +49,7 @@ class FailoverControllerLapTest {
         settings = SlowLinkSettings(enabled = true)
         lapRtt = emptyList()
         needsFirstLogin = emptySet()
+        members = listOf("uuid-a", "uuid-b", "uuid-c")
         controller = FailoverController(
             groupsProvider = { listOf(group) },
             clock = clock,
@@ -262,6 +264,45 @@ class FailoverControllerLapTest {
         assertTrue(controller.state is FailoverState.Healthy)
         assertEquals(connects, vpn.connectCalls.size)
         assertEquals(disconnects, vpn.disconnectCalls)
+    }
+
+    // ------------------------------------------------------------ 戻り先の退避
+
+    /**
+     * 戻る切替が始まってから切断確認が届くまでに、選んだ行き先が使えなくなった場合。
+     * a=700 / b=100(最良) / c=700 で c に着いて戻る切替が始まる。ここで b が
+     * 使えなくなると、**b から前方へ探す実装は c（いま離れたばかりの遅い候補）へ
+     * 戻る**。製品は先頭から探し直し、無人で起動してよい最初のメンバー a へ向かう。
+     */
+    @Test
+    fun `戻り先が切断待ちのあいだに初回ログイン未了になったら、前方へ流れず先頭から探す`() {
+        walkToLastAndStop(samples(700), samples(100), samples(700))
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        needsFirstLogin = setOf("uuid-b")  // 行き先が無人で起動できなくなった
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
+
+        val landed = vpn.connectCalls.last()
+        assertEquals("uuid-a", landed)
+        assertTrue(
+            "離れた c（位置2）より前方へ着いてはならない",
+            members.indexOf(landed) < members.indexOf("uuid-c"),
+        )
+        assertEquals(0, (controller.state as FailoverState.Connecting).candidateIndex)
+    }
+
+    @Test
+    fun `戻り先が切断待ちのあいだにグループから外されたら、前方へ流れず先頭から探す`() {
+        walkToLastAndStop(samples(700), samples(100), samples(700))
+        assertTrue(controller.state is FailoverState.FailingOver)
+
+        members = listOf("uuid-a", "uuid-c")  // 行き先 b が一覧から消えた
+        controller.handle(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-c"))
+
+        val landed = vpn.connectCalls.last()
+        assertEquals("uuid-a", landed)
+        assertTrue(members.indexOf(landed) < members.indexOf("uuid-c"))
+        assertEquals(0, (controller.state as FailoverState.Connecting).candidateIndex)
     }
 
     // ------------------------------------------------------------ §2-B 再開
