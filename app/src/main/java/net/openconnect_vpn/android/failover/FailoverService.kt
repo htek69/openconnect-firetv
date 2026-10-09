@@ -113,7 +113,7 @@ class FailoverService : Service() {
     private var probeTarget: ProbeTarget = ProbeTarget()
 
     /**
-     * 仕様書 4: [SlowLinkDetector.onSample] へ渡す時刻と [controller] が使う時刻を
+     * 仕様書 4: [PathQualityDetector.onSample] へ渡す時刻と [controller] が使う時刻を
      * 同じ1つの時計から取るために、ここで持って両方へ渡す。
      *
      * [SlowLinkDetector] は前回サンプルからの経過が 0 以下のとき速度を計算せずに
@@ -135,19 +135,19 @@ class FailoverService : Service() {
     private var slowLinkSettings: SlowLinkSettings = SlowLinkSettings()
 
     /**
-     * 仕様書 4-2 の判定器。閾値（[SlowLinkThresholds]）はコンストラクタ引数なので、
-     * 閾値が変わったときは**作り直す**（[reloadSlowLinkSettings]）。そのため
-     * `var` であり、`slowLinkProvider` のラムダはインスタンスを捕獲せずこの
-     * フィールドを毎回読む。
+     * 仕様書 §2・4-2 の判定器。閾値は [SlowLinkSettings] ごとコンストラクタ引数なので、
+     * 設定が変わったときは**作り直す**（[reloadSlowLinkSettings]）。そのため
+     * `var` であり、`slowLinkProvider`・`lapRttProvider` のラムダはインスタンスを
+     * 捕獲せずこのフィールドを毎回読む。
      *
      * 差し替えとサンプル採取・[reset] はすべてメインスレッド上で起きる
      * （prefs リスナ・ティックループ・ブロードキャスト受信の3経路すべてが
      * メイン。理由は [scope] の KDoc）ので、同期化は要らない。
      */
-    private var slowLinkDetector: SlowLinkDetector = SlowLinkDetector(SlowLinkThresholds())
+    private var pathQualityDetector: PathQualityDetector = PathQualityDetector(SlowLinkSettings())
 
     /**
-     * 直前に [slowLinkDetector] を向けていた候補の識別子（[slowLinkCandidateKey]）。
+     * 直前に [pathQualityDetector] を向けていた候補の識別子（[slowLinkCandidateKey]）。
      * 変わったら測り直す。詳細は [syncSlowLinkCandidate]。
      */
     private var lastSlowLinkCandidateKey: String? = null
@@ -289,9 +289,7 @@ class FailoverService : Service() {
         vpnIfaceSource = ConnectivityVpnInterfaceName(this)
         throughputSource = ProcNetDevThroughputSource { lastVpnIface }
         slowLinkSettings = groupStore.loadSlowLinkSettings()
-        slowLinkDetector = SlowLinkDetector(
-            SlowLinkThresholds(slowRxKbps = slowLinkSettings.slowRxKbps),
-        )
+        pathQualityDetector = PathQualityDetector(slowLinkSettings)
 
         ProfileManager.init(this)
         // VpnProfile の実際のアクセサは getUUIDString()（Task 12 Step 6 で確認）。
@@ -307,7 +305,7 @@ class FailoverService : Service() {
         vpn = OpenConnectVpnController(this)
         controller = FailoverController(
             groupsProvider = { groups },
-            // 仕様書 4: 判定器（SlowLinkDetector.onSample）と同じ1つの時計を
+            // 仕様書 4: 判定器（PathQualityDetector.onSample）と同じ1つの時計を
             // 渡す（理由は [clock] の KDoc）。
             clock = clock,
             vpn = vpn,
@@ -330,8 +328,15 @@ class FailoverService : Service() {
             // 読み取りと設定の有効・無効はこちら側の責任で、
             // FailoverController は真偽値だけを見る。機能が無効なら判定器を
             // 一切参照せず必ず false になる（無効時に切替が起きない保証）。
-            // [slowLinkDetector] は差し替わりうるのでフィールドを毎回読む。
-            slowLinkProvider = { slowLinkSettings.enabled && slowLinkDetector.isSlow() },
+            // [pathQualityDetector] は差し替わりうるのでフィールドを毎回読む。
+            slowLinkProvider = { slowLinkSettings.enabled && pathQualityDetector.isDegraded() },
+            // 仕様書 §4-A: 一周後の順位付けの許容幅（degradedJitterMs）と再開の間隔。
+            // 設定は差し替わりうるのでフィールドを毎回読む（コントローラは作り直さない）。
+            slowLinkSettingsProvider = { slowLinkSettings },
+            // 仕様書 §2-A: 候補を**離れる瞬間**に一度だけ引かれ、窓の中の応答時間が
+            // 一周の記録へ写る。引かれるのは `controller.handle` の中であり、測り直し
+            // （[syncSlowLinkCandidate]）はその後である（[dispatch]）。
+            lapRttProvider = { pathQualityDetector.rttSamples() },
         )
 
         bridge = VpnStatusBridge(this) { event -> dispatchExternal(event) }
@@ -364,8 +369,12 @@ class FailoverService : Service() {
                     networkGate.hasUnderlyingNetwork()
 
                 if (controller.shouldProbeNow() || forcedByWake) {
-                    val reachable = probe.probe(probeTarget, currentProbeTimeoutMs())
-                    dispatch(FailoverEvent.ProbeResult(reachable))
+                    val outcome = probe.probeTimed(probeTarget, currentProbeTimeoutMs(), PROBE_ATTEMPTS)
+                    // 仕様書 §2: 到達可否の意味は従来と同じ（1回でも成功すれば到達可能）。
+                    // 死活判定の強さを変えないための約束（[ProbeOutcome] の KDoc）。
+                    // 応答時間のサンプルは同じ結果から取り、判定器へ渡す。
+                    pathQualityDetector.onProbe(clock.nowMs(), outcome)
+                    dispatch(FailoverEvent.ProbeResult(outcome.reachable))
                 }
                 // 仕様書 4-2: Tick を投げる前に採取する。速度の判定を読むのは
                 // この直後の Tick 処理（onSlowLinkSwitch）なので、同じ tick の
@@ -522,8 +531,8 @@ class FailoverService : Service() {
      *
      * 値が変わっていたときにやることは2つある。
      *
-     * 1. **判定器を作り直す。** [SlowLinkThresholds] は
-     *    [SlowLinkDetector] のコンストラクタ引数なので、一度作った判定器は
+     * 1. **判定器を作り直す。** [SlowLinkSettings] は
+     *    [PathQualityDetector] のコンストラクタ引数なので、一度作った判定器は
      *    閾値を変えられない。作り直さないと、利用者が閾値を変えてもアプリを
      *    再起動するまで何も起きない（Task 3 で `KEY_SLOW_LINK` を再読込
      *    トリガに含めた意味が無くなる）。新しい判定器は全フィールドが初期値
@@ -540,7 +549,7 @@ class FailoverService : Service() {
         val loaded = groupStore.loadSlowLinkSettings()
         if (loaded == slowLinkSettings) return
         slowLinkSettings = loaded
-        slowLinkDetector = SlowLinkDetector(SlowLinkThresholds(slowRxKbps = loaded.slowRxKbps))
+        pathQualityDetector = PathQualityDetector(loaded)
         controller.onSlowLinkSettingsChanged()
     }
 
@@ -566,7 +575,7 @@ class FailoverService : Service() {
      * 定義上あらゆる内部状態が初期値であり、「消し忘れた項目」が原理的に
      * 存在しないためである（R12 の作り直しが同時にこの保証も与えている）。
      *
-     * **読めなかったときは [SlowLinkDetector.onSample] を呼ばない。**
+     * **読めなかったときは [PathQualityDetector.onSample] を呼ばない。**
      * 「測れない」を「遅い」と解釈してはならない。`?.let` がその唯一の関門で、
      * このサービスの中で `onSample` を呼ぶ場所はここだけである。
      * [ProcNetDevThroughputSource] は、ファイルが読めない場合と `tun0` の行が
@@ -577,16 +586,21 @@ class FailoverService : Service() {
      * 送信速度が「使おうとしている」閾値を超えず、窓の平均が需要の条件を
      * 満たさない。さらに候補が変われば [syncSlowLinkCandidate] が測り直させる。
      *
-     * 裁定R20: **測れなかったときは窓を捨てる。** [SlowLinkDetector] 自身も
+     * 裁定R20: **測れなかったときは受信の窓を捨てる。** [PathQualityDetector] の
+     * 受信側（[SlowLinkDetector]）自身も
      * 「古すぎる窓からは判定を出さない」が、それは次のサンプルが来て初めて
      * 分かる。読み取りが恒久的に失敗する端末では次のサンプルが永久に来ないので、
      * 窓が埋まった直後に読めなくなると古い判定が生き残り、何分も前の証拠で
      * 切り替わりうる。ここで捨てておけば、その経路そのものが無くなる。
      * 代償は「一時的に読めなかっただけ」でも 60 秒を数え直すことだが、
-     * 切替が遅れる側＝安全側である。
+     * 切替が遅れる側＝安全側である。**応答時間の窓は捨てない**（上記の2つの失敗分岐は
+     * [PathQualityDetector.resetThroughput]）。応答時間はその tick に測れていたので
+     * 捨てる理由が無く、残しても受信の窓が空のあいだ判定は偽なので「遅い」と
+     * 誤って言う側には働かない。対して張り替え（`iface != lastVpnIface`）は
+     * 測る対象が変わるので両方捨てる（[PathQualityDetector.reset]）。
      *
      * 裁定R21: [ThroughputSource.read] は suspend で、内部で `Dispatchers.IO` へ
-     * 逃げる。この関数もそれに合わせて suspend であり、[SlowLinkDetector] を
+     * 逃げる。この関数もそれに合わせて suspend であり、[PathQualityDetector] を
      * 触るのは再開後のメインスレッド上だけである（[scope] の KDoc の事実上の
      * ロックを崩さない）。
      */
@@ -600,24 +614,32 @@ class FailoverService : Service() {
         val iface = withContext(Dispatchers.IO) { vpnIfaceSource.currentName() }
         if (iface != lastVpnIface) {
             lastVpnIface = iface
-            slowLinkDetector.reset()
+            // 測る対象（インターフェース）そのものが変わった。受信の窓も応答時間の窓も
+            // 前の対象のものなので、**両方**捨てる。
+            pathQualityDetector.reset()
         }
         if (iface == null) {
             // 「測れない」を「遅い」と解釈しない（裁定R20: 測れなければ窓を捨てる）。
-            slowLinkDetector.reset()
+            // 捨てるのは**受信の窓だけ**。この tick に測れなかったのはバイト数であって、
+            // 応答時間は別の経路（プローブ）で測れている。`reset()` にすると、
+            // 一時的な読み取り失敗1回で最大 60 秒ぶんの応答時間の証拠が消える
+            // （[PathQualityDetector.resetThroughput] の KDoc に理由）。
+            pathQualityDetector.resetThroughput()
             return
         }
 
         val bytes = throughputSource.read()
         if (bytes == null) {
-            slowLinkDetector.reset()
+            // 上と同じ。バイト数が読めなかっただけで、応答時間は捨てない。
+            pathQualityDetector.resetThroughput()
             return
         }
-        slowLinkDetector.onSample(clock.nowMs(), bytes)
+        pathQualityDetector.onSample(clock.nowMs(), bytes)
     }
 
     /**
-     * 仕様書 4-2: 測っている対象が変わったら [SlowLinkDetector] を測り直させる。
+     * 仕様書 4-2: 測っている対象が変わったら [PathQualityDetector] を測り直させる
+     * （受信と応答時間の**両方**。[PathQualityDetector.reset]）。
      * 前の候補の測定値を次の候補へ持ち越さないためである（持ち越すと、遅かった
      * 候補から切り替えた直後に、新しい候補が自分の速度を1つも記録しないうちに
      * 「遅い」と判定されうる）。
@@ -638,11 +660,11 @@ class FailoverService : Service() {
         val key = slowLinkCandidateKey()
         if (key == lastSlowLinkCandidateKey) return
         lastSlowLinkCandidateKey = key
-        slowLinkDetector.reset()
+        pathQualityDetector.reset()
     }
 
     /**
-     * いま [SlowLinkDetector] が測っている対象の識別子。トンネルを持たない状態は
+     * いま [PathQualityDetector] が測っている対象の識別子。トンネルを持たない状態は
      * null。詳細は [syncSlowLinkCandidate]。
      *
      * Fix 2: `Connecting` は null である。`Connecting` はまだトンネルが張れて
@@ -727,6 +749,12 @@ class FailoverService : Service() {
     }
 
     private fun dispatch(event: FailoverEvent) {
+        // 順序: **`controller.handle` が先、[syncSlowLinkCandidate] が後。** 一周の記録は
+        // 候補を離れる `handle` の中で `lapRttProvider`（＝窓の応答時間）を読み、状態が
+        // 変わった結果（候補の入れ替わり）への測り直しは**同じ dispatch の中で**続けて
+        // 走る。測り直しを先に置くと、状態を変えた dispatch の分が次の dispatch まで
+        // 遅れ、そのあいだに採取されたサンプルが前の候補のものとして窓に残る。
+        // 試験（`FailoverControllerLapRttWiringTest`・`FailoverServiceWiringTest`）が固定。
         controller.handle(event)
         // 裁定58: Fire TV に通知シェードは無く、フォアグラウンド通知だけでは
         // UI に接続状態が届かない。同一プロセス内の読み取り専用投影へ、
@@ -908,6 +936,18 @@ class FailoverService : Service() {
 
         /** Ruling 25: 切替中（FailingOver）の tick 間隔。 */
         private const val TICK_INTERVAL_SWITCHING_MS = 1_000L
+
+        /**
+         * 仕様書 §2「測り方」: 1周期あたりの疎通確認の回数。
+         *
+         * **5 の根拠。** プローブ30秒間隔・窓60秒なら2周期ぶんが窓に入るので、
+         * 候補あたり10サンプルになり、旧仕様 §2-2 が ping 10発で測ったのと同じ密度に
+         * なる（仕様書 §2-A）。**窓を長くして一周を15分に伸ばすより桁違いに安い。**
+         *
+         * **増やすときの代償は接続の本数である**（30秒あたり5本）。減らすと
+         * ばらつきの推定が粗くなる。
+         */
+        private const val PROBE_ATTEMPTS = 5
 
         /**
          * 計画2 の TV UI から呼ぶ入口。

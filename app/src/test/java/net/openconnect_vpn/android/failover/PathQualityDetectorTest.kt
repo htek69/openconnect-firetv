@@ -145,6 +145,79 @@ class PathQualityDetectorTest {
     }
 
     @Test
+    fun `reset は応答時間のサンプルそのものを空にする（一周の記録が読む側）`() {
+        // 上の2つは判定の真偽で間接的に見ている。一周の記録が実際に読むのは
+        // rttSamples なので、そこを直接固定する。reset が応答時間を残す実装
+        // （受信だけ捨てる実装）なら空にならず落ちる。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L, 600L))
+        assertTrue(d.rttSamples().isNotEmpty())
+        d.reset()
+        assertTrue(d.rttSamples().isEmpty())
+    }
+
+    // ---- resetThroughput: バイト数が読めなかった tick（裁定R20 は受信の窓の話） ----
+
+    /** [fill] の直後（t=60_000）から、受信だけを 13 サンプル（span 60秒）与え直す。 */
+    private fun refillRxOnly(d: PathQualityDetector, rxKbps: Long) {
+        var rx = 0L
+        for (i in 0..12) {
+            d.onSample(60_000L + i * 5_000L, IfaceBytes(rx, 0L))
+            rx += rxKbps * 5_000L / 8
+        }
+    }
+
+    @Test
+    fun `resetThroughput は応答時間のサンプルを残す`() {
+        // 守るもの: 一時的に /proc/net/dev が読めなかっただけで、最大 60 秒ぶんの
+        // 応答時間の証拠を失わない。reset() と同じ実装（両方捨てる）なら空になって落ちる。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L))
+        val before = d.rttSamples()
+        assertEquals(6, before.size)
+        d.resetThroughput()
+        assertEquals(before, d.rttSamples())
+    }
+
+    @Test
+    fun `resetThroughput は受信の窓を捨てる（応答時間が悪くても発火しない）`() {
+        // 守るもの: 「測れない」を「遅い」と解釈しない。何もしない実装・応答時間
+        // だけ捨てる実装なら、窓が埋まったままなので直後も発火して落ちる。
+        // 同時に、応答時間を残していても受信が測れないあいだは偽であること
+        // （resetThroughput の KDoc が根拠にしている「連言」）を固定する。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L, 600L))
+        assertTrue(d.isDegraded())
+        d.resetThroughput()
+        assertTrue("応答時間は残っている前提", d.rttSamples().isNotEmpty())
+        assertFalse(d.isDegraded())
+    }
+
+    @Test
+    fun `resetThroughput のあと受信の窓が埋まり直せば、残した応答時間で発火する`() {
+        // 守るもの: 残した応答時間が実際に判定へ効くこと。直後の
+        // 「reset は応答時間の窓を捨てる」と対になる（あちらは同じ手順で偽）。
+        // 応答時間は t=60_000 の周期のぶんが、窓が埋まり直した t=120_000 でも
+        // 刈られずに残る（刈りは「窓より古い」＝厳密に小さい時刻だけ）。
+        // resetThroughput を reset に戻すと、ここで偽になって落ちる。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L, 600L))
+        d.resetThroughput()
+        refillRxOnly(d, rxKbps = 424)
+        assertTrue(d.isDegraded())
+    }
+
+    @Test
+    fun `resetThroughput のあと受信の窓が埋まり直しても、応答時間が良ければ発火しない`() {
+        // 上の対照。「窓が埋まり直したら無条件に真」になる実装を弾く。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(70L, 74L, 73L))
+        d.resetThroughput()
+        refillRxOnly(d, rxKbps = 424)
+        assertFalse(d.isDegraded())
+    }
+
+    @Test
     fun `rxFloorKbps が 0 なら下限なしとして扱う`() {
         val d = PathQualityDetector(settings.copy(rxFloorKbps = 0))
         fill(d, rxKbps = 0, rtt = listOf(300L, 90L, 600L))
