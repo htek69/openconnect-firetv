@@ -1,5 +1,6 @@
 package net.openconnect_vpn.android.failover
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -1109,6 +1110,78 @@ class FailoverControllerInvariantTest {
                 "列数=${corpus.sequences} イベント数=${corpus.events} 所要=${corpus.elapsedMs}ms\n" +
                 "到達記録=${corpus.coverage.toSortedMap()}",
             missing.isEmpty(),
+        )
+    }
+
+    /**
+     * **固定した列で I5 `戻る切替が前方へ着地` を踏む。**
+     *
+     * この検出は、乱数で作る列では一度も発火が確認できなかった（探した変異は別の
+     * 検出に先に捕まった）。必要な並びは、切替を決めた時点で後ろの候補が全部
+     * 使えず、切断を待つあいだにそのうち一つが使えるようになる、というもの。
+     * 乱数の生成器には初回ログインの切り替え（[SetFirstLogin]）があるので表現はできるが、
+     * この噛み合わせは偶然には起きない。ここで手順を固定し、**後の変更でこの並びが
+     * 静かに作れなくなることを防ぐ**。
+     *
+     * メンバー [a, b, c]。a から b へ前進（前進 1 回。予算は 2）。b に着いたところで
+     * c が初回ログイン未了になっており、後ろに起動できる候補が無いので一周が終わり、
+     * 最良（記録が無いので選べる最初のメンバー a）へ戻る切替が始まる。切断を待つ
+     * あいだに c の初回ログインが終わる。正しい製品は a に着く（後ろへは行かない）。
+     * 戻り先を無視して前方へ進む製品は c に着く——前進の回数は 2 で予算の範囲内
+     * なので `予算超過` は出ず、`戻る切替が前方へ着地` だけがこれを捕まえる。
+     */
+    @Test
+    fun `固定列 戻る切替の決定後に後ろの候補が使えるようになっても後ろへは着地しない`() {
+        val group = FailoverGroup(
+            id = "g1",
+            name = "g1",
+            memberUuids = listOf("uuid-a", "uuid-b", "uuid-c"),
+            autoFailoverEnabled = true,
+            config = FailoverConfig(),
+        )
+        val r = Runner(seed = 0L, sequence = 0, config = FailoverConfig(), initialGroups = listOf(group))
+        fun go(vararg steps: Step) = steps.forEach { r.execute(it) }
+        fun toHealthy(uuid: String) = go(
+            Dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid)),
+            Dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid)),
+            AdvanceClock(16_000L),
+            Dispatch(FailoverEvent.ProbeResult(reachable = true)),
+        )
+
+        go(Dispatch(FailoverEvent.UserConnectGroup("g1")))
+        toHealthy("uuid-a")
+        go(SetSlow(true), Dispatch(FailoverEvent.Tick))
+        assertTrue((r.controller.state as FailoverState.FailingOver).bySlowLink)
+
+        go(Dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, "uuid-a")))
+        assertEquals("uuid-b", r.vpn.connectCalls.last())
+        toHealthy("uuid-b")
+        assertEquals(1, (r.controller.state as FailoverState.Healthy).candidateIndex)
+
+        // 切替を決める時点で、後ろの c は使えない。
+        go(SetFirstLogin("uuid-c", true), Dispatch(FailoverEvent.Tick))
+        assertTrue(
+            "一周の終わりの戻る切替が始まるはず（実際: ${r.controller.state}）",
+            (r.controller.state as? FailoverState.FailingOver)?.bySlowLink == true,
+        )
+
+        // 切断を待つあいだに c が使えるようになる。
+        go(
+            SetFirstLogin("uuid-c", false),
+            Dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, "uuid-b")),
+        )
+
+        assertTrue(
+            "この列は不変条件を破らない: ${r.violations.map { it.key }}",
+            r.violations.isEmpty(),
+        )
+        assertEquals(
+            "戻る切替は後ろの c ではなく a に着くはず",
+            "uuid-a", r.vpn.connectCalls.last(),
+        )
+        assertEquals(
+            "この列が戻る切替の着地まで届いていること（並びの固定）",
+            1, r.coverage["最良へ戻る切替"],
         )
     }
 
