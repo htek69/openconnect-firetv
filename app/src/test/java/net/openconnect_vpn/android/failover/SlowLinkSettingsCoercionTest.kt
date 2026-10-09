@@ -23,6 +23,8 @@ class SlowLinkSettingsCoercionTest {
 
     @Test
     fun `範囲は仕様書 4-A の表のとおり`() {
+        assertEquals(250, SlowLinkBounds.SLOW_RX_KBPS_MIN)
+        assertEquals(5000, SlowLinkBounds.SLOW_RX_KBPS_MAX)
         assertEquals(50, SlowLinkBounds.DEGRADED_RTT_MS_MIN)
         assertEquals(2000, SlowLinkBounds.DEGRADED_RTT_MS_MAX)
         assertEquals(50, SlowLinkBounds.DEGRADED_JITTER_MS_MIN)
@@ -44,23 +46,26 @@ class SlowLinkSettingsCoercionTest {
     @Test
     fun `範囲外の項目は端へ収まり、端そのものは動かない`() {
         val low = SlowLinkSettings(
-            rxFloorKbps = -1, degradedRttMs = -5, degradedJitterMs = 0, rearmAfterLapMin = -1,
+            slowRxKbps = 0, rxFloorKbps = -1, degradedRttMs = -5, degradedJitterMs = 0, rearmAfterLapMin = -1,
         ).coerced()
+        assertEquals(250, low.slowRxKbps)
         assertEquals(0, low.rxFloorKbps)
         assertEquals(50, low.degradedRttMs)
         assertEquals(50, low.degradedJitterMs)
         assertEquals(0, low.rearmAfterLapMin)
 
         val high = SlowLinkSettings(
-            rxFloorKbps = 501, degradedRttMs = 2001, degradedJitterMs = 1001, rearmAfterLapMin = 241,
+            slowRxKbps = 5001, rxFloorKbps = 501, degradedRttMs = 2001, degradedJitterMs = 1001,
+            rearmAfterLapMin = 241,
         ).coerced()
+        assertEquals(5000, high.slowRxKbps)
         assertEquals(500, high.rxFloorKbps)
         assertEquals(2000, high.degradedRttMs)
         assertEquals(1000, high.degradedJitterMs)
         assertEquals(240, high.rearmAfterLapMin)
 
         val edge = SlowLinkSettings(
-            rxFloorKbps = 500, degradedRttMs = 50, degradedJitterMs = 1000, rearmAfterLapMin = 240,
+            slowRxKbps = 250, rxFloorKbps = 500, degradedRttMs = 50, degradedJitterMs = 1000, rearmAfterLapMin = 240,
         )
         assertEquals("端そのものは範囲内", edge, edge.coerced())
     }
@@ -68,17 +73,19 @@ class SlowLinkSettingsCoercionTest {
     @Test
     fun `Int の両端でも範囲に収まる`() {
         val lo = SlowLinkSettings(
-            rxFloorKbps = Int.MIN_VALUE, degradedRttMs = Int.MIN_VALUE,
+            slowRxKbps = Int.MIN_VALUE, rxFloorKbps = Int.MIN_VALUE, degradedRttMs = Int.MIN_VALUE,
             degradedJitterMs = Int.MIN_VALUE, rearmAfterLapMin = Int.MIN_VALUE,
         ).coerced()
+        assertEquals(SlowLinkBounds.SLOW_RX_KBPS_MIN, lo.slowRxKbps)
         assertEquals(SlowLinkBounds.RX_FLOOR_KBPS_MIN, lo.rxFloorKbps)
         assertEquals(SlowLinkBounds.DEGRADED_RTT_MS_MIN, lo.degradedRttMs)
         assertEquals(SlowLinkBounds.DEGRADED_JITTER_MS_MIN, lo.degradedJitterMs)
         assertEquals(SlowLinkBounds.REARM_AFTER_LAP_MIN_MIN, lo.rearmAfterLapMin)
         val hi = SlowLinkSettings(
-            rxFloorKbps = Int.MAX_VALUE, degradedRttMs = Int.MAX_VALUE,
+            slowRxKbps = Int.MAX_VALUE, rxFloorKbps = Int.MAX_VALUE, degradedRttMs = Int.MAX_VALUE,
             degradedJitterMs = Int.MAX_VALUE, rearmAfterLapMin = Int.MAX_VALUE,
         ).coerced()
+        assertEquals(SlowLinkBounds.SLOW_RX_KBPS_MAX, hi.slowRxKbps)
         assertEquals(SlowLinkBounds.RX_FLOOR_KBPS_MAX, hi.rxFloorKbps)
         assertEquals(SlowLinkBounds.DEGRADED_RTT_MS_MAX, hi.degradedRttMs)
         assertEquals(SlowLinkBounds.DEGRADED_JITTER_MS_MAX, hi.degradedJitterMs)
@@ -86,13 +93,13 @@ class SlowLinkSettingsCoercionTest {
     }
 
     @Test
-    fun `enabled と slowRxKbps には触れない`() {
-        // slowRxKbps の範囲は従来どおり設定画面の表示側が持つ。coerced が勝手に
-        // 動かすと、保存→読込の往復で値が変わる（GroupStorePropertyTest が見張る）
-        val s = SlowLinkSettings(enabled = true, slowRxKbps = 7, degradedJitterMs = 0)
+    fun `enabled には触れず、範囲内の slowRxKbps も動かさない`() {
+        // 真偽値に範囲は無い。範囲内の受信速度の上限は、端の内側でも変えない
+        val s = SlowLinkSettings(enabled = true, slowRxKbps = 251, degradedJitterMs = 0)
         val c = s.coerced()
         assertEquals(true, c.enabled)
-        assertEquals(7, c.slowRxKbps)
+        assertEquals(251, c.slowRxKbps)
+        assertEquals(false, SlowLinkSettings(enabled = false).coerced().enabled)
     }
 
     // ---- 本番の読込経路 ----
@@ -106,6 +113,18 @@ class SlowLinkSettingsCoercionTest {
         val s = load("""{"enabled":true,"degradedJitterMs":0}""")
         assertEquals(SlowLinkBounds.DEGRADED_JITTER_MS_MIN, s.degradedJitterMs)
         assertEquals("他の項目は巻き込まない", true, s.enabled)
+    }
+
+    /**
+     * 裁定30: 受信速度の帯の上側の門。巨大な値は「受信が上限未満」を常に真にして
+     * 3条件の積の1つを消し、0 以下は `isDegraded()` を即 false にして機能を殺す。
+     * `coerced()` から `slowRxKbps` を外した実装はここで落ちる。
+     */
+    @Test
+    fun `読込では、受信速度の上限が巨大でも 0 以下でも範囲の端へ収まる`() {
+        assertEquals(SlowLinkBounds.SLOW_RX_KBPS_MAX, load("""{"slowRxKbps":2147483647}""").slowRxKbps)
+        assertEquals(SlowLinkBounds.SLOW_RX_KBPS_MIN, load("""{"slowRxKbps":0}""").slowRxKbps)
+        assertEquals(SlowLinkBounds.SLOW_RX_KBPS_MIN, load("""{"slowRxKbps":-1}""").slowRxKbps)
     }
 
     @Test

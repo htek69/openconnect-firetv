@@ -71,7 +71,7 @@ data class SlowLinkSettings(
 )
 
 /**
- * [SlowLinkSettings] の4項目の**範囲（上下限）**。仕様書 §4-A の表。
+ * [SlowLinkSettings] の数値5項目の**範囲（上下限）**。仕様書 §4-A の表。
  *
  * **範囲の置き場はここ1か所だけ。** 使い手は2つある。
  * 1. 設定画面のステッパー（`tv.SettingsStepper.clamp*`）——押しすぎて範囲を出ないため
@@ -87,6 +87,23 @@ data class SlowLinkSettings(
  * 各定数の KDoc は、仕様書 §4-A の「動かしたときに何が起きるか」の要約である。
  */
 object SlowLinkBounds {
+    /**
+     * 「遅い」と見なす受信速度の上限（kbps）の下限。旧仕様から変更なし。
+     *
+     * **範囲外を判定に届かせない理由（裁定30）:** 受信速度の帯は上限（この項目）と
+     * 下限（[RX_FLOOR_KBPS_MIN]〜）の2つの門でできている。上限が 0 以下だと
+     * 「受信が上限未満」が決して成り立たず、`isDegraded()` が即 false を返して
+     * 機能が黙って死ぬ。
+     */
+    const val SLOW_RX_KBPS_MIN = 250
+
+    /**
+     * 同上の上限。**上げすぎると**普通のビットレートの再生まで「遅い」と誤判定し、
+     * さらに巨大な値では「受信が上限未満」が常に成り立って**帯の上側の門が
+     * 何も絞らなくなる**（判定は3条件の積なので、1つが黙って消える）。
+     */
+    const val SLOW_RX_KBPS_MAX = 5000
+
     /**
      * 応答時間の中央値の上限（ms）の下限。**下げるほど誤判定が増える。**
      * 宛先が地理的に遠いだけで「経路が悪い」と判定されうる。実測の目安は
@@ -140,17 +157,19 @@ object SlowLinkBounds {
 }
 
 /**
- * 4項目を [SlowLinkBounds] の範囲へ収めた複製を返す。
+ * 数値5項目を [SlowLinkBounds] の範囲へ収めた複製を返す。
  *
  * **読込経路で使う。** `GroupStore.loadSlowLinkSettings` は、`ignoreUnknownKeys` で
  * 未知の項目を読み飛ばせても、**範囲外の値**までは弾けない。たとえば
  * `degradedJitterMs: 0` がそのまま判定に届くと「ばらつきがしきい値を超える」が
  * ほとんど常に真になり、切替が不当に起きやすくなる。範囲内の値は変えない。
  *
- * `enabled` と `slowRxKbps` はここで触らない。`slowRxKbps` の範囲は従来どおり
- * 設定画面の表示側（`SettingsStepper.clampSlowRxKbps`）が持つ。
+ * 裁定30: `slowRxKbps` も対象にする。受信速度の帯の上側の門であり、範囲外の値が
+ * 届くと判定の3条件の1つが黙って消える（巨大な値）か、機能が黙って死ぬ（0 以下）。
+ * `enabled` は真偽値なので範囲が無く、触らない。
  */
 fun SlowLinkSettings.coerced(): SlowLinkSettings = copy(
+    slowRxKbps = slowRxKbps.coerceIn(SlowLinkBounds.SLOW_RX_KBPS_MIN, SlowLinkBounds.SLOW_RX_KBPS_MAX),
     rxFloorKbps = rxFloorKbps.coerceIn(SlowLinkBounds.RX_FLOOR_KBPS_MIN, SlowLinkBounds.RX_FLOOR_KBPS_MAX),
     degradedRttMs = degradedRttMs.coerceIn(SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX),
     degradedJitterMs = degradedJitterMs.coerceIn(

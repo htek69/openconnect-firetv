@@ -91,15 +91,9 @@ fun SettingsScreen(
     // 別々の状態に取り出し、保存時に2項目だけで組み直していたため、保存のたびに
     // 残りの項目（改訂で足した4項目）が既定値へ黙って戻っていた。1つの値の
     // `copy` で更新し、保存はその値をそのまま渡せば、項目が増えても書き落とせない。
-    // 読込側（GroupStore.loadSlowLinkSettings）が4項目を範囲へ収めて返すので、
-    // ここで改めて収めない。slowRxKbps だけは従来どおり表示側で収める。
-    var slowLink by remember {
-        mutableStateOf(
-            storedSlowLink.copy(
-                slowRxKbps = SettingsStepper.clampSlowRxKbps(storedSlowLink.slowRxKbps),
-            ),
-        )
-    }
+    // 読込側（GroupStore.loadSlowLinkSettings）が数値5項目すべてを範囲へ収めて返すので
+    // （裁定30）、ここで改めて収めない。
+    var slowLink by remember { mutableStateOf(storedSlowLink) }
 
     var message by remember { mutableStateOf<String?>(null) }
 
@@ -188,9 +182,8 @@ fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
         )
 
-        // 仕様書 6-1: 何を見て切り替えるか（VPN トンネルの受信速度）と、
-        // 低ビットレート再生の誤判定リスクの両方に触れる。ソフトを弱めた
-        // 「注意書き」ではなく、有効化するかどうかを利用者が判断するための
+        // 仕様書 6-1: 何を見て切り替えるか、と誤判定のリスクの両方に触れる。ソフトを
+        // 弱めた「注意書き」ではなく、有効化するかどうかを利用者が判断するための
         // 警告として書く。
         // 最終再レビューの指摘7（FIX 2）: 裁定R20（窓全体の平均で判定）以降、
         // 2026-10-09: **実験機能として据え置くことを利用者が決めた。**
@@ -205,13 +198,25 @@ fun SettingsScreen(
         // である。原因は閾値の値ではなく、送信速度を「人が使おうとしている」の
         // 代用にしている設計そのものなので（項目17）、文言を直す前に仕様へ戻る
         // 必要がある。それが済むまでこの警告は残す。
+        //
+        // 裁定31（文言の改訂）: 判定を応答時間とそのばらつきに改めたので（仕様書
+        // §2、受信速度は帯の条件として残る）、「受信速度を見て、下の値を下回り続けたら」
+        // という旧文の説明は事実でなくなった。「弱めないこと」が守るのは、実験機能で
+        // あること・実機で誤判定が実測されたこと・OFF のままを勧めることであって、
+        // もう無い判定基準の説明ではない。そこで書き直した。**4点を必ず載せる:**
+        // (1) いま何を判定するか、(2) 待機中の誤判定が実機で実際に起きたこと、
+        // (3) それを直すために基準を変えたが**変更後は実機で確認していないこと**、
+        // (4) 通常は OFF を勧めること。(3) は省かない——`docs/DECISIONS.md` 項目15 の
+        // 規律（「直した」を「動くと確かめた」と読ませない）。実機で確かめたら
+        // (3) の文を、確かめた事実を書いた文に差し替えること。
         Text(
-            "【実験機能】VPN 経由の受信速度を見て、下の値を下回り続けたら接続先を" +
-                "切り替えます。実機では、何も再生していない待機中にも" +
-                "端末の裏側の通信で「遅い」と誤判定し、接続先を次々に" +
-                "切り替えてしまうことが確認されています。" +
-                "音声のみの再生や低画質の動画でも同様に誤判定されやすいため、" +
-                "通常は OFF のままお使いください。",
+            "【実験機能】往復の遅さと、そのばらつきの両方が基準を超える状態が続いたときに、" +
+                "接続先を切り替えます（受信速度が下限と上限のあいだにあるときだけ判定します）。" +
+                "実機では、以前の判定（受信速度だけを見る方式）が、何も再生していない待機中にも" +
+                "端末の裏側の通信で「遅い」と誤判定し、接続先を次々に切り替えてしまうことが" +
+                "確認されています。この誤判定を直すために判定の基準を変えましたが、" +
+                "変えたあとの動作はまだ実機で確認できていません。" +
+                "確認が済むまでは、通常は OFF のままお使いください。",
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -487,12 +492,14 @@ object SettingsStepper {
      * （仕様書 6-1）程度の通信は「遅い」と判定されにくく、実際に受信がほぼ
      * 止まっている場合だけを拾いやすい。既定値 1000kbps はその中間。
      */
-    const val SLOW_RX_KBPS_MIN = 250
-    const val SLOW_RX_KBPS_MAX = 5000
+    // 範囲の定義は [SlowLinkBounds] ただ1か所（裁定30。読込経路も同じ範囲を使う）。
+    // ここの2つは従来の名前で読めるようにした別名で、数字は持たない。
+    const val SLOW_RX_KBPS_MIN = SlowLinkBounds.SLOW_RX_KBPS_MIN
+    const val SLOW_RX_KBPS_MAX = SlowLinkBounds.SLOW_RX_KBPS_MAX
     const val SLOW_RX_KBPS_STEP = 250
 
     fun clampSlowRxKbps(value: Int): Int =
-        value.coerceIn(SLOW_RX_KBPS_MIN, SLOW_RX_KBPS_MAX)
+        value.coerceIn(SlowLinkBounds.SLOW_RX_KBPS_MIN, SlowLinkBounds.SLOW_RX_KBPS_MAX)
 
     /** [steps] は +1（右／＋）または -1（左／－）を渡す想定。刻み幅は [SLOW_RX_KBPS_STEP]。 */
     fun stepSlowRxKbps(current: Int, steps: Int): Int =

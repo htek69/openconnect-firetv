@@ -65,6 +65,12 @@ class SettingsStepperPathQualityTest {
     )
 
     private val items = listOf(
+        // 裁定30: 従来からある受信速度の上限も、範囲は SlowLinkBounds の1か所に寄せた
+        Item(
+            "受信速度の上限", SlowLinkBounds.SLOW_RX_KBPS_MIN, SlowLinkBounds.SLOW_RX_KBPS_MAX,
+            SettingsStepper.SLOW_RX_KBPS_STEP,
+            SettingsStepper::clampSlowRxKbps, SettingsStepper::stepSlowRxKbps,
+        ),
         Item(
             "応答時間", SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX,
             SettingsStepper.DEGRADED_RTT_MS_STEP,

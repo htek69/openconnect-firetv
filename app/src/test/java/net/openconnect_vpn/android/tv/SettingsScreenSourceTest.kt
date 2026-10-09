@@ -88,6 +88,7 @@ class SettingsScreenSourceTest {
     fun `ステッパーの clamp は範囲の数字を書かず、共有の定数を名指す`() {
         val code = screenCode()
         val targets = mapOf(
+            "clampSlowRxKbps" to ("SLOW_RX_KBPS_MIN" to "SLOW_RX_KBPS_MAX"),
             "clampDegradedRttMs" to ("DEGRADED_RTT_MS_MIN" to "DEGRADED_RTT_MS_MAX"),
             "clampDegradedJitterMs" to ("DEGRADED_JITTER_MS_MIN" to "DEGRADED_JITTER_MS_MAX"),
             "clampRxFloorKbps" to ("RX_FLOOR_KBPS_MIN" to "RX_FLOOR_KBPS_MAX"),
