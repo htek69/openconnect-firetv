@@ -12,6 +12,36 @@ interface Clock {
 interface HealthProbe {
     /** [target] へ疎通できたら true。例外は投げず false を返す。 */
     suspend fun probe(target: ProbeTarget, timeoutMs: Int): Boolean
+
+    /**
+     * 仕様書 §2「測り方」: [attempts] 回続けて疎通確認を行い、**各回の所要時間**を
+     * 返す。到達可否の意味は [probe] と同じで、**1回でも成功すれば到達可能**。
+     * [attempts] が 1 未満なら 1 回として扱う。
+     *
+     * **既定実装は [probe] を [attempts] 回呼んで時間を測るだけ**である。
+     * これにより**既存の実装とテストの Fake は無改変で通る**（裁定72/93 と同じ
+     * 既定値の作法）。実測の精度が要る本番実装（[TcpHealthProbe]）はこれを
+     * 上書きする。
+     *
+     * **失敗した回も所要時間を数える。ただし数えるのは実測した経過時間である。**
+     * 失敗した回を `timeoutMs` で埋めてはならない。接続拒否や名前解決の失敗は
+     * 数ミリ秒で返り、それを timeoutMs（例: 5000ms）の遅延として記録するのは
+     * 事実に反する。拒否は「遅い」ではなく「届かない」であり、それは [reachable] と
+     * 既存の `failureThreshold` が扱う。間欠的なタイムアウトだけが timeoutMs 前後の
+     * 大きな値として残り、劣化の証拠になる（[ProbeOutcome] の KDoc）。
+     */
+    suspend fun probeTimed(target: ProbeTarget, timeoutMs: Int, attempts: Int): ProbeOutcome {
+        val n = attempts.coerceAtLeast(1)
+        var any = false
+        val times = ArrayList<Long>(n)
+        for (i in 0 until n) {
+            val startNs = System.nanoTime()
+            val ok = probe(target, timeoutMs)
+            times.add((System.nanoTime() - startNs) / 1_000_000L)
+            if (ok) any = true
+        }
+        return ProbeOutcome(reachable = any, rttMs = times)
+    }
 }
 
 /**

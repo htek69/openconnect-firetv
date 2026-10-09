@@ -34,6 +34,34 @@ class TcpHealthProbe : HealthProbe {
             }
         }
 
+    /**
+     * 各回を [probe] に任せ、回ごとに実測の経過時間を記録する。
+     *
+     * 接続処理と失敗時の [Log.w] は [probe] の1か所にだけある。ここで接続を
+     * 書き直すと失敗の理由が記録されなくなるので、計時版を使っても従来どおり残す。
+     *
+     * 失敗した回も**実測の経過時間**を入れる。接続拒否や名前解決の失敗は数ミリ秒で
+     * 返るので、それを `timeoutMs` の遅延として記録するのは事実に反する。
+     * 拒否は「遅い」ではなく「届かない」であり、[ProbeOutcome.reachable] と
+     * 既存の `failureThreshold` が扱う。タイムアウトだけが `timeoutMs` 前後で残る。
+     */
+    override suspend fun probeTimed(
+        target: ProbeTarget,
+        timeoutMs: Int,
+        attempts: Int,
+    ): ProbeOutcome {
+        val n = attempts.coerceAtLeast(1)
+        var any = false
+        val times = ArrayList<Long>(n)
+        for (i in 0 until n) {
+            val startNs = System.nanoTime()
+            val ok = probe(target, timeoutMs)
+            times.add((System.nanoTime() - startNs) / 1_000_000L)
+            if (ok) any = true
+        }
+        return ProbeOutcome(reachable = any, rttMs = times)
+    }
+
     private companion object {
         const val TAG = "TcpHealthProbe"
     }
