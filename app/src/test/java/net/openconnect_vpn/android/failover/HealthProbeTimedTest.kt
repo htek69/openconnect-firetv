@@ -109,12 +109,13 @@ class HealthProbeTimedTest {
 
     @Test
     fun `所要時間は回ごとに1つずつ、呼び出し順に並ぶ`() = runBlocking {
-        // 各回の待ち時間を 0 / 60 / 120 ms にする。所要時間は少なくともその値になるはず。
-        // 順序が崩れていれば（逆順や末尾だけ残す等）下限の比較で落ちる。
-        val p = DelayedProbe(listOf(0L, 60L, 120L))
+        // 各回の待ち時間を 20 / 60 / 120 ms にする。所要時間は少なくともその値になるはず。
+        // 順序が崩れていれば（逆順や末尾だけ残す等）下限の比較で落ちる。1回目も 0 でなく
+        // 20 ms にしてあるのは、0 だと下限（>= 0）が常に真で何も判別しないため。
+        val p = DelayedProbe(listOf(20L, 60L, 120L))
         val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 3)
         assertEquals(3, o.rttMs.size)
-        assertTrue("1回目は 0ms 以上", o.rttMs[0] >= 0L)
+        assertTrue("1回目は 20ms 以上（実測 ${o.rttMs[0]}）", o.rttMs[0] >= 20L)
         assertTrue("2回目は 60ms 以上（実測 ${o.rttMs[1]}）", o.rttMs[1] >= 60L)
         assertTrue("3回目は 120ms 以上（実測 ${o.rttMs[2]}）", o.rttMs[2] >= 120L)
     }

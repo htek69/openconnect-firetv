@@ -369,15 +369,29 @@ class FailoverService : Service() {
                     networkGate.hasUnderlyingNetwork()
 
                 if (controller.shouldProbeNow() || forcedByWake) {
-                    val outcome = probe.probeTimed(probeTarget, currentProbeTimeoutMs(), PROBE_ATTEMPTS)
-                    // 仕様書 §2: 到達可否は**1回目の試行の結果そのもの**（「どれか1回でも成功
-                    // すれば可」ではない）。従来のプローブは1回しか試さなかったので、
-                    // 「どれか」にすると死活判定が従来よりはるかに寛容になり、既存の死活に
-                    // よる切替が働かなくなる。1回目が失敗した周期は残りを行わず、最悪の
-                    // 所要時間は timeout 1回ぶんに戻る（[HealthProbe.probeTimed]）。
-                    // 応答時間のサンプルは同じ結果から取り、判定器へ渡す。
-                    pathQualityDetector.onProbe(clock.nowMs(), outcome)
-                    dispatch(FailoverEvent.ProbeResult(outcome.reachable))
+                    // 測っているあいだに候補が入れ替わっていたら結果を捨てる（[runGuardedProbe]
+                    // の KDoc。昇格の取り違え・応答時間の混入を防ぐ。**この窓は複数回化の前から
+                    // あった**が、成功した周期にも広がったので、ここで閉じる）。
+                    runGuardedProbe(
+                        candidateKey = ::slowLinkCandidateKey,
+                        measure = {
+                            probe.probeTimed(probeTarget, currentProbeTimeoutMs(), PROBE_ATTEMPTS)
+                        },
+                        apply = { outcome ->
+                            // 仕様書 §2: 到達可否は**1回目の試行の結果そのもの**（「どれか1回でも成功
+                            // すれば可」ではない）。従来のプローブは1回しか試さなかったので、
+                            // 「どれか」にすると死活判定が従来よりはるかに寛容になり、既存の死活に
+                            // よる切替が働かなくなる。1回目が失敗した周期は残りを行わず、最悪の
+                            // 所要時間は timeout 1回ぶんに戻る（[HealthProbe.probeTimed]）。
+                            // 応答時間のサンプルは同じ結果から取り、判定器へ渡す。
+                            //
+                            // 順序: **`onProbe` が先、`dispatch(ProbeResult)` が後。** 逆にすると、
+                            // `ProbeResult` が切替を起こした dispatch の測り直しが先に走り、
+                            // このサンプルが次の候補の窓へ入る。
+                            pathQualityDetector.onProbe(clock.nowMs(), outcome)
+                            dispatch(FailoverEvent.ProbeResult(outcome.reachable))
+                        },
+                    )
                 }
                 // 仕様書 4-2: Tick を投げる前に採取する。速度の判定を読むのは
                 // この直後の Tick 処理（onSlowLinkSwitch）なので、同じ tick の

@@ -1,6 +1,8 @@
 package net.openconnect_vpn.android.failover
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -242,6 +244,86 @@ class FailoverControllerLapRttWiringTest {
         assertTrue(controller.state is FailoverState.FailingOver)
         assertTrue(detector.rttSamples().isEmpty())
         confirmAndAdvance("uuid-a", "uuid-b")
+        assertTrue(detector.rttSamples().isEmpty())
+    }
+
+    // ---------------------------------------------------------------- プローブ結果のガード
+
+    /**
+     * サービスのティックループと同じ形: 測っているあいだ [during] を実行し（外部イベントの
+     * 到着を表す）、結果を `onProbe` が先・`dispatch(ProbeResult)` が後で適用する。
+     * 呼ぶのは本物の [runGuardedProbe]。
+     */
+    private fun guardedProbe(outcome: ProbeOutcome, during: () -> Unit = {}): Boolean = runBlocking {
+        runGuardedProbe(
+            candidateKey = ::key,
+            measure = {
+                during()
+                outcome
+            },
+            apply = {
+                detector.onProbe(clock.nowMs(), it)
+                dispatch(FailoverEvent.ProbeResult(it.reachable))
+            },
+        )
+    }
+
+    /** a を Healthy にしてから、測っている最中に b が Verifying まで進む外部イベントの列。 */
+    private fun switchToBVerifyingMidProbe() {
+        degraded = true
+        dispatch(FailoverEvent.Tick)  // 離れる（FailingOver）
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-b"))
+        degraded = false
+    }
+
+    @Test
+    fun `測っている最中に候補が入れ替わったら、結果は捨てられ b は昇格せず窓も空のまま`() {
+        dispatch(FailoverEvent.UserConnectGroup("g1"))
+        toHealthy("uuid-a")
+
+        val applied = guardedProbe(ProbeOutcome(reachable = true, rttMs = listOf(5L, 5_000L, 5_000L))) {
+            switchToBVerifyingMidProbe()
+        }
+
+        assertFalse(applied)
+        val s = controller.state
+        assertTrue("b は一度もプローブされていないので Verifying のまま（実際: $s）", s is FailoverState.Verifying)
+        assertEquals(1, (s as FailoverState.Verifying).candidateIndex)
+        assertTrue("a の応答時間が b の窓に入ってはならない", detector.rttSamples().isEmpty())
+    }
+
+    @Test
+    fun `候補が変わっていなければ結果は適用される（昇格し、応答時間が窓に入る）`() {
+        // 上の対（何でも捨てる実装を弾く）。a が Verifying で猶予が明けたところへ、
+        // 同じ a の結果が届く。
+        dispatch(FailoverEvent.UserConnectGroup("g1"))
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        assertTrue(controller.state is FailoverState.Verifying)
+        clock.advance(16_000L)
+
+        val applied = guardedProbe(ProbeOutcome(reachable = true, rttMs = listOf(70L, 72L, 71L)))
+
+        assertTrue(applied)
+        assertTrue("同じ候補の結果で Healthy へ昇格する", controller.state is FailoverState.Healthy)
+        assertEquals(listOf(70L, 72L, 71L), detector.rttSamples())
+    }
+
+    @Test
+    fun `候補が変わっていても失敗の結果は同様に捨てられる（失敗が違う候補へ当たらない）`() {
+        // 複数回化の前からあった窓（失敗した周期は約5秒かかる）。reachable=false が b に
+        // 当たると、b の失敗カウントが誤って進む。何も適用されないことを、窓が空のまま
+        // かつ b が Verifying のままで確認する。
+        dispatch(FailoverEvent.UserConnectGroup("g1"))
+        toHealthy("uuid-a")
+
+        val applied = guardedProbe(ProbeOutcome(reachable = false, rttMs = listOf(5_000L))) {
+            switchToBVerifyingMidProbe()
+        }
+
+        assertFalse(applied)
+        assertTrue(controller.state is FailoverState.Verifying)
         assertTrue(detector.rttSamples().isEmpty())
     }
 }
