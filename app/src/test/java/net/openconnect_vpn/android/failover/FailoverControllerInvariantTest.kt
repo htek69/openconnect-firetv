@@ -210,7 +210,20 @@ class FailoverControllerInvariantTest {
          * グループごとではなく一つだけなのは、切断確認を待つ切替は同時に一つしか
          * 無いから（状態は一つ）。
          */
-        private var pendingSlow: Triple<String, String, List<String>>? = null
+        private var pendingSlow: PendingSlow? = null
+
+        /**
+         * [aheadStartable]: 切替を**決めた時点**で、離れる候補の後ろに無人で起動できる
+         * 候補が一つでもあったか。前へ進む切替は、製品が行き先の門でそれを確かめて
+         * から始める（無ければ前進はしない）。よって後ろが無かった切替は戻す切替で、
+         * 後ろへ着地したら破れである（I5）。予算は使わない。
+         */
+        data class PendingSlow(
+            val groupId: String,
+            val fromUuid: String,
+            val members: List<String>,
+            val aheadStartable: Boolean,
+        )
 
         /** 製品の [FailoverController] が「無人で起動してよい」とする候補と同じ判定。 */
         private fun startable(uuid: String, excluded: Set<String>): Boolean =
@@ -645,9 +658,23 @@ class FailoverControllerInvariantTest {
             //      （製品は止まった一周では判定そのものを問わない）
             // 着地を観測する（切断確認を待つあいだに利用者の指示・並び替え・
             // 行き先の脱落があれば、その切替は分類せず捨てる）。
-            // **限界:** 戻す切替が前方へ着くと前進と見分けられない。応答時間の記録を
-            // 供給しないこの生成器の戻り先は「選べる最初のメンバー」で、現候補以前に
-            // 必ず収まるので起きない。記録を供給するようにするなら見直すこと。
+            // **限界（正直に）:** 戻す切替が前方へ着くと、前進と見分けられない場合がある。
+            //  - 決めた時点で後ろに起動できる候補が**無かった**切替は、前進の門を通って
+            //    いない＝戻す切替なので、後ろへ着地すれば破れ（`戻る切替が前方へ着地`）。
+            //    これは予算を使わずに検出できる。
+            //  - 決めた時点で後ろに候補が**あった**切替は、前進とも戻す切替ともありうる。
+            //    戻す切替が（予算が尽きた一周で）後ろへ着地した場合は、回数が上限を
+            //    超えて `予算超過` が出る。回数に余裕があるあいだに製品が誤って戻す切替を
+            //    後ろへ向けても、前進と区別できず、害も前進と同じ（予算は超えない）で
+            //    ある。これ以上は、予算の判定をテスト側が書き直さない限り検出できず、
+            //    それは本末転倒なので、検出しない。
+            //  - この生成器は応答時間の記録を供給しないので、戻り先は「選べる最初の
+            //    メンバー」で、現候補以前に必ず収まる。記録を供給するようにするなら
+            //    この分類を見直すこと。
+            // **盲目の自己申告:** 分類できない着地があると、その一周は前進の数が下限に
+            // なる。そうなった回数は `分類できない着地` として到達記録に出し、0 なら
+            // 生成器が分類を試していないとして `生成器は不変条件の前提に到達している`
+            // が落ちる。
             if (slowSwitch) {
                 val groupId = (stateBefore as? FailoverState.Healthy)?.groupId
                 if (groupId != null) {
@@ -666,13 +693,33 @@ class FailoverControllerInvariantTest {
                             "グループ $groupId の一周は止まっているのに低速判定を引いて真を得た",
                         )
                     }
+                    // **切替が要らなかった「戻す判断」も一周を止める。** 低速判定が真を返し
+                    // ながら状態が `Healthy` のまま残るのは、`returnToBest` が戻り先を現候補
+                    // と判断した場合だけである（それ以外の真は切替を作る）。しかも前進を
+                    // 一度でも観測していれば（`forward > 0`）、製品の `switches() > 0` が
+                    // 成り立つので、その分岐は必ず一周を止める。着地を待つ経路だけで止めたと
+                    // 見なすと、再接続で先頭から始め直した一周のように「戻る先が現候補」と
+                    // なる場面（切替が起きず、着地も無い）が丸ごと抜け、止まった後の問い合わせ
+                    // の検出がそこで効かなくなる。`forward == 0` は検出し損ねるだけで、
+                    // 偽の失敗は出さない。製品の門は写していない（観測した事実の組だけ）。
+                    if (stateAfter is FailoverState.Healthy && lap.forward > 0) {
+                        mark("切替なしで止まった一周")
+                        laps[groupId] = lap.copy(stopped = true)
+                    }
                     if (stateAfter is FailoverState.FailingOver && stateAfter.bySlowLink) {
                         mark("速度起因の切替")
-                        pendingSlow = Triple(groupId, candidateBefore ?: "", members)
+                        val index = members.indexOf(candidateBefore)
+                            .takeIf { it >= 0 } ?: (stateBefore as FailoverState.Healthy).candidateIndex
+                        pendingSlow = PendingSlow(
+                            groupId, candidateBefore ?: "", members,
+                            aheadStartable = members.indices.any {
+                                it > index && startable(members[it], excludedBefore)
+                            },
+                        )
                     }
                 }
             }
-            pendingSlow?.let { (groupId, fromUuid, membersThen) ->
+            pendingSlow?.let { (groupId, fromUuid, membersThen, aheadStartable) ->
                 val members = groupOf(groupId)?.memberUuids
                 // **このグループのメンバーへの起動だけが着地**。別グループのメンバーへの
                 // 起動で枠を使い切らない（使い切ると、このグループでの着地が検査を免れる）。
@@ -706,8 +753,20 @@ class FailoverControllerInvariantTest {
                     if (from >= 0 && to >= 0 && !classifiable) {
                         // 前進の回数が数えられなかったので、前進が無いことを前提にする検査
                         // （「前進なしで戻る」）は以後この一周では行わない。
+                        mark("分類できない着地")
                         laps[groupId] = lap.copy(uncertain = true)
                     } else if (classifiable && to > from) {
+                        // 決めた時点で後ろに起動できる候補が無かった切替は前進ではない。
+                        // 前進の門（行き先があること）を通っていないので、後ろへ着地したら
+                        // 戻る切替が前方へ進んだのである。**予算を使わずに**これだけは
+                        // 検出できる（予算の余裕で前進と見分けがつかない形を塞ぐ）。
+                        if (!aheadStartable) {
+                            violate(
+                                "I5", "戻る切替が前方へ着地",
+                                "グループ $groupId: 決めた時点で $fromUuid の後ろに起動できる候補が" +
+                                    "無かったのに、後ろの $landed（位置 $to）へ着地した",
+                            )
+                        }
                         val count = lap.forward + 1
                         laps[groupId] = lap.copy(forward = count)
                         if (count > members.size - 1) {
@@ -1030,6 +1089,8 @@ class FailoverControllerInvariantTest {
             "速度起因の切替",
             "一周の終わり",
             "最良へ戻る切替",
+            "切替なしで止まった一周",
+            "分類できない着地",
             "除外の追加",
             "古い通知の無視",
             "人が答えている最中のエンジン起因イベント",

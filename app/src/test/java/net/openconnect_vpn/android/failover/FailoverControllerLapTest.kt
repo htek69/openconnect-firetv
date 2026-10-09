@@ -291,6 +291,12 @@ class FailoverControllerLapTest {
         assertEquals(0, (controller.state as FailoverState.Connecting).candidateIndex)
     }
 
+    /**
+     * この試験が固定するのは**行き先が uuid で持たれていること**である。行き先を添字
+     * （b = 1）で持つ実装は、b が一覧から消えると添字 1 が c（いま離れたばかりの遅い
+     * 候補）を指し、そこへ戻ってしまう。前方探索への退化は区別できない（b の添字が
+     * -1 になると 0 に丸められて同じになる）ので、そちらは上の初回ログインの試験が担う。
+     */
     @Test
     fun `戻り先が切断待ちのあいだにグループから外されたら、前方へ流れず先頭から探す`() {
         walkToLastAndStop(samples(700), samples(100), samples(700))
