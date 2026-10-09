@@ -70,6 +70,99 @@ data class SlowLinkSettings(
     val rearmAfterLapMin: Int = 0,
 )
 
+/**
+ * [SlowLinkSettings] の4項目の**範囲（上下限）**。仕様書 §4-A の表。
+ *
+ * **範囲の置き場はここ1か所だけ。** 使い手は2つある。
+ * 1. 設定画面のステッパー（`tv.SettingsStepper.clamp*`）——押しすぎて範囲を出ないため
+ * 2. 読込経路（[SlowLinkSettings.coerced]、`GroupStore.loadSlowLinkSettings`）——
+ *    別の版が書いた、あるいは手で書き換えた JSON が範囲外の値を運んできても、
+ *    判定に届く前に範囲へ収めるため
+ *
+ * 読込側は `failover` パッケージにあり、`tv`（UI 層）を参照できない（下向きの依存に
+ * なる）。そこで**範囲（領域の事実）はここに置き、刻み（UI の都合）は `tv` に残す。**
+ * ステッパーは数字を書き写さず、この定数を名指すこと。2か所が食い違うと、画面が
+ * 許す値を読込が黙って書き換える（あるいはその逆）。
+ *
+ * 各定数の KDoc は、仕様書 §4-A の「動かしたときに何が起きるか」の要約である。
+ */
+object SlowLinkBounds {
+    /**
+     * 応答時間の中央値の上限（ms）の下限。**下げるほど誤判定が増える。**
+     * 宛先が地理的に遠いだけで「経路が悪い」と判定されうる。実測の目安は
+     * 素の回線 約 70 ms、遅かった接続先 140〜380 ms。
+     */
+    const val DEGRADED_RTT_MS_MIN = 50
+
+    /**
+     * 同上の上限。**上げるほど切り替わりにくくなる。** 宛先が遠い利用者は
+     * 上げる必要があるが、上げすぎると本当に遅い経路も見逃す。
+     */
+    const val DEGRADED_RTT_MS_MAX = 2000
+
+    /**
+     * 応答時間のばらつき（最大−最小）の上限（ms）の下限。**下げると一瞬の揺れで
+     * 切り替わる。** 素の回線 約 5 ms と遅かった接続先 140〜336 ms は2桁の差で
+     * 分かれていたので、既定（150）から大きく下げる理由は乏しい。
+     *
+     * **0 や負の値を許さないこと。** しきい値が 0 だと「ばらつきがしきい値を超える」が
+     * ほとんど常に真になり、判定の3条件のうちこの1つが事実上無効になる。
+     */
+    const val DEGRADED_JITTER_MS_MIN = 50
+
+    /** 同上の上限。**上げると一過性の揺れを拾わなくなる**が、不安定な経路も見逃す。 */
+    const val DEGRADED_JITTER_MS_MAX = 1000
+
+    /**
+     * 「使っている」と見なす受信速度の下限（kbps）の下限。**`0` は下限なし。**
+     *
+     * **下げると待機中の誤判定が戻る。** 2026-10-09 に実際に起きた事故
+     * （`docs/MANUAL-TEST.md` 節 10-5-1、待機中の受信は 0.16 kbps）がこれで、
+     * `0` にすると誰も見ていないのに切り替わりうる。0 を許すのは利用者に
+     * 選ばせるためで、画面は 0 のとき警告を出す（`SettingsText`）。
+     */
+    const val RX_FLOOR_KBPS_MIN = 0
+
+    /**
+     * 同上の上限。**上げると低ビットレートの再生（音声のみ等）を「使っていない」と
+     * 見なし**、本当に遅いときでも切り替えなくなる。
+     */
+    const val RX_FLOOR_KBPS_MAX = 500
+
+    /** 一周して止まったあと再開するまでの時間（分）の下限。**`0` は再開しない。** */
+    const val REARM_AFTER_LAP_MIN_MIN = 0
+
+    /**
+     * 同上の上限。**短いほど**劣化が続くとき、その間隔ごとに一周ぶんの切断が起きる。
+     * **長いほど**一度諦めたら長く諦めたままになる。
+     */
+    const val REARM_AFTER_LAP_MIN_MAX = 240
+}
+
+/**
+ * 4項目を [SlowLinkBounds] の範囲へ収めた複製を返す。
+ *
+ * **読込経路で使う。** `GroupStore.loadSlowLinkSettings` は、`ignoreUnknownKeys` で
+ * 未知の項目を読み飛ばせても、**範囲外の値**までは弾けない。たとえば
+ * `degradedJitterMs: 0` がそのまま判定に届くと「ばらつきがしきい値を超える」が
+ * ほとんど常に真になり、切替が不当に起きやすくなる。範囲内の値は変えない。
+ *
+ * `enabled` と `slowRxKbps` はここで触らない。`slowRxKbps` の範囲は従来どおり
+ * 設定画面の表示側（`SettingsStepper.clampSlowRxKbps`）が持つ。
+ */
+fun SlowLinkSettings.coerced(): SlowLinkSettings = copy(
+    rxFloorKbps = rxFloorKbps.coerceIn(SlowLinkBounds.RX_FLOOR_KBPS_MIN, SlowLinkBounds.RX_FLOOR_KBPS_MAX),
+    degradedRttMs = degradedRttMs.coerceIn(SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX),
+    degradedJitterMs = degradedJitterMs.coerceIn(
+        SlowLinkBounds.DEGRADED_JITTER_MS_MIN,
+        SlowLinkBounds.DEGRADED_JITTER_MS_MAX,
+    ),
+    rearmAfterLapMin = rearmAfterLapMin.coerceIn(
+        SlowLinkBounds.REARM_AFTER_LAP_MIN_MIN,
+        SlowLinkBounds.REARM_AFTER_LAP_MIN_MAX,
+    ),
+)
+
 /** フェイルオーバーの挙動を決めるパラメータ。 */
 @Serializable
 data class FailoverConfig(

@@ -26,17 +26,8 @@ import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.GroupStore
 import net.openconnect_vpn.android.failover.ProbeSchedule
 import net.openconnect_vpn.android.failover.ProbeTarget
+import net.openconnect_vpn.android.failover.SlowLinkBounds
 import net.openconnect_vpn.android.failover.SlowLinkSettings
-import net.openconnect_vpn.android.failover.SlowLinkThresholds
-
-/**
- * 裁定R24: 速度を均す窓の長さ（秒）。この画面の説明文が出す「検知までの時間」を
- * 判定器の既定値そのものから取るための参照で、数字を画面側に書き写さない。
- * 窓の長さは利用者に変えさせない定数（仕様書 5）であり、`FailoverService` も
- * `SlowLinkThresholds` の既定値のまま判定器を作るため、ここで既定値を読むのが
- * 実際に効いている値である。
- */
-private val SLOW_LINK_WINDOW_SEC = SlowLinkThresholds().windowSec
 
 /**
  * 設定画面。疎通確認の宛先・間隔・失敗閾値、VPN 許可の取得・切断、
@@ -96,9 +87,18 @@ fun SettingsScreen(
     }
 
     val storedSlowLink = remember { groupStore.loadSlowLinkSettings() }
-    var slowLinkEnabled by remember { mutableStateOf(storedSlowLink.enabled) }
-    var slowRxKbps by remember {
-        mutableStateOf(SettingsStepper.clampSlowRxKbps(storedSlowLink.slowRxKbps))
+    // 6項目を1つの [SlowLinkSettings] として持つ。以前は enabled と slowRxKbps を
+    // 別々の状態に取り出し、保存時に2項目だけで組み直していたため、保存のたびに
+    // 残りの項目（改訂で足した4項目）が既定値へ黙って戻っていた。1つの値の
+    // `copy` で更新し、保存はその値をそのまま渡せば、項目が増えても書き落とせない。
+    // 読込側（GroupStore.loadSlowLinkSettings）が4項目を範囲へ収めて返すので、
+    // ここで改めて収めない。slowRxKbps だけは従来どおり表示側で収める。
+    var slowLink by remember {
+        mutableStateOf(
+            storedSlowLink.copy(
+                slowRxKbps = SettingsStepper.clampSlowRxKbps(storedSlowLink.slowRxKbps),
+            ),
+        )
     }
 
     var message by remember { mutableStateOf<String?>(null) }
@@ -220,31 +220,100 @@ fun SettingsScreen(
         // （tv-material に Switch 相当が無いため、この画面のほかのトグルも
         // この形で統一してある）。OFF のときも下のステッパーは操作でき、
         // 「保存」を押せば値は書き込まれる（あとで ON にしたときに効く）。
-        Card(onClick = { slowLinkEnabled = !slowLinkEnabled }) {
+        // ラベルは「速度低下」ではなく「経路品質の低下」（仕様書 §4）。判定は受信速度の
+        // 平均ではなく、往復の遅さとそのばらつきを見るようになったため、「速度」と
+        // 書くと実態と合わない。
+        Card(onClick = { slowLink = slowLink.copy(enabled = !slowLink.enabled) }) {
             Text(
-                if (slowLinkEnabled) "速度低下で切り替える: ON" else "速度低下で切り替える: OFF",
+                if (slowLink.enabled) "経路品質の低下で切り替える: ON" else "経路品質の低下で切り替える: OFF",
                 modifier = Modifier.padding(20.dp),
             )
         }
 
         TvStepperRow(
-            label = "受信速度の下限",
-            value = slowRxKbps,
-            valueText = "${slowRxKbps}kbps",
-            onDecrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, -1) },
-            onIncrement = { slowRxKbps = SettingsStepper.stepSlowRxKbps(slowRxKbps, +1) },
+            label = "受信速度の上限（これを下回ると「遅い」側）",
+            value = slowLink.slowRxKbps,
+            valueText = "${slowLink.slowRxKbps}kbps",
+            onDecrement = {
+                slowLink = slowLink.copy(slowRxKbps = SettingsStepper.stepSlowRxKbps(slowLink.slowRxKbps, -1))
+            },
+            onIncrement = {
+                slowLink = slowLink.copy(slowRxKbps = SettingsStepper.stepSlowRxKbps(slowLink.slowRxKbps, +1))
+            },
         )
 
-        // 裁定R24: 上の死活側（「最短 X秒・最長 Y秒でダウンを検知します」）と同じ
-        // 体裁で、速度側の検知までの時間も書く。窓の長さは利用者が変えられない
-        // 定数（仕様書 5）なので、数字はその定数から出して二重管理にしない。
-        // 「約60秒」と書かないと、有効にして20秒待った利用者が壊れていると
-        // 判断する（切替そのものの時間が後ろに付くことも書く）。
+        // 仕様書 §4-A: 4項目すべてを利用者が変更できる。既定値は1台の端末・1つの宛先・
+        // 1つの時間帯の実測から引いたもので（改訂版 §3-2 の限界）、環境が違えば意味の
+        // ある値も違う。各項目を動かしたときに何が起きるかは SlowLinkBounds の KDoc。
+        TvStepperRow(
+            label = "往復の遅さの上限（中央値がこれを超えると「経路が遅い」）",
+            value = slowLink.degradedRttMs,
+            valueText = "${slowLink.degradedRttMs}ms",
+            onDecrement = {
+                slowLink = slowLink.copy(degradedRttMs = SettingsStepper.stepDegradedRttMs(slowLink.degradedRttMs, -1))
+            },
+            onIncrement = {
+                slowLink = slowLink.copy(degradedRttMs = SettingsStepper.stepDegradedRttMs(slowLink.degradedRttMs, +1))
+            },
+        )
+
+        TvStepperRow(
+            label = "ばらつきの上限（最大と最小の差がこれを超えると成立）",
+            value = slowLink.degradedJitterMs,
+            valueText = "${slowLink.degradedJitterMs}ms",
+            onDecrement = {
+                slowLink = slowLink.copy(
+                    degradedJitterMs = SettingsStepper.stepDegradedJitterMs(slowLink.degradedJitterMs, -1),
+                )
+            },
+            onIncrement = {
+                slowLink = slowLink.copy(
+                    degradedJitterMs = SettingsStepper.stepDegradedJitterMs(slowLink.degradedJitterMs, +1),
+                )
+            },
+        )
+
+        TvStepperRow(
+            label = "使っていると見なす受信の下限（0 は下限なし）",
+            value = slowLink.rxFloorKbps,
+            valueText = "${slowLink.rxFloorKbps}kbps",
+            onDecrement = {
+                slowLink = slowLink.copy(rxFloorKbps = SettingsStepper.stepRxFloorKbps(slowLink.rxFloorKbps, -1))
+            },
+            onIncrement = {
+                slowLink = slowLink.copy(rxFloorKbps = SettingsStepper.stepRxFloorKbps(slowLink.rxFloorKbps, +1))
+            },
+        )
+
+        TvStepperRow(
+            label = "一周したあとの再開までの時間（0 は再開しない）",
+            value = slowLink.rearmAfterLapMin,
+            valueText = if (slowLink.rearmAfterLapMin == 0) "再開しない" else "${slowLink.rearmAfterLapMin}分",
+            onDecrement = {
+                slowLink = slowLink.copy(
+                    rearmAfterLapMin = SettingsStepper.stepRearmAfterLapMin(slowLink.rearmAfterLapMin, -1),
+                )
+            },
+            onIncrement = {
+                slowLink = slowLink.copy(
+                    rearmAfterLapMin = SettingsStepper.stepRearmAfterLapMin(slowLink.rearmAfterLapMin, +1),
+                )
+            },
+        )
+
+        // 仕様書 §4-A「画面に出す導出文」。上の死活側（「最短 X秒・最長 Y秒でダウンを
+        // 検知します」）と同じ作法で、設定値から結果の文を出す。数字も窓の長さも
+        // SettingsText が設定と定数から導くので、ここに書き写さない（窓の長さは
+        // 呼び出し側で渡さない）。以前ここにあった「速度は60秒ぶんを均して…」は
+        // 速度の平均で判定していた時代の文で、いまの判定の説明としては誤りなので
+        // 置き換えた。
         Text(
-            "速度は${SLOW_LINK_WINDOW_SEC}秒ぶんを均して判断するため、" +
-                "遅くなってから「遅い」と判定するまで約${SLOW_LINK_WINDOW_SEC}秒かかります。" +
-                "実際に別の接続先で見られるようになるのは、そこに切替そのものの時間が" +
-                "加わったあとです。",
+            SettingsText.pathQualitySummary(slowLink),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "「遅い」と判定されてから実際に別の接続先で見られるようになるのは、" +
+                "そこに切替そのものの時間が加わったあとです。",
             style = MaterialTheme.typography.bodySmall,
         )
 
@@ -265,12 +334,11 @@ fun SettingsScreen(
                             failureThreshold = failureThreshold,
                         ),
                     )
-                    groupStore.saveSlowLinkSettings(
-                        SlowLinkSettings(
-                            enabled = slowLinkEnabled,
-                            slowRxKbps = slowRxKbps,
-                        ),
-                    )
+                    // 6項目すべてを持つ [slowLink] をそのまま渡す。ここで項目を
+                    // 取り出して `SlowLinkSettings(...)` を組み直さないこと——
+                    // 組み直すと書き落とした項目が既定値へ戻る（この画面で実際に
+                    // 起きた欠陥）。試験が、この画面に組み直しが無いことをソースで見る。
+                    groupStore.saveSlowLinkSettings(slowLink)
                     // 裁定86（M4）: 以前は「次回のサービス起動から反映されます」と
                     // 出していたが、これは裁定48/72/74 以前の文言が取り残された
                     // ものであり、同じファイルの KDoc（上）と実装の両方に矛盾して
@@ -400,7 +468,7 @@ object SettingsStepper {
         clampFailureThreshold(current + steps * FAILURE_THRESHOLD_STEP)
 
     /**
-     * 「速度低下で切り替える」の受信速度下限（[SlowLinkSettings.slowRxKbps]）の
+     * 「経路品質の低下で切り替える」の受信速度の上限（[SlowLinkSettings.slowRxKbps]）の
      * ステッパーが使う範囲・刻み幅（task-6）。単位は kbps。
      *
      * 範囲の選び方: 仕様書 6-1 は「音声のみの再生や低画質の動画では受信が
@@ -429,4 +497,43 @@ object SettingsStepper {
     /** [steps] は +1（右／＋）または -1（左／－）を渡す想定。刻み幅は [SLOW_RX_KBPS_STEP]。 */
     fun stepSlowRxKbps(current: Int, steps: Int): Int =
         clampSlowRxKbps(current + steps * SLOW_RX_KBPS_STEP)
+
+    // 以下は経路品質の4項目（仕様書 §4-A）。**範囲（上下限）はここに書かない。**
+    // [SlowLinkBounds] が持つ唯一の定義を名指す——読込経路（GroupStore）も同じ範囲を
+    // 使うので、ここに数字を書き写すと、画面が許す値と読込が通す値が食い違いうる。
+    // 一方、刻み幅は UI の都合なのでここに持つ。各項目を動かしたときに何が起きるかは
+    // [SlowLinkBounds] の各定数の KDoc。
+
+    const val DEGRADED_RTT_MS_STEP = 50
+    const val DEGRADED_JITTER_MS_STEP = 50
+    const val RX_FLOOR_KBPS_STEP = 50
+    const val REARM_AFTER_LAP_MIN_STEP = 15
+
+    fun clampDegradedRttMs(value: Int): Int =
+        value.coerceIn(SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX)
+
+    /** [steps] は +1（右／＋）または -1（左／－）を渡す想定。刻み幅は [DEGRADED_RTT_MS_STEP]。 */
+    fun stepDegradedRttMs(current: Int, steps: Int): Int =
+        clampDegradedRttMs(current + steps * DEGRADED_RTT_MS_STEP)
+
+    fun clampDegradedJitterMs(value: Int): Int =
+        value.coerceIn(SlowLinkBounds.DEGRADED_JITTER_MS_MIN, SlowLinkBounds.DEGRADED_JITTER_MS_MAX)
+
+    /** 刻み幅は [DEGRADED_JITTER_MS_STEP]。 */
+    fun stepDegradedJitterMs(current: Int, steps: Int): Int =
+        clampDegradedJitterMs(current + steps * DEGRADED_JITTER_MS_STEP)
+
+    fun clampRxFloorKbps(value: Int): Int =
+        value.coerceIn(SlowLinkBounds.RX_FLOOR_KBPS_MIN, SlowLinkBounds.RX_FLOOR_KBPS_MAX)
+
+    /** 刻み幅は [RX_FLOOR_KBPS_STEP]。下げて 0 にすると待機中の誤判定が戻りうる（[SlowLinkBounds.RX_FLOOR_KBPS_MIN]）。 */
+    fun stepRxFloorKbps(current: Int, steps: Int): Int =
+        clampRxFloorKbps(current + steps * RX_FLOOR_KBPS_STEP)
+
+    fun clampRearmAfterLapMin(value: Int): Int =
+        value.coerceIn(SlowLinkBounds.REARM_AFTER_LAP_MIN_MIN, SlowLinkBounds.REARM_AFTER_LAP_MIN_MAX)
+
+    /** 刻み幅は [REARM_AFTER_LAP_MIN_STEP]。 */
+    fun stepRearmAfterLapMin(current: Int, steps: Int): Int =
+        clampRearmAfterLapMin(current + steps * REARM_AFTER_LAP_MIN_STEP)
 }
