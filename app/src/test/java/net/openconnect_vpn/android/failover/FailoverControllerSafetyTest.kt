@@ -478,7 +478,7 @@ class FailoverControllerSafetyTest {
     @Test
     fun `自動入力で即座に Authenticating へ進む UserPrompt は候補を除外しない`() {
         // 欠陥14 の回帰テスト。実機では認証情報が完全に保存された健全な候補
-        // （v-server）が起動から約1秒で除外されていた。既存コアは
+        // （候補H）が起動から約1秒で除外されていた。既存コアは
         // onProcessAuthForm の冒頭で無条件に STATE_USER_PROMPT を送るため、
         // 保存済み認証情報による完全に自動的なログインでも UserPrompt が
         // 必ず観測され、その直後（ミリ秒単位）に Authenticating へ進む。
@@ -745,11 +745,11 @@ class FailoverControllerSafetyTest {
 
     @Test
     fun `欠陥15の回帰 切替直後に旧スレッドの Disconnected が新候補の UUID で届いても新候補は落とされない`() {
-        // 実機のシナリオ②そのもの: v-server(uuid-a) を切断要求して FailingOver に
-        // 入り、確認できて myvpn(uuid-b) へ進んだ直後、v-server のスレッドが
+        // 実機のシナリオ②そのもの: 候補H(uuid-a) を切断要求して FailingOver に
+        // 入り、確認できて 候補I(uuid-b) へ進んだ直後、候補H のスレッドが
         // ようやく終了して STATE_DISCONNECTED を出す。既存コアはこの時点で
-        // 既に mUUID を myvpn(uuid-b) のものへ書き換えているため、この
-        // Disconnected には uuid-b が付く。myvpn 自身の Connecting はまだ
+        // 既に mUUID を 候補I(uuid-b) のものへ書き換えているため、この
+        // Disconnected には uuid-b が付く。候補I 自身の Connecting はまだ
         // 一度も観測していない。
         toHealthy()
         repeat(group.config.failureThreshold) {

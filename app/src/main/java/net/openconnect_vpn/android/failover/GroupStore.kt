@@ -138,7 +138,11 @@ class GroupStore(private val store: KeyValueStore) {
     fun loadSlowLinkSettings(): SlowLinkSettings {
         val raw = store.getString(KEY_SLOW_LINK) ?: return SlowLinkSettings()
         return try {
-            json.decodeFromString<SlowLinkSettings>(raw)
+            // 別の版が書いた、あるいは手で書き換えた JSON は範囲外の値を運びうる
+            // （`ignoreUnknownKeys` が弾くのは未知の項目であって、範囲外の値ではない）。
+            // たとえば degradedJitterMs=0 は「ばらつきがしきい値を超える」をほぼ常に
+            // 真にして不当な切替を招くので、判定に届く前にここで範囲へ収める。
+            json.decodeFromString<SlowLinkSettings>(raw).coerced()
         } catch (e: Exception) {
             SlowLinkSettings()
         }

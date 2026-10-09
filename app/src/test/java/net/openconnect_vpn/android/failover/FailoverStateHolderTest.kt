@@ -152,7 +152,7 @@ class FailoverStateHolderTest {
         assertEquals("g1", FailoverStateHolder.lastSlowLinkSwitchGroupId.value)
 
         // 時間が経ち、今度は死活起因の切替が別グループで起きる。
-        // このとき前回の「速度低下で切替」という理由を残してはいけない
+        // このとき前回の「経路品質で切替」という理由を残してはいけない
         // （直前の切替は死活起因であり、速度低下の文言は嘘になる）。
         FailoverStateHolder.onFailoverStateChanged(
             FailoverState.FailingOver(
@@ -242,7 +242,7 @@ class FailoverStateHolderTest {
      * 消灯時（`Idle`）に消えたかどうかだけで決まる。
      *
      * しかも点灯後の再接続は**グループの先頭候補**から始まるので、ここに
-     * 「速度低下で切替」が出ていると、今のセッションでは起きていない切替を
+     * 「経路品質で切替」が出ていると、今のセッションでは起きていない切替を
      * 説明することになる。
      */
     @Test

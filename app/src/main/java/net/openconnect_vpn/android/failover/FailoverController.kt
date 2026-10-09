@@ -75,6 +75,27 @@ class FailoverController(
      * **この関数が呼ばれた時点で、その答えは切替に直結する。**
      */
     private val slowLinkProvider: () -> Boolean = { false },
+    /**
+     * 仕様書 §4-A: 経路品質による切替の設定。**参照のたびに最新を読む**
+     * （裁定72 の [groupsProvider] と同じ作法）。ここから読むのは一周後の行先の
+     * 順位付けに使う `degradedJitterMs` と、再開の間隔 `rearmAfterLapMin` の2つで、
+     * 「機能が有効か」は読まない（それは [slowLinkProvider] が畳んで届ける）。
+     * 既定値は `SlowLinkSettings()`＝再開しない・既定の許容幅。
+     */
+    private val slowLinkSettingsProvider: () -> SlowLinkSettings = { SlowLinkSettings() },
+    /**
+     * 仕様書 §2-A: いまの候補について、窓の中の応答時間のサンプル。**問われるのは
+     * その候補を離れる瞬間だけ**で、一周の記録（[LapRecord]）へ一度だけ写す。
+     * 実体は `PathQualityDetector.rttSamples()`（Task 7 が配線する）。既定は空＝
+     * 記録しない（その場合、一周後は仕様どおりグループの先頭へ戻る）。
+     *
+     * **毎 tick 貯めない理由。** 供給されるのは**転がる窓**（約60秒ぶん）なので、
+     * 5秒ごとの tick で貯めると同じサンプルを十数回数える。それでは
+     * [MIN_LAP_SAMPLES]（サンプル不足の候補を比較から外す門）が、プローブ1周期
+     * （5サンプル）にも届かない候補を通してしまう。離れる瞬間の窓が、その候補に
+     * ついての最後の約2周期ぶんそのものである。
+     */
+    private val lapRttProvider: () -> List<Long> = { emptyList() },
 ) {
 
     /**
@@ -288,9 +309,11 @@ class FailoverController(
      * 仕様書 4-5: 速度起因の切替を「一周」で止めるための記録。グループ ID ごとに
      * 何回切り替えたかと、そのとき数えていたメンバー構成を覚えておく。
      *
-     * **時間による自動解除は設けない。** 遅いという判定は誤りうる（仕様書 6）
-     * ので、誤判定のまま時間で再武装すると候補の間を延々と行き来し続ける。
-     * 解除は次の3つだけ（仕様書 4-5 が挙げる3つと1対1）:
+     * **時間による自動解除は、利用者が間隔を決めたときだけ働く**（仕様書 §2-B。
+     * 旧仕様 4-5 の「時間による自動解除は設けない」を覆した）。[maybeRearmLap] が
+     * `rearmAfterLapMin` の経過後に**記録を消すだけ**で、切替は判定の3条件が別途
+     * 揃わなければ起きない。既定は 0＝再開しない。その他の解除は次の3つ
+     * （旧仕様 4-5 が挙げる3つと1対1）:
      *
      * - [onUserConnect]: 明示的なユーザー操作は新しいセッションの意思表示である
      *   （裁定35a が `_excludedUuids` をここでクリアするのと同じ考え方）
@@ -303,10 +326,22 @@ class FailoverController(
     private val slowLinkLaps = mutableMapOf<String, SlowLinkLap>()
 
     /**
-     * [slowLinkLaps] の中身。[memberUuids] は [switches] を数え始めたときの
-     * グループ構成で、構成変更による解除の判定にだけ使う。
+     * [slowLinkLaps] の中身。[memberUuids] は [record] を貯め始めたときの
+     * グループ構成で、構成変更による解除の判定にだけ使う（[LapRecord] は純粋な
+     * 記録で、構成を知らない）。
      */
-    private data class SlowLinkLap(val memberUuids: List<String>, val switches: Int)
+    private class SlowLinkLap(val memberUuids: List<String>) {
+        val record = LapRecord()
+    }
+
+    /**
+     * 仕様書 §2-A: 一周が止まるときに「最良の候補へ戻す」切替の行き先。
+     * [FailoverState.FailingOver] は行き先を持たない（UI の公開面を増やさない）
+     * ので、[failOver] が置き、[advanceAfterFailingOver] が一度だけ読んで捨てる。
+     * 添字ではなく uuid で持つのは、切断を待つあいだにグループが並び替えられても
+     * 行き先がずれないため（裁定72a と同じ理由）。
+     */
+    private var returnTargetUuid: String? = null
 
     fun handle(event: FailoverEvent) {
         // 裁定72a: どのイベントを処理する前にも、まず現在の候補の添字が
@@ -541,6 +576,7 @@ class FailoverController(
         // 同じ考え方——ユーザー自身がいま接続を指示しているのだから、前の
         // セッションで数えた「全部試した」を引きずる理由が無い）。
         slowLinkLaps.clear()
+        returnTargetUuid = null
 
         stopBeforeStarting(groupId, unattended = false, fromIndex = fromIndex)?.let { return it }
 
@@ -1055,7 +1091,16 @@ class FailoverController(
          * Ruling 25 の2段階切替をそのまま通る。
          */
         bySlowLink: Boolean = false,
+        /**
+         * 仕様書 §2-A: 切断が済んだあとに前方の次候補ではなく**この uuid の候補**へ
+         * 向かう（一周の終わりに最良へ戻す切替。[returnToBest] だけが渡す）。
+         * null なら従来どおり `failedIndex + 1` から前方へ。毎回ここで上書きするので、
+         * 前回の行き先が次の切替へ持ち越されることはない。[alreadyDown] が true の
+         * 経路では使わない（この引数を渡す呼び出し元は false しか渡さない）。
+         */
+        toUuid: String? = null,
     ): FailoverState {
+        returnTargetUuid = toUuid
         val group = groupOf(groupId) ?: run {
             // 裁定72-fix(F1): グループが丸ごと削除されていた場合も、他の
             // 「諦めて Idle へ戻る」経路（!autoFailoverEnabled の直後）と同じく
@@ -1120,6 +1165,12 @@ class FailoverController(
     private fun advanceAfterFailingOver(s: FailoverState.FailingOver): FailoverState {
         if (!network.hasUnderlyingNetwork()) return s
 
+        // 仕様書 §2-A: 最良へ戻す切替の行き先。**一度だけ読んで捨てる**。保留された
+        // 利用者の接続（下）が優先されるときも捨てる——持ち越すと、無関係な次の
+        // 切替が古い行き先へ向かう。
+        val returnTarget = returnTargetUuid
+        returnTargetUuid = null
+
         // 裁定59: 切替先が保留されていれば、自動切替の続き（次候補）より
         // そちらを優先する。
         // 裁定86（H2）: 有人・無人は保留した経路のものをそのまま使う
@@ -1145,6 +1196,14 @@ class FailoverController(
         }
 
         val group = groupOf(s.groupId) ?: return FailoverState.Idle
+        if (returnTarget != null) {
+            // 切断を待つあいだに行き先が除外された・初回ログイン未了になった・グループ
+            // から外れた場合は、先頭から探す（[nextStartableIndex] が起動してよい
+            // 最初の候補を選ぶ）。前方の候補へ流れて最良から遠ざかるよりよい。
+            val index = group.memberUuids.indexOf(returnTarget)
+            val usable = index >= 0 && nextStartableIndex(group, index, unattended = true) == index
+            return startCandidateFrom(group, fromIndex = if (usable) index else 0, unattended = true)
+        }
         return startCandidateFrom(group, fromIndex = s.failedIndex + 1, unattended = true)
     }
 
@@ -1163,7 +1222,13 @@ class FailoverController(
         // 経路の**後ろ**に足す。前に置くと、除外を伴う裁定30 の判定
         // （onUnattendedPromptTimeout）より先に候補を畳んでしまい、既存の
         // 評価順序（＝どちらの理由で切替が起きるか）を変えることになる。
-        is FailoverState.Healthy -> onUnattendedPromptTimeout(s) ?: onSlowLinkSwitch(s) ?: s
+        is FailoverState.Healthy -> {
+            // 仕様書 §2-B: 再開は記録を消すだけなので、切替の判定（下の
+            // onSlowLinkSwitch）より前に見る。消えた記録に対して同じ tick で判定が
+            // 走り、条件が揃っていれば新しい一周が始まる。揃っていなければ何も起きない。
+            maybeRearmLap(s)
+            onUnattendedPromptTimeout(s) ?: onSlowLinkSwitch(s) ?: s
+        }
         is FailoverState.FailingOver -> onFailingOverTimeout(s)
         is FailoverState.Exhausted -> onExhaustedRetry(s)
         FailoverState.Idle -> state
@@ -1246,7 +1311,8 @@ class FailoverController(
      * 通る。速度起因であることは [FailoverState.FailingOver.bySlowLink] に
      * 残るだけで、手順には影響しない。
      *
-     * 判定しない条件（仕様書 4-4。いずれも [slowLinkProvider] を呼ぶ前に返す）:
+     * 判定しない条件（仕様書 4-4。次の5つは [slowLinkProvider] を呼ぶ前に返す。
+     * **予算と行き先の2つは例外で、一度は問う**——下の「一周の終わり」を参照）:
      *
      * - グループの `autoFailoverEnabled` が false: R6 により自動では切り替えない。
      *   ここで [failOver] に入れてしまうと、そちらは「切り替え先が無い」として
@@ -1266,6 +1332,15 @@ class FailoverController(
      *   引き金である以上ここも同じ形のガードを持つ必要がある。この状態が
      *   無限に続かない根拠は [awaitingHumanAuthInput] の KDoc にある（時間の
      *   しきい値を足して解決してはならない——裁定78）
+     * - 仕様書 §2-A: 一周がすでに止まっている（最良へ戻す判断を済ませている）。
+     *   再開か、利用者の操作か、設定の変更が記録を消すまで問わない
+     *
+     * 一周の終わり（仕様書 4-5 と §2-A。次の2つのどちらかが尽きたとき。
+     * **前へ進む切替は始めないが、[slowLinkProvider] は一度問う。** 判定が真なら
+     * [returnToBest] が最良の候補へ戻して一周を止め、偽なら何もしない
+     * ——健全な候補は、一周が尽きたという理由だけでは離れない。ただし速度起因の
+     * 切替を一度もしていない一周では [returnToBest] も動かない）:
+     *
      * - 仕様書 4-5: そのグループの一周ぶんの切替をすでに行った
      *   （[slowLinkLapAvailable]）
      * - **次に起動できる候補が無い**（[nextStartableIndex] が null）。行き先の
@@ -1292,13 +1367,121 @@ class FailoverController(
         val connectedAt = candidateConnectedAtMs ?: return null
         if (clock.nowMs() - connectedAt < group.config.graceAfterConnectSec * 1_000L) return null
 
-        if (!slowLinkLapAvailable(group)) return null
-        if (nextStartableIndex(group, s.candidateIndex + 1, unattended = true) == null) return null
+        // 仕様書 §2-A: 一周が止まったあとは、最良の候補へ戻す切替を済ませている
+        // （戻り先が現候補で切替が要らなかった場合も含む）。以後は再開か、利用者の
+        // 操作か、設定の変更が記録を消すまで速度起因では動かない。
+        if (peekLap(group)?.stoppedAtMs() != null) return null
+
+        // 判定が偽ならここで終わる。**前へ進む道の計算より先に引く。** 行き先の計算は
+        // 初回ログイン未了の供給関数（[needsFirstLoginProvider]）を候補ごとに引き、
+        // それはプロファイルの初期化と prefs の写しを伴う。機能が無効（既定）の利用者にも
+        // 毎 tick その費用を払わせる理由が無い。[nextStartableIndex] の KDoc の
+        // 「供給関数を引くのは候補選択のときだけ」という約束を守る並びでもある。
+        // 前へ進む道の計算は読むだけなので、順序を入れ替えても結果は変わらない。
         if (!slowLinkProvider()) return null
 
+        // 前へ進む道が残っているか。予算（[slowLinkLapAvailable]）と行き先
+        // （[nextStartableIndex]）の**どちらかが尽きれば**一周の終わりである。
+        val forwardOpen = slowLinkLapAvailable(group) &&
+            nextStartableIndex(group, s.candidateIndex + 1, unattended = true) != null
+
+        // 一周の終わりでも、判定が真のときだけ動く。**判定が偽なら現候補は健全**で、
+        // 一周が尽きたという理由だけでそこから離れる根拠は無い（離れると、
+        // 「遅いときだけ動く」という機能の前提が崩れる）。
+        if (!forwardOpen) return returnToBest(s, group)
+
+        // 離れる候補の応答時間を、一周の記録へ一度だけ写す（供給関数の KDoc 参照）。
+        group.memberUuids.getOrNull(s.candidateIndex)?.let { uuid ->
+            lapFor(group).record(uuid, lapRttProvider())
+        }
         recordSlowLinkSwitch(group)
         return failOver(s.groupId, s.candidateIndex, alreadyDown = false, bySlowLink = true)
     }
+
+    /**
+     * 仕様書 §2-A: 一周が止まるとき、応答時間が最良だった候補へ戻す。
+     *
+     * **旧実装は前方にしか進まないため、一周の終わりに最後のメンバーへ居座った**
+     * （実機で確認）。最後のメンバーは「良いから」ではなく「最後だから」選ばれて
+     * おり、グループの順序は利用者が宣言した優先順位なので、最も優先度の低い
+     * 接続先に置き去りにしていた。
+     *
+     * - **この切替は一周の予算に数えない**（[recordSlowLinkSwitch] を呼ばない）。
+     *   予算は「前へ進む切替」の数で、数えると1回ぶん減る。
+     * - **一周が止まったことをここで刻む**（[LapRecord.noteStopped]）。以後の tick は
+     *   [onSlowLinkSwitch] の冒頭で返るので、戻す切替は一周に一度きりである。
+     *   再開（[maybeRearmLap]）の計時もこの時刻から始まる。
+     * - **戻り先が現候補なら切り替えない**（無駄な切断を作らない）。
+     * - **速度起因の切替を一度もしていない一周では何もしない**（本体のコメント参照）。
+     * - 戻り先の候補は**無人で起動してよいものに限る**。除外集合（S1）にある候補と、
+     *   初回ログインが未了の候補（[needsFirstLoginProvider]）は、記録上は最良でも
+     *   選ばない（現候補は起動済みなので常に対象に含める）。選べる候補の中で
+     *   どれもサンプルが [MIN_LAP_SAMPLES] に届かなければ、グループの先頭
+     *   （選べる中で最初）へ戻す。
+     */
+    private fun returnToBest(s: FailoverState.Healthy, group: FailoverGroup): FailoverState? {
+        val currentUuid = group.memberUuids.getOrNull(s.candidateIndex) ?: return null
+        // 速度起因の切替を一度もしていなければ、一周は始まってすらいない（死活で最後の
+        // 候補まで来た、単一メンバー、他が除外・初回ログイン未了、など）。比べる相手が
+        // 無いので戻る先も無く、**従来どおり動かない**。ここで止めたことにもしない
+        // ——行き先が無い理由は一時的でありうる（利用者が初回ログインを終えれば、
+        // 次の tick で前へ進める）。
+        val lap = peekLap(group)?.takeIf { it.switches() > 0 } ?: return null
+        // 最後の候補も、離れる瞬間の窓をここで写す（前へ進む経路と同じ作法）。
+        lap.record(currentUuid, lapRttProvider())
+
+        val eligible = group.memberUuids.filter {
+            it == currentUuid || (it !in _excludedUuids && !needsFirstLoginProvider(it))
+        }
+        val best = lap.bestUuid(
+            order = eligible,
+            jitterToleranceMs = slowLinkSettingsProvider().degradedJitterMs,
+            minSamples = MIN_LAP_SAMPLES,
+        ) ?: eligible.firstOrNull()
+
+        lap.noteStopped(clock.nowMs())
+
+        if (best == null || best == currentUuid) return null
+        return failOver(
+            s.groupId, s.candidateIndex,
+            alreadyDown = false, bySlowLink = true, toUuid = best,
+        )
+    }
+
+    /**
+     * 仕様書 §2-B: 一周が止まってから [SlowLinkSettings.rearmAfterLapMin] が経過
+     * したら、そのグループの一周の記録（応答時間・切替回数・停止時刻）を消す。
+     * **消すだけで切り替えない**——切替には判定が別途必要なので、状況が改善して
+     * いれば何も起きない。劣化が続いていれば、次の tick で新しい一周が始まる。
+     *
+     * `0` は「再開しない」であり「すぐ再開」ではない。
+     *
+     * **裁定78 / `DECISIONS` 項目3 と混同しないこと。** この時計は「人が居るか」
+     * 「指示がまだ生きているか」を判定するものではなく、自動動作の冷却期間である
+     * （`connectTimeoutSec` と同じ種類の正当な期限）。消さないこと。
+     */
+    private fun maybeRearmLap(s: FailoverState.Healthy) {
+        val minutes = slowLinkSettingsProvider().rearmAfterLapMin
+        if (minutes <= 0) return
+        val group = groupOf(s.groupId) ?: return
+        val lap = peekLap(group) ?: return
+        val stoppedAt = lap.stoppedAtMs() ?: return
+        if (clock.nowMs() - stoppedAt < minutes * 60_000L) return
+        lap.clear()
+    }
+
+    /** 一周の記録。無ければ作る。構成が変わっていれば作り直す（古い記録は捨てる）。 */
+    private fun lapFor(group: FailoverGroup): LapRecord {
+        val existing = slowLinkLaps[group.id]
+        if (existing != null && existing.memberUuids == group.memberUuids) return existing.record
+        val fresh = SlowLinkLap(group.memberUuids)
+        slowLinkLaps[group.id] = fresh
+        return fresh.record
+    }
+
+    /** 一周の記録。**作らない**問い合わせ。無い・構成が違うときは null。 */
+    private fun peekLap(group: FailoverGroup): LapRecord? =
+        slowLinkLaps[group.id]?.takeIf { it.memberUuids == group.memberUuids }?.record
 
     /**
      * 仕様書 4-5: このグループでまだ速度起因の切替を行ってよいか。**問い合わせる
@@ -1336,8 +1519,7 @@ class FailoverController(
      * 通知してもらう必要が無い。
      */
     private fun slowLinkLapAvailable(group: FailoverGroup): Boolean {
-        val lap = slowLinkLaps[group.id]
-        val switches = if (lap != null && lap.memberUuids == group.memberUuids) lap.switches else 0
+        val switches = peekLap(group)?.switches() ?: 0
         return switches < group.memberUuids.size - 1
     }
 
@@ -1355,9 +1537,7 @@ class FailoverController(
         val liveIds = groups.mapTo(mutableSetOf()) { it.id }
         slowLinkLaps.keys.retainAll(liveIds)
 
-        val lap = slowLinkLaps[group.id]
-        val switches = if (lap != null && lap.memberUuids == group.memberUuids) lap.switches else 0
-        slowLinkLaps[group.id] = SlowLinkLap(group.memberUuids, switches + 1)
+        lapFor(group).noteSwitch()
     }
 
     /**
@@ -1581,6 +1761,13 @@ class FailoverController(
     }
 
     private companion object {
+        /**
+         * 仕様書 §2-A: 一周の比較に入る候補の最少サンプル数。これ未満の候補は
+         * 比較から外す。プローブ1周期の採取回数（`FailoverService` の
+         * `PROBE_ATTEMPTS`）と同じ値で、「少なくとも1周期ぶんが届いた候補」を意味する。
+         */
+        const val MIN_LAP_SAMPLES = 5
+
         /**
          * Ruling 25: 切断完了の確認を待つ上限。既存コアの `killVPNThread(true)` は
          * スレッド join を 1000ms で打ち切るので、正常終了ならその内に

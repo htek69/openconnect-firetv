@@ -59,7 +59,7 @@ class TvMainActivity : ComponentActivity() {
      * `mActivityConnections == 0` のまま `notification_input_needed` の通知が
      * 出るだけだった。**Fire TV には通知シェードが無い**（裁定58）ので、これは
      * 実質不可視であり、利用者から見ると「パスワードを聞かれないまま次の候補へ
-     * 切り替わる」ことになる（実機で確認: 削除→再登録した myvpn には
+     * 切り替わる」ことになる（実機で確認: 削除→再登録した候補I には
      * `FORMDATA-*` も `ACCEPTED-CERT-*` も無く、旧画面から同じ接続先に繋ぐと
      * `Certificate warning` ダイアログが出た＝コアは正しく入力を要求している）。
      *

@@ -66,6 +66,8 @@ class GroupStorePropertyTest {
             "G1 グループ自体が落ちる場合",
             "G1 グローバル設定を保存済み",
             "G1 グローバル設定が未保存",
+            "G1 低速設定が範囲内（往復が恒等）",
+            "G1 低速設定が範囲外（収められる）",
             "G2 開き括弧が違う",
             "G2 途中で切れている",
             "G2 型が合わない",
@@ -226,10 +228,37 @@ class GroupStorePropertyTest {
                     "期待=${case.target} 実際=${store.loadProbeTarget()}", case,
                 )
             }
-            if (store.loadSlowLinkSettings() != case.slowLink) {
+            // 裁定30: 読込は数値5項目を範囲へ収めて返す。したがって性質は「保存した値が
+            // そのまま戻る」ではなく「読んだ値は、保存した値を収めた形である」。
+            // 範囲内の値は収めても変わらないので、範囲内の入力ではこれが従来どおりの
+            // 「保存した値がそのまま戻る」（直列化の忠実さ）になる。範囲外の入力では
+            // 収められた形を期待する。**どちらの入力も生成器が必ず踏む**（到達記録）。
+            // 期待は製品の coerced() を呼ばず、範囲の定数から独立に組む（製品側の
+            // coerced が項目を落としても、期待が同じ誤りに引きずられないように）。
+            val l = case.slowLink
+            val expectedSlow = l.copy(
+                slowRxKbps = l.slowRxKbps.coerceIn(SlowLinkBounds.SLOW_RX_KBPS_MIN, SlowLinkBounds.SLOW_RX_KBPS_MAX),
+                rxFloorKbps = l.rxFloorKbps.coerceIn(SlowLinkBounds.RX_FLOOR_KBPS_MIN, SlowLinkBounds.RX_FLOOR_KBPS_MAX),
+                degradedRttMs = l.degradedRttMs.coerceIn(
+                    SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX,
+                ),
+                degradedJitterMs = l.degradedJitterMs.coerceIn(
+                    SlowLinkBounds.DEGRADED_JITTER_MS_MIN, SlowLinkBounds.DEGRADED_JITTER_MS_MAX,
+                ),
+                rearmAfterLapMin = l.rearmAfterLapMin.coerceIn(
+                    SlowLinkBounds.REARM_AFTER_LAP_MIN_MIN, SlowLinkBounds.REARM_AFTER_LAP_MIN_MAX,
+                ),
+            )
+            if (case.slowLink == expectedSlow) {
+                bump(cov, "G1 低速設定が範囲内（往復が恒等）")
+            } else {
+                bump(cov, "G1 低速設定が範囲外（収められる）")
+            }
+            if (store.loadSlowLinkSettings() != expectedSlow) {
                 return Violation(
                     "G1", "低速設定が一致しない",
-                    "期待=${case.slowLink} 実際=${store.loadSlowLinkSettings()}", case,
+                    "保存=${case.slowLink} 期待（収めた形）=$expectedSlow 実際=${store.loadSlowLinkSettings()}",
+                    case,
                 )
             }
             if (store.loadProbeSchedule() != schedule) {
@@ -528,13 +557,52 @@ class GroupStorePropertyTest {
                     null
                 },
                 target = ProbeTarget(host = HOSTS[rnd.nextInt(HOSTS.size)], port = smallInt(rnd)),
-                slowLink = SlowLinkSettings(enabled = rnd.nextBoolean(), slowRxKbps = smallInt(rnd)),
+                slowLink = slowLinkSettings(rnd),
                 activeGroupId = if (rnd.nextInt(100) < 70) {
                     groups.randomOrNull(rnd)?.id ?: "g-missing"
                 } else {
                     null
                 },
             )
+        }
+
+        /**
+         * 低速設定。半々で、範囲内の値（往復が恒等になる入力）と、範囲外を含みうる
+         * 値（収められる入力）を作る。**6項目すべてを動かす**——項目を書き落とす
+         * 保存・読込は、既定値のままの項目では見つからない。
+         */
+        private fun slowLinkSettings(rnd: Random): SlowLinkSettings =
+            if (rnd.nextBoolean()) {
+                SlowLinkSettings(
+                    enabled = rnd.nextBoolean(),
+                    slowRxKbps = inRange(rnd, SlowLinkBounds.SLOW_RX_KBPS_MIN, SlowLinkBounds.SLOW_RX_KBPS_MAX),
+                    rxFloorKbps = inRange(rnd, SlowLinkBounds.RX_FLOOR_KBPS_MIN, SlowLinkBounds.RX_FLOOR_KBPS_MAX),
+                    degradedRttMs = inRange(
+                        rnd, SlowLinkBounds.DEGRADED_RTT_MS_MIN, SlowLinkBounds.DEGRADED_RTT_MS_MAX,
+                    ),
+                    degradedJitterMs = inRange(
+                        rnd, SlowLinkBounds.DEGRADED_JITTER_MS_MIN, SlowLinkBounds.DEGRADED_JITTER_MS_MAX,
+                    ),
+                    rearmAfterLapMin = inRange(
+                        rnd, SlowLinkBounds.REARM_AFTER_LAP_MIN_MIN, SlowLinkBounds.REARM_AFTER_LAP_MIN_MAX,
+                    ),
+                )
+            } else {
+                SlowLinkSettings(
+                    enabled = rnd.nextBoolean(),
+                    slowRxKbps = smallInt(rnd),
+                    rxFloorKbps = smallInt(rnd),
+                    degradedRttMs = smallInt(rnd),
+                    degradedJitterMs = smallInt(rnd),
+                    rearmAfterLapMin = smallInt(rnd),
+                )
+            }
+
+        /** 両端を含む範囲の整数。端そのものも出やすくする。 */
+        private fun inRange(rnd: Random, min: Int, max: Int): Int = when (rnd.nextInt(4)) {
+            0 -> min
+            1 -> max
+            else -> rnd.nextInt(min, max + 1)
         }
 
         /** 設定に入りうる整数。0・負・極値も持たせる（JSON は符号付き 32bit をそのまま往復する）。 */
