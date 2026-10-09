@@ -122,4 +122,56 @@ class SettingsTextTest {
         assertTrue(t.contains("再開しても、条件が揃わなければ切り替わりません"))
         assertFalse(t.contains("再開しません"))
     }
+
+    // ---- 裁定34: 受信の帯が空になる組（下限 >= 上限）----
+    // 判定は「受信が下限を上回り、かつ上限を下回る」帯のなかでだけ成り立つ。帯が空だと
+    // 条件が決して揃わず、機能が黙って止まる。文を消さず警告に差し替える。
+
+    private val emptyBandMarker = "判定できる受信速度の範囲がありません"
+
+    @Test
+    fun `下限が上限以上なら帯が空であり切り替わらない旨を、設定値から出す`() {
+        // 下限 450 > 上限 350。どちらも既定値（50 / 1000）とは違う値
+        val t = SettingsText.pathQualitySummary(SlowLinkSettings(slowRxKbps = 350, rxFloorKbps = 450))
+        assertTrue(t, t.contains("受信の下限（450 kbps）が上限（350 kbps）以上"))
+        assertTrue(t, t.contains(emptyBandMarker))
+        assertTrue(t, t.contains("この設定では接続先は切り替わりません"))
+        assertFalse("既定の上限を言わないこと", t.contains("1000"))
+    }
+
+    @Test
+    fun `帯が空のとき、待機中の安心の文にも 0 の警告にも落ちない`() {
+        val t = SettingsText.pathQualitySummary(SlowLinkSettings(slowRxKbps = 350, rxFloorKbps = 450))
+        // 「待機中は切り替わりません」は、帯が空のときは別の理由で成り立つだけで、
+        // 利用者に誤った理由を教える。通常の下限の行に落ちていないこと
+        assertFalse(t, t.contains("待機中は切り替わりません"))
+        assertFalse(t, t.contains("kbps を下回"))
+        // 下限 0 の警告（待機中でも切り替わる）とも区別できること
+        assertFalse(t, t.contains("待機中でも切り替わることがあります"))
+    }
+
+    @Test
+    fun `下限と上限が等しくても帯は空だが、1 でも下限が低ければ空ではない`() {
+        val equal = SettingsText.pathQualitySummary(SlowLinkSettings(slowRxKbps = 300, rxFloorKbps = 300))
+        assertTrue(equal, equal.contains(emptyBandMarker))
+        val oneBelow = SettingsText.pathQualitySummary(SlowLinkSettings(slowRxKbps = 300, rxFloorKbps = 299))
+        assertFalse(oneBelow, oneBelow.contains(emptyBandMarker))
+        assertTrue(oneBelow, oneBelow.contains("待機中は切り替わりません"))
+    }
+
+    @Test
+    fun `下限 0 は上限がいくつでも 0 の警告であり、帯が空の警告ではない`() {
+        // 0 は「下限なし」。上限が最小でも、さらに 0 以下の入力でも、空の帯とは言わない
+        for (upper in listOf(250, 1000, 0, -1)) {
+            val t = SettingsText.pathQualitySummary(SlowLinkSettings(slowRxKbps = upper, rxFloorKbps = 0))
+            assertTrue("上限 $upper: 0 の警告を出す", t.contains("待機中でも切り替わることがあります"))
+            assertFalse("上限 $upper: 空の帯の警告に落ちない", t.contains(emptyBandMarker))
+        }
+    }
+
+    @Test
+    fun `既定値は帯が空ではない`() {
+        val t = SettingsText.pathQualitySummary(SlowLinkSettings())
+        assertFalse(t, t.contains(emptyBandMarker))
+    }
 }

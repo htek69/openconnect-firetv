@@ -31,12 +31,20 @@ object SettingsText {
         val head = "いまの設定では、往復が ${s.degradedRttMs} ms を超え、" +
             "かつばらつきが ${s.degradedJitterMs} ms を超える状態が $windowSec 秒続いたときに" +
             "切り替えます。"
-        val floor = if (s.rxFloorKbps > 0) {
-            "受信が ${s.rxFloorKbps} kbps を下回っているあいだは判定しません" +
-                "（待機中は切り替わりません）。"
-        } else {
+        val floor = if (s.rxFloorKbps <= 0) {
             "受信の下限が 0 なので、何も再生していないときでも判定します" +
                 "（待機中でも切り替わることがあります）。"
+        } else if (s.rxFloorKbps >= s.slowRxKbps) {
+            // 判定は「受信が下限を上回り、かつ上限を下回る」帯のなかでだけ成り立つ
+            // （PathQualityDetector.isDegraded）。下限が上限以上だと帯が空で、条件が
+            // 決して揃わない。仕様の表は組を禁じていないが、黙って機能が止まるのは
+            // 許容できないので、**文を消さず警告に差し替える**（下限 0 と同じ作法）。
+            // 下限 0 は上の枝が先に取る（0 は「下限なし」で、帯は空ではない）。
+            "ただし、受信の下限（${s.rxFloorKbps} kbps）が上限（${s.slowRxKbps} kbps）以上なので、" +
+                "判定できる受信速度の範囲がありません。この設定では接続先は切り替わりません。"
+        } else {
+            "受信が ${s.rxFloorKbps} kbps を下回っているあいだは判定しません" +
+                "（待機中は切り替わりません）。"
         }
         val rearm = if (s.rearmAfterLapMin > 0) {
             "一周したあと ${s.rearmAfterLapMin} 分で再開します。" +
