@@ -169,7 +169,7 @@ class HomeRowsTest {
         val row = rows[0] as HomeRow.GroupRow
         assertEquals(ConnectionBadge.Connected, row.badge)
         assertEquals("sv2", row.memberName)
-        assertEquals("速度低下で切替", row.switchReason)
+        assertEquals("経路品質で切替", row.switchReason)
     }
 
     @Test
@@ -183,7 +183,7 @@ class HomeRowsTest {
         )
 
         assertNull((rows[0] as HomeRow.GroupRow).switchReason)
-        assertEquals("速度低下で切替", (rows[1] as HomeRow.GroupRow).switchReason)
+        assertEquals("経路品質で切替", (rows[1] as HomeRow.GroupRow).switchReason)
     }
 
     @Test
@@ -332,7 +332,7 @@ class HomeRowsTest {
         val reconciled = HomeRows.withTrustworthyMemberNames(rows, listOf(group), engineGroup)
 
         assertNull((reconciled[0] as HomeRow.GroupRow).memberName)
-        assertEquals("速度低下で切替", (reconciled[0] as HomeRow.GroupRow).switchReason)
+        assertEquals("経路品質で切替", (reconciled[0] as HomeRow.GroupRow).switchReason)
     }
 
     @Test

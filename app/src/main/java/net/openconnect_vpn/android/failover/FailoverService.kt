@@ -793,7 +793,7 @@ class FailoverService : Service() {
         // 寿命を持つ値として置く（FailoverState には足さない）。
         // 最終再レビューの指摘4（FIX 1）: 速度低下でない FailingOver（＝死活起因の
         // 切替）は、以前の速度低下による切替理由を必ず消す。片方だけ書いて
-        // もう片方を消さないと、死活切替のあとにも「速度低下で切替」という
+        // もう片方を消さないと、死活切替のあとにも「経路品質で切替」という
         // 古い理由が残り、実際の切替理由と食い違ったまま表示され続ける。
         FailoverStateHolder.onFailoverStateChanged(controller.state)
         // 仕様書 4-2: 測っている候補が変わった・トンネルが無くなったなら測り直す。
