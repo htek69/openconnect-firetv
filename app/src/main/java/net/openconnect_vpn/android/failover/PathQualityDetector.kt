@@ -126,12 +126,17 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
         return median > settings.degradedRttMs && spread > settings.degradedJitterMs
     }
 
-    private companion object {
+    companion object {
         /**
          * 窓の長さ（秒）。**利用者が変えられる項目にしない。**
          * 検知までの時間は仕様書と画面の文面に出ており（「60秒ぶんを均して」）、
          * ここを可変にすると二重管理になる。仕様書 §2-A のとおり、
          * **比較の記録を増やすのは窓を長くすることではなく採取回数を増やすこと**である。
+         *
+         * **外から読めるのは、画面の文面がこの値から導かれるため**
+         * （`tv.SettingsText.pathQualitySummary`）。読めることと変えられることは別で、
+         * 設定項目（[SlowLinkSettings]）には出していない。文面に `60` を直書きすると、
+         * 窓を変えたとき画面だけが古い値を言い続ける。
          */
         const val WINDOW_SEC = 60
     }
