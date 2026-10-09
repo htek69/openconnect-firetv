@@ -65,7 +65,9 @@ class HealthProbeTimedTest {
         val p = OldStyleProbe(reachable = false)
         val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 3)
         assertFalse(o.reachable)
-        assertEquals(3, o.rttMs.size)
+        // 1回目が失敗した周期は残りを行わない（到達可否はもう決まっている）。
+        assertEquals(1, p.calls)
+        assertEquals(1, o.rttMs.size)
     }
 
     @Test
@@ -85,8 +87,10 @@ class HealthProbeTimedTest {
     }
 
     @Test
-    fun `1回でも成功すれば reachable は true（失敗が混じっていても）`() = runBlocking {
-        val p = ScriptedProbe(listOf(false, true, false))
+    fun `1回目が成功すれば、2回目以降が失敗しても reachable は true`() = runBlocking {
+        // 従来（1回しか試さない probe）なら到達可能だった周期。残りの失敗で
+        // 到達不能にしてはならない。
+        val p = ScriptedProbe(listOf(true, false, false))
         val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 3)
         assertTrue(o.reachable)
         assertEquals(3, p.calls)
@@ -94,18 +98,13 @@ class HealthProbeTimedTest {
     }
 
     @Test
-    fun `最後の1回だけ成功しても reachable は true`() = runBlocking {
-        val p = ScriptedProbe(listOf(false, false, true))
-        val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 3)
-        assertTrue(o.reachable)
-    }
-
-    @Test
-    fun `全回失敗なら reachable は false（成功が混じらない）`() = runBlocking {
-        val p = ScriptedProbe(listOf(false, false, false))
+    fun `1回目が失敗すれば、あとの回が成功する並びでも reachable は false で1回しか試さない`() = runBlocking {
+        // 「1回でも成功すれば可」の実装ならここが true になり、5回すべてを試す。
+        val p = ScriptedProbe(listOf(false, true, true))
         val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 3)
         assertFalse(o.reachable)
-        assertEquals(3, o.rttMs.size)
+        assertEquals(1, p.calls)
+        assertEquals(1, o.rttMs.size)
     }
 
     @Test
@@ -135,6 +134,7 @@ class HealthProbeTimedTest {
         val p = ScriptedProbe(listOf(false, false))
         val o = p.probeTimed(ProbeTarget(), timeoutMs = 5_000, attempts = 2)
         assertFalse(o.reachable)
+        assertEquals(1, o.rttMs.size)
         assertTrue("即失敗の所要時間は timeoutMs より十分小さいはず（実測 ${o.rttMs}）", o.rttMs.all { it < 5_000L })
     }
 
@@ -165,16 +165,16 @@ class HealthProbeTimedTest {
             attempts = 3,
         )
         assertFalse(o.reachable)
-        assertEquals(3, o.rttMs.size)
+        assertEquals(1, o.rttMs.size)
         assertTrue("接続拒否は timeoutMs より十分速く返るはず（実測 ${o.rttMs}）", o.rttMs.all { it < 5_000L })
     }
 
     @Test
-    fun `TcpHealthProbe の probeTimed では、全回失敗の5回周期でも各回に実測の所要時間が入る`() = runBlocking {
-        // 失敗のログは周期で1行に抑えているが（TcpHealthProbe.probeTimed の KDoc）、
-        // その抑制が結果を変えないことを確かめる。ログ呼び出し自体は JVM 単体テストでは
-        // 観測できない（unitTests.returnDefaultValues で Log.w は無動作）ため、
-        // ログの行数は TcpHealthProbe の読みで検証する。
+    fun `TcpHealthProbe の probeTimed では、閉じたポートは5回を指定しても1回で止まり、実測の所要時間が入る`() = runBlocking {
+        // 1回目が失敗した周期は残りを行わないので、失敗しているリンクのログも1回の
+        // 試行で1行のまま（TcpHealthProbe.probeTimed の KDoc）。ログ呼び出し自体は
+        // JVM 単体テストでは観測できない（unitTests.returnDefaultValues で Log.w は
+        // 無動作）ため、行数の規則は RunTimedCycleTest が logFailure の受け渡しで固定する。
         val closedPort = ServerSocket(0).use { it.localPort }
         val o = TcpHealthProbe().probeTimed(
             target = ProbeTarget(loopback(), closedPort),
@@ -182,7 +182,7 @@ class HealthProbeTimedTest {
             attempts = 5,
         )
         assertFalse(o.reachable)
-        assertEquals(5, o.rttMs.size)
+        assertEquals(1, o.rttMs.size)
         assertTrue("各回の所要時間は timeoutMs より十分小さいはず（実測 ${o.rttMs}）", o.rttMs.all { it < 5_000L })
     }
 

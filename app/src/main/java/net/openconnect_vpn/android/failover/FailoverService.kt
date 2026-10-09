@@ -370,8 +370,11 @@ class FailoverService : Service() {
 
                 if (controller.shouldProbeNow() || forcedByWake) {
                     val outcome = probe.probeTimed(probeTarget, currentProbeTimeoutMs(), PROBE_ATTEMPTS)
-                    // 仕様書 §2: 到達可否の意味は従来と同じ（1回でも成功すれば到達可能）。
-                    // 死活判定の強さを変えないための約束（[ProbeOutcome] の KDoc）。
+                    // 仕様書 §2: 到達可否は**1回目の試行の結果そのもの**（「どれか1回でも成功
+                    // すれば可」ではない）。従来のプローブは1回しか試さなかったので、
+                    // 「どれか」にすると死活判定が従来よりはるかに寛容になり、既存の死活に
+                    // よる切替が働かなくなる。1回目が失敗した周期は残りを行わず、最悪の
+                    // 所要時間は timeout 1回ぶんに戻る（[HealthProbe.probeTimed]）。
                     // 応答時間のサンプルは同じ結果から取り、判定器へ渡す。
                     pathQualityDetector.onProbe(clock.nowMs(), outcome)
                     dispatch(FailoverEvent.ProbeResult(outcome.reachable))
@@ -944,7 +947,8 @@ class FailoverService : Service() {
          * 候補あたり10サンプルになり、旧仕様 §2-2 が ping 10発で測ったのと同じ密度に
          * なる（仕様書 §2-A）。**窓を長くして一周を15分に伸ばすより桁違いに安い。**
          *
-         * **増やすときの代償は接続の本数である**（30秒あたり5本）。減らすと
+         * **増やすときの代償は接続の本数である**（到達できる経路で30秒あたり最大5本。
+         * 1回目が失敗した周期は1本で止まる）。減らすと
          * ばらつきの推定が粗くなる。
          */
         private const val PROBE_ATTEMPTS = 5

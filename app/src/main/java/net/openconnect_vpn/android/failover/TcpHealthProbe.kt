@@ -20,13 +20,17 @@ class TcpHealthProbe : HealthProbe {
 
     /**
      * 各回の接続を [attemptOnce] で行い、回ごとに実測の経過時間を記録する。
+     * 周期の進め方（**到達可否は1回目の結果そのもの**・1回目が失敗したら残りは行わない・
+     * 成功したら `timeoutMs * 2` の予算の範囲で続ける）は [HealthProbe.probeTimed] と
+     * [runTimedCycle] に書いてある。
      *
      * **1周期の失敗ログは最大1行である。** 失敗の理由を残すための [Log.w] は
      * 周期内で最初に起きた失敗の1回だけ出す。全回失敗しても、ログは5行ではなく1行になる。
      * 理由: 周期内の全回で [Log.w] を出すと、失敗しているリンクで logcat の行数が
      * 約5倍になる。このプロジェクトは「ログを足さない」制約を置いており、
      * logcat が溢れて自分たちの行が流れて消えた経験がある。その再発を防ぐのが
-     * この分岐の目的である。
+     * この分岐の目的である。1回目が失敗した周期は残りを行わないので、失敗している
+     * リンクのログ行数は、複数回化の前（1回の試行で1行）と変わらない。
      *
      * 1回目に成功して2回目以降に失敗した場合も、最初の失敗は1行残す。
      * 「最初の1回だけ記録する」にすると、その失敗の理由が失われてしまうため。
@@ -40,19 +44,10 @@ class TcpHealthProbe : HealthProbe {
         target: ProbeTarget,
         timeoutMs: Int,
         attempts: Int,
-    ): ProbeOutcome {
-        val n = attempts.coerceAtLeast(1)
-        var any = false
-        var loggedThisCycle = false
-        val times = ArrayList<Long>(n)
-        for (i in 0 until n) {
-            val startNs = System.nanoTime()
-            val ok = attemptOnce(target, timeoutMs, logFailure = !loggedThisCycle)
-            times.add((System.nanoTime() - startNs) / 1_000_000L)
-            if (ok) any = true else loggedThisCycle = true
+    ): ProbeOutcome =
+        runTimedCycle(timeoutMs, attempts, System::nanoTime) { logFailure ->
+            attemptOnce(target, timeoutMs, logFailure)
         }
-        return ProbeOutcome(reachable = any, rttMs = times)
-    }
 
     /**
      * 1回の TCP 接続を試す。成功なら true。失敗なら false を返し、例外は投げない。
