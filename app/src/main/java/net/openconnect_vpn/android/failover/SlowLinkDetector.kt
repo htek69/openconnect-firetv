@@ -10,6 +10,9 @@ data class SlowLinkThresholds(
     val demandTxKbps: Int = 5,
 )
 
+/** 窓で均した受信・送信の速度（kbps）。[SlowLinkDetector.windowAverage] の戻り値。 */
+data class WindowAverage(val rxKbps: Long, val txKbps: Long)
+
 /**
  * トンネルの累計バイト数の列から「遅い」を判定する。
  *
@@ -92,6 +95,27 @@ class SlowLinkDetector(private val thresholds: SlowLinkThresholds) {
         while (samples.size > 1 && samples[1].atMs <= cutoffMs) {
             samples.removeFirst()
         }
+    }
+
+    /**
+     * 窓で均した受信・送信の速度。判定（[isSlow]）とは独立に平均だけを返す。
+     *
+     * 窓が埋まっていない、または証拠が古すぎる（[isSlow] の条件1・2と同じ）あいだは
+     * null。サンプルが無いときも null。[isSlow] の挙動は変えない。
+     */
+    fun windowAverage(): WindowAverage? {
+        val oldest = samples.firstOrNull() ?: return null
+        val newest = samples.lastOrNull() ?: return null
+        val spanMs = newest.atMs - oldest.atMs
+        if (spanMs <= 0 || spanMs < windowMs) return null
+        if (spanMs > windowMs * STALE_SPAN_FACTOR) return null
+
+        val dRx = newest.bytes.rxBytes - oldest.bytes.rxBytes
+        val dTx = newest.bytes.txBytes - oldest.bytes.txBytes
+        if (dRx < 0 || dTx < 0) return null
+
+        // 式の根拠は [isSlow] のコメントを参照（`* 1000 / 1000` を足さない）。
+        return WindowAverage(rxKbps = dRx * 8 / spanMs, txKbps = dTx * 8 / spanMs)
     }
 
     fun isSlow(): Boolean {
