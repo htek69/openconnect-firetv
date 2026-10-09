@@ -1,5 +1,6 @@
 package net.openconnect_vpn.android.failover
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -116,6 +117,34 @@ class PathQualityDetectorTest {
     }
 
     @Test
+    fun `reset は受信の窓を捨てる（応答時間が新しくても発火しない）`() {
+        // reset が応答時間の窓しか捨てないと、古い受信の窓が残って、
+        // 直後に入れた新しい応答時間と合わさって発火する。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L, 600L))
+        assertTrue(d.isDegraded())
+        d.reset()
+        d.onProbe(60_000L, ProbeOutcome(reachable = true, rttMs = listOf(300L, 90L, 600L)))
+        assertFalse(d.isDegraded())
+    }
+
+    @Test
+    fun `reset は応答時間の窓を捨てる（受信が帯に入っていても発火しない）`() {
+        // reset が受信の窓しか捨てないと、古い応答時間（t=60_000 のぶんは
+        // 新しい窓にも残る時刻）が残って、受信の帯が満たされた時点で発火する。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L, 600L))
+        assertTrue(d.isDegraded())
+        d.reset()
+        var rx = 0L
+        for (i in 0..12) {
+            d.onSample(60_000L + i * 5_000L, IfaceBytes(rx, 0L))
+            rx += 424L * 5_000L / 8
+        }
+        assertFalse(d.isDegraded())
+    }
+
+    @Test
     fun `rxFloorKbps が 0 なら下限なしとして扱う`() {
         val d = PathQualityDetector(settings.copy(rxFloorKbps = 0))
         fill(d, rxKbps = 0, rtt = listOf(300L, 90L, 600L))
@@ -127,5 +156,95 @@ class PathQualityDetectorTest {
         val d = PathQualityDetector(settings)
         fill(d, rxKbps = 424, rtt = listOf(300L, 90L))
         assertTrue(d.rttSamples().isNotEmpty())
+    }
+
+    // ---- 窓より古い応答時間では判定しない ----
+
+    @Test
+    fun `プローブが止まったあと窓を過ぎた応答時間では発火しない`() {
+        // 守るもの: 判定は窓より古い証拠で生き残ってはならない。受信側の
+        // SlowLinkDetector は最古と最新の差が古すぎれば偽に戻す（STALE_SPAN_FACTOR）。
+        // 応答時間側にも同じ保護が要る。プローブが止まっても採取（onSample）は
+        // 続くので、onSample の時刻で応答時間の窓も刈らないと、t=0 の
+        // 応答時間が受信の帯が満たされるかぎり判定を駆動し続ける。
+        val d = PathQualityDetector(settings)
+        d.onProbe(0L, ProbeOutcome(reachable = true, rttMs = listOf(300L, 90L, 600L)))
+        var rx = 0L
+        for (i in 0..36) {
+            d.onSample(i * 5_000L, IfaceBytes(rx, 0L))
+            rx += 424L * 5_000L / 8
+        }
+        // t=180_000。受信の窓は埋まり帯の中、応答時間は 180 秒前のものだけ。
+        assertFalse(d.isDegraded())
+    }
+
+    // ---- 境界（厳密な大小）。各ケースは境界ちょうどで発火しないことを見て、
+    //      境界の1つ外側（対照）では発火することで、その境界が効いていることを示す ----
+
+    @Test
+    fun `応答時間の中央値がちょうど閾値なら発火しない`() {
+        // 厳密な「超える」。中央値 250 == degradedRttMs、ばらつき 400 は十分大きい。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(50L, 250L, 450L))
+        assertFalse(d.isDegraded())
+        val control = PathQualityDetector(settings)
+        fill(control, rxKbps = 424, rtt = listOf(50L, 251L, 450L))
+        assertTrue(control.isDegraded())
+    }
+
+    @Test
+    fun `ばらつきがちょうど閾値なら発火しない`() {
+        // 厳密な「超える」。最大−最小 150 == degradedJitterMs、中央値 400 は十分大きい。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 400L, 450L))
+        assertFalse(d.isDegraded())
+        val control = PathQualityDetector(settings)
+        fill(control, rxKbps = 424, rtt = listOf(300L, 400L, 451L))
+        assertTrue(control.isDegraded())
+    }
+
+    @Test
+    fun `受信の窓の平均がちょうど上限なら発火しない`() {
+        // 厳密な「未満」。fill は 12 区間 x 625 x kbps バイトを 60 秒で割るので
+        // 平均はちょうど rxKbps になる（端数なし）。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 1000, rtt = listOf(300L, 90L, 600L))
+        assertFalse(d.isDegraded())
+        val control = PathQualityDetector(settings)
+        fill(control, rxKbps = 999, rtt = listOf(300L, 90L, 600L))
+        assertTrue(control.isDegraded())
+    }
+
+    @Test
+    fun `受信の窓の平均がちょうど下限なら発火しない`() {
+        // 厳密な「より大きい」。
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 50, rtt = listOf(300L, 90L, 600L))
+        assertFalse(d.isDegraded())
+        val control = PathQualityDetector(settings)
+        fill(control, rxKbps = 51, rtt = listOf(300L, 90L, 600L))
+        assertTrue(control.isDegraded())
+    }
+
+    // ---- rttSamples の中身 ----
+
+    @Test
+    fun `rttSamples は窓の中のサンプルをそのまま返す`() {
+        val d = PathQualityDetector(settings)
+        fill(d, rxKbps = 424, rtt = listOf(300L, 90L))
+        // プローブは t=0, 30_000, 60_000 の3周期。
+        assertEquals(listOf(300L, 90L, 300L, 90L, 300L, 90L), d.rttSamples())
+    }
+
+    @Test
+    fun `rttSamples に窓より古いサンプルは残らない`() {
+        val d = PathQualityDetector(settings)
+        d.onProbe(0L, ProbeOutcome(reachable = true, rttMs = listOf(1L, 2L)))
+        d.onProbe(70_000L, ProbeOutcome(reachable = true, rttMs = listOf(3L, 4L)))
+        assertEquals(listOf(3L, 4L), d.rttSamples())
+
+        // 採取だけが進んだ場合も同じ（onSample の時刻で刈る）。
+        d.onSample(70_000L + 61_000L, IfaceBytes(0L, 0L))
+        assertTrue(d.rttSamples().isEmpty())
     }
 }

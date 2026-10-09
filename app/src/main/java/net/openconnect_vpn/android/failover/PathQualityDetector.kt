@@ -33,6 +33,10 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
 
     fun onSample(atMs: Long, bytes: IfaceBytes) {
         rx.onSample(atMs, bytes)
+        // 応答時間の窓も採取の時刻で刈る。プローブが止まっても採取は続くので、
+        // ここで刈らないと窓より古い応答時間が判定を生かし続ける
+        // （受信側が持つ「古い証拠では判定しない」保護の、応答時間側の対）。
+        pruneRtt(atMs)
     }
 
     /**
@@ -41,7 +45,11 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
      */
     fun onProbe(atMs: Long, outcome: ProbeOutcome) {
         for (v in outcome.rttMs) rtt.addLast(RttSample(atMs, v))
-        val cutoffMs = atMs - windowMs
+        pruneRtt(atMs)
+    }
+
+    private fun pruneRtt(nowMs: Long) {
+        val cutoffMs = nowMs - windowMs
         while (rtt.isNotEmpty() && rtt.first().atMs < cutoffMs) rtt.removeFirst()
     }
 
