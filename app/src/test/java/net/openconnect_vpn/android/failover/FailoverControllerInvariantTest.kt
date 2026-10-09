@@ -180,8 +180,25 @@ class FailoverControllerInvariantTest {
          */
         var pendingAttended: Boolean? = null
 
-        /** `slowLinkLaps` の写し。値は（そのとき数えていたメンバー列, 切替回数）。 */
-        val laps = mutableMapOf<String, Pair<List<String>, Int>>()
+        /**
+         * `slowLinkLaps` の写し。メンバー列・**前へ進む**速度起因の切替の回数・
+         * 一周が止まったか（最良へ戻す判断を下したか）。止まったかは製品の
+         * `LapRecord.stoppedAtMs() != null` に当たるが、これも**観測できる事実から
+         * 導く**（導き方は I5 のコメント）。
+         */
+        data class ShadowLap(val members: List<String>, val forward: Int, val stopped: Boolean)
+
+        val laps = mutableMapOf<String, ShadowLap>()
+
+        /**
+         * 最良へ戻す切替を始めた直後の（グループ, 離れた候補, そのときのメンバー列）。
+         * 次に起動される候補が前方でないことの検査（I5）に使う。
+         */
+        private var pendingReturn: Triple<String, String, List<String>>? = null
+
+        /** 製品の [FailoverController] が「無人で起動してよい」とする候補と同じ判定。 */
+        private fun startable(uuid: String, excluded: Set<String>): Boolean =
+            uuid !in excluded && uuid !in needsFirstLogin
 
         /**
          * uuid ごとの「既存コアのセッション」。キーがあるのは一度でも起動した uuid だけ。
@@ -590,26 +607,98 @@ class FailoverControllerInvariantTest {
             }
 
             // ---- I5（仕様書 4-5。一周の予算）----------------------------
+            // **速度起因の切替には2種類ある。** 前へ進む切替（予算 メンバー数−1 の対象）と、
+            // 一周の終わりに最良の候補へ戻す切替（仕様書 §2-A。予算に数えない）である。
+            // どちらも `bySlowLink` を立てるので、**印だけでは区別できない。**
+            // かといって「戻す切替は数えない」と一括で除外すれば、予算を超えた前進も
+            // 「戻す切替」に見えてしまい、I5 は破れなくなる。
+            //
+            // 区別は製品の内部ではなく**観測できる事実**で行う。製品は「前へ進む道が
+            // 残っているか」（回数 < メンバー数−1 かつ、現候補より後ろに無人で起動できる
+            // 候補がある）で2つを分ける。同じ事実はここからも見える（影の回数・
+            // `groups`・`excludedUuids`・`needsFirstLogin`）。そのうえで:
+            //  (1) 前へ進む道が残っている切替は数え、上限を超えたら破れとする
+            //  (2) 道が尽きたあとの切替は「戻す切替」で、**一周に一度まで**
+            //  (3) 戻す切替の行き先は**前方であってはならない**（後で起動された候補の
+            //      位置で検査する）。これが無いと、予算を超えた前進が (2) の一度として
+            //      通ってしまう——(2) だけでは予算超過を見逃す
+            //  (4) 前進を一度もしていない一周は戻す切替をしない（比べる相手が無い）
+            //  (5) 一周が止まったあとは判定そのものを問わない
             if (slowSwitch) {
-                mark("速度起因の切替")
                 val groupId = (stateBefore as? FailoverState.Healthy)?.groupId
-                    ?: (stateAfter as? FailoverState.FailingOver)?.groupId
                 if (groupId != null) {
                     val members = groupOf(groupId)?.memberUuids ?: emptyList()
-                    // 製品側の再武装と同じ規則: 生きていないグループの記録は落とし、
-                    // メンバー列が変わったら数え直す。
                     laps.keys.retainAll(groups.mapTo(mutableSetOf()) { it.id })
                     val previous = laps[groupId]
-                    val before = if (previous != null && previous.first == members) previous.second else 0
-                    val count = before + 1
-                    laps[groupId] = members to count
-                    if (count > members.size - 1) {
+                    val lap = if (previous != null && previous.members == members) {
+                        previous
+                    } else {
+                        ShadowLap(members, forward = 0, stopped = false)
+                    }
+                    val index = members.indexOf(candidateBefore)
+                        .takeIf { it >= 0 } ?: (stateBefore as FailoverState.Healthy).candidateIndex
+                    val forwardOpen = lap.forward < members.size - 1 &&
+                        members.indices.any { it > index && startable(members[it], excludedBefore) }
+                    val switched = stateAfter is FailoverState.FailingOver && stateAfter.bySlowLink
+                    if (lap.stopped) {
                         violate(
-                            "I5", "予算超過",
-                            "グループ $groupId の速度起因の切替が $count 回目（メンバー ${members.size} 件、" +
-                                "一周の上限 ${members.size - 1} 回）",
+                            "I5", "止まった後の問い合わせ",
+                            "グループ $groupId の一周は止まっているのに低速判定を引いて真を得た",
                         )
                     }
+                    if (forwardOpen) {
+                        mark("速度起因の切替")
+                        val count = lap.forward + 1
+                        laps[groupId] = lap.copy(forward = count)
+                        if (count > members.size - 1) {
+                            violate(
+                                "I5", "予算超過",
+                                "グループ $groupId の速度起因の切替が $count 回目（メンバー ${members.size} 件、" +
+                                    "一周の上限 ${members.size - 1} 回）",
+                            )
+                        }
+                    } else if (lap.forward == 0) {
+                        // (4) 前進が無い一周では戻らない。止まったことにもしない。
+                        if (switched) {
+                            violate(
+                                "I5", "前進なしで戻る",
+                                "グループ $groupId は前へ進む切替を一度もしていないのに、" +
+                                    "道が尽きた時点で速度起因の切替が始まった",
+                            )
+                        }
+                    } else {
+                        mark("一周の終わり")
+                        laps[groupId] = lap.copy(stopped = true)
+                        if (switched) {
+                            mark("最良へ戻る切替")
+                            pendingReturn = Triple(groupId, candidateBefore ?: "", members)
+                        }
+                    }
+                }
+            }
+            pendingReturn?.let { (groupId, fromUuid, membersThen) ->
+                val instruction = event is FailoverEvent.UserConnectGroup ||
+                    event is FailoverEvent.AutoConnectGroup || event is FailoverEvent.UserDisconnect
+                if (newConnects.isNotEmpty() && !instruction) {
+                    val members = groupOf(groupId)?.memberUuids
+                    val from = members?.indexOf(fromUuid) ?: -1
+                    val to = members?.indexOf(newConnects.first()) ?: -1
+                    // 切断を待つあいだに並びが変わったら、位置の比較は意味を失う。
+                    // 行き先が除外・初回ログイン未了になっていたときは、製品が先頭から
+                    // 探し直す（前方に流れない）ので、それより前に起動できる候補が
+                    // 残っているときだけ前方を破れとする。
+                    if (members != null && members == membersThen && from >= 0 && to >= 0 && to > from &&
+                        (0..from).any { startable(members[it], excludedBefore) }
+                    ) {
+                        violate(
+                            "I5", "戻る切替が前方へ進んだ",
+                            "最良へ戻る切替のはずが、$fromUuid（位置 $from）の後ろの " +
+                                "${newConnects.first()}（位置 $to）を起動した",
+                        )
+                    }
+                }
+                if (newConnects.isNotEmpty() || instruction || stateAfter is FailoverState.Idle) {
+                    pendingReturn = null
                 }
             }
 
@@ -897,6 +986,8 @@ class FailoverControllerInvariantTest {
             "状態:Idle",
             "状態:FailingOver(bySlowLink)",
             "速度起因の切替",
+            "一周の終わり",
+            "最良へ戻る切替",
             "除外の追加",
             "古い通知の無視",
             "人が答えている最中のエンジン起因イベント",
