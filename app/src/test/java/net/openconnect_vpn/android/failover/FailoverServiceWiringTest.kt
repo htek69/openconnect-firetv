@@ -170,9 +170,15 @@ class FailoverServiceWiringTest {
             guardCall >= 0,
         )
         assertTrue(
-            "ガードの鍵は slowLinkCandidateKey（測り直しと同じ鍵）にする。別の鍵にすると、" +
-                "測り直しが反応する入れ替わりとガードが反応する入れ替わりがずれる",
-            code.contains("candidateKey = ::slowLinkCandidateKey"),
+            "ガードの鍵は probeGuardKey(controller.state)（接続完了時刻を含む鍵）にする。" +
+                "測り直しの鍵 slowLinkCandidateKey だと、Healthy から同じ添字へ再接続した" +
+                "Verifying の昇格を捨てられない。鍵を戻す",
+            code.contains("candidateKey = { probeGuardKey(controller.state) }"),
+        )
+        assertFalse(
+            "slowLinkCandidateKey にガード用の接続完了時刻を足してはならない。足すと Verifying → " +
+                "Healthy の昇格で判定器が空になる。ガード側は probeGuardKey に分けてある",
+            body("private fun slowLinkCandidateKey()").contains("connectedAtMs"),
         )
         assertTrue(
             "onProbe はガードの apply の中（runGuardedProbe の後ろ）にある。外へ出すと" +

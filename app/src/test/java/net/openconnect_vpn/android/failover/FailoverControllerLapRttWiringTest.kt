@@ -256,7 +256,7 @@ class FailoverControllerLapRttWiringTest {
      */
     private fun guardedProbe(outcome: ProbeOutcome, during: () -> Unit = {}): Boolean = runBlocking {
         runGuardedProbe(
-            candidateKey = ::key,
+            candidateKey = { probeGuardKey(controller.state) },
             measure = {
                 during()
                 outcome
@@ -325,5 +325,60 @@ class FailoverControllerLapRttWiringTest {
         assertFalse(applied)
         assertTrue(controller.state is FailoverState.Verifying)
         assertTrue(detector.rttSamples().isEmpty())
+    }
+
+    @Test
+    fun `同じ添字へ繋ぎ直した Verifying には、Healthy で測った結果を適用しない（昇格させない）`() {
+        // 裁定24: 添字だけの鍵では、Healthy(a) → Connecting(a) → Verifying(a) を「同じ候補」と
+        // 見て、一度もプローブされていない新しいトンネルを昇格させてしまう（猶予も飛ばす）。
+        dispatch(FailoverEvent.UserConnectGroup("g1"))
+        toHealthy("uuid-a")
+
+        val applied = guardedProbe(ProbeOutcome(reachable = true, rttMs = listOf(5L, 5_000L, 5_000L))) {
+            // 測っている最中に、先頭（＝現候補 a）から接続し直される。
+            dispatch(FailoverEvent.UserConnectGroup("g1"))
+            dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Disconnected, uuid = "uuid-a"))
+            dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+            clock.advance(2_000L)
+            dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        }
+
+        val s = controller.state
+        assertTrue("前提: 同じ添字 0 の Verifying に居る（実際: $s）", s is FailoverState.Verifying)
+        assertEquals("前提: 添字は変わっていない", 0, (s as FailoverState.Verifying).candidateIndex)
+        assertFalse("再接続をまたいだ結果は捨てる", applied)
+        assertTrue("新しいトンネルは昇格しない（実際: ${controller.state}）", controller.state is FailoverState.Verifying)
+        assertTrue("古いトンネルの応答時間が新しい窓に入らない", detector.rttSamples().isEmpty())
+    }
+
+    @Test
+    fun `Verifying のまま測った結果は、同じ Verifying に適用され昇格する（ガードが全部捨てない）`() {
+        // 上の対。鍵に接続完了時刻を含めたことで、同じ Verifying(g,i,T) の結果まで
+        // 捨ててしまう実装を弾く。
+        dispatch(FailoverEvent.UserConnectGroup("g1"))
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connecting, uuid = "uuid-a"))
+        dispatch(FailoverEvent.VpnStateChanged(VpnCoreState.Connected, uuid = "uuid-a"))
+        clock.advance(16_000L)
+        val before = controller.state as FailoverState.Verifying
+
+        val applied = guardedProbe(ProbeOutcome(reachable = true, rttMs = listOf(70L, 72L, 71L))) {
+            clock.advance(100L)  // 時間は進むが、状態は変わらない
+        }
+
+        assertTrue(applied)
+        assertTrue("同じ Verifying(g,i,T) の結果で昇格する", controller.state is FailoverState.Healthy)
+        assertEquals(before.candidateIndex, (controller.state as FailoverState.Healthy).candidateIndex)
+    }
+
+    @Test
+    fun `probeGuardKey は Verifying だけ接続完了時刻を含み、Healthy と測り直しの鍵とは区別される`() {
+        val v1 = FailoverState.Verifying("g1", 0, connectedAtMs = 100L)
+        val v2 = FailoverState.Verifying("g1", 0, connectedAtMs = 200L)
+        val h = FailoverState.Healthy("g1", 0, consecutiveFailures = 0, lastProbeAtMs = 0L)
+        assertEquals(probeGuardKey(v1), probeGuardKey(v1.copy(consecutiveFailures = 2)))
+        assertTrue(probeGuardKey(v1) != probeGuardKey(v2))
+        assertTrue("Healthy → 同じ添字の Verifying は別の鍵", probeGuardKey(h) != probeGuardKey(v1))
+        assertEquals("Healthy は接続完了時刻を持たない", "g1#0", probeGuardKey(h))
+        assertEquals(null, probeGuardKey(FailoverState.Idle))
     }
 }

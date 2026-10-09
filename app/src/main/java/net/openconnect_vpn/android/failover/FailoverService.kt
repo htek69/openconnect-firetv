@@ -373,7 +373,7 @@ class FailoverService : Service() {
                     // の KDoc。昇格の取り違え・応答時間の混入を防ぐ。**この窓は複数回化の前から
                     // あった**が、成功した周期にも広がったので、ここで閉じる）。
                     runGuardedProbe(
-                        candidateKey = ::slowLinkCandidateKey,
+                        candidateKey = { probeGuardKey(controller.state) },
                         measure = {
                             probe.probeTimed(probeTarget, currentProbeTimeoutMs(), PROBE_ATTEMPTS)
                         },
@@ -701,6 +701,12 @@ class FailoverService : Service() {
      * 偶然そう振る舞う）に依存しない。`reset()` は `lastAtMs`/`lastBytes` も
      * 消すので、`Verifying` 以後の最初の採取は差分の計算に使われず基準に
      * なるだけであり、最初に計算される速度は完全にトンネル確立後の区間から出る。
+     *
+     * **この鍵に `Verifying` の接続完了時刻を足してはならない。** 足すと
+     * `Verifying` → `Healthy` の昇格（同じトンネル）で鍵が変わり、判定器が空になって
+     * `Verifying` のあいだに集めた証拠を捨てる。プローブ結果を適用してよいかの判定には
+     * 接続完了時刻を含める鍵が要るが、それは別の関数 [probeGuardKey] に分けてある
+     * （2つは近いが、違う答えを要る）。
      */
     private fun slowLinkCandidateKey(): String? = when (val s = controller.state) {
         FailoverState.Idle -> null

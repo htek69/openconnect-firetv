@@ -1,6 +1,40 @@
 package net.openconnect_vpn.android.failover
 
 /**
+ * プローブ結果を適用してよいかを決めるための、状態の鍵。
+ *
+ * **`FailoverService.slowLinkCandidateKey`（判定器の測り直しの鍵）と近いが、別の関数に
+ * してある。2つは違う答えを要るからである。**
+ * - 測り直しの鍵は、`Verifying` と `Healthy` で**同じ**でなければならない。同じトンネルの
+ *   昇格で判定器を空にすると、`Verifying` のあいだに集めた証拠を捨ててしまう（意図した
+ *   振る舞い。`slowLinkCandidateKey` の KDoc）。
+ * - この鍵は `Verifying` に**接続完了時刻を含める**。含めないと、`Healthy(g,i)` のあいだに
+ *   始めた周期が、再接続（`Connecting(g,i)` → `Verifying(g,i,T)`、添字は同じ）をまたいで
+ *   返ったとき、新しいトンネルへ昇格の結果が当たる。**一度もプローブされていない新しい
+ *   トンネルが、猶予（`graceAfterConnectSec`）を飛ばして `Healthy` になる。**
+ *   再接続は利用者の切断・自動接続・全滅後の再試行が先頭へ戻る経路で、先頭が現候補と
+ *   同じなら添字は変わらない。トンネルの世代を数える仕組みは要らない:
+ *   `Verifying` は接続完了時刻を持っている。
+ *
+ * 組み合わせの確認（前 → 後。同じなら適用、違えば捨てる）:
+ * - `Healthy(g,i)` → `Healthy(g,i)`: `g#i` で同じ。適用（正しい）
+ * - `Verifying(g,i,T)` → `Verifying(g,i,T)`: `g#i@T` で同じ。適用（昇格はここで起きる）
+ * - `Healthy(g,i)` → `Verifying(g,i,T)`: `g#i` と `g#i@T` で違う。**捨てる**（再接続）
+ * - `Verifying(g,i,T1)` → `Verifying(g,i,T2)`: 違う。捨てる
+ * - 添字が違う: 違う。捨てる
+ * 残る穴は無い。`Healthy` への昇格は成功したプローブを要し、ティックループは同時に
+ * 1つのプローブしか走らせないので、1周期の中で `Healthy` → … → `Healthy` の往復は完結しない。
+ */
+internal fun probeGuardKey(state: FailoverState): String? = when (state) {
+    FailoverState.Idle -> null
+    is FailoverState.Connecting -> null
+    is FailoverState.Verifying -> "${state.groupId}#${state.candidateIndex}@${state.connectedAtMs}"
+    is FailoverState.Healthy -> "${state.groupId}#${state.candidateIndex}"
+    is FailoverState.FailingOver -> null
+    is FailoverState.Exhausted -> null
+}
+
+/**
  * プローブ1周期を測り、**測っているあいだに候補が入れ替わっていたら結果を捨てる**。
  *
  * **なぜ要るのか。** プローブは `Dispatchers.IO` へ suspend し、その間に
@@ -27,9 +61,8 @@ package net.openconnect_vpn.android.failover
  * **捨てる方向が安全。** 候補Aで測った結果は候補Bについて何も言わない。止まるものは
  * 無い: `Verifying` は猶予が明ければ自分でもう一度プローブする（本来そうあるべき姿）。
  *
- * 鍵は [FailoverService] の `slowLinkCandidateKey`（グループ+候補の添字。トンネルを
- * 持たない状態は null）。**同じ候補へ繋ぎ直した場合は鍵が同じ**なので捨てられない
- * ——この限界は鍵を共有する測り直し（`syncSlowLinkCandidate`）と同じである。
+ * 鍵は [probeGuardKey]。**`slowLinkCandidateKey`（測り直しの鍵）とは別物である**
+ * （理由は [probeGuardKey]）。
  *
  * [apply] の中の順序（`onProbe` が先、`dispatch(ProbeResult)` が後）は呼び出し側の責任で、
  * `FailoverServiceWiringTest` が固定している。
