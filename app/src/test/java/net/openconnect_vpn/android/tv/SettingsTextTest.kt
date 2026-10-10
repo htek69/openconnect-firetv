@@ -186,4 +186,17 @@ class SettingsTextTest {
         assertTrue("接続直後に測らない旨を出すこと", t.contains("接続した直後の 30 秒は測りません"))
     }
 
+
+    /**
+     * 項目25 の続き: 判定は連続 120 秒成立しなければ発火しない。
+     * **検知の時間が変わったのだから、画面もそう言わなければならない。**
+     * 窓の長さと同じく、**定数から導いて直書きしない**（既定引数で差し替えて確かめる）。
+     */
+    @Test
+    fun `連続して成立する必要がある時間を文面に出す`() {
+        val t = SettingsText.pathQualitySummary(SlowLinkSettings(), sustainSec = 200)
+        assertTrue("渡した秒数が出ること: $t", t.contains("200 秒"))
+        assertFalse("既定の 120 を直書きしていないこと", t.contains("120 秒"))
+    }
+
 }

@@ -50,6 +50,12 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
     /** 抑制の起点。`reset()` では null に戻し、次のサンプルの時刻で決める。 */
     private var suppressFromMs: Long? = null
 
+    /** [judge] が連続して真になり始めた時刻。偽になったら null に戻す（項目25）。 */
+    private var degradedSinceMs: Long? = null
+
+    /** 最後に採取した時刻。連続している長さを測るのに使う。 */
+    private var lastSampleAtMs: Long? = null
+
     private val windowMs: Long get() = WINDOW_SEC * 1000L
 
     fun onSample(atMs: Long, bytes: IfaceBytes) {
@@ -73,6 +79,13 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
         // ここで刈らないと窓より古い応答時間が判定を生かし続ける
         // （受信側が持つ「古い証拠では判定しない」保護の、応答時間側の対）。
         pruneRtt(atMs)
+        lastSampleAtMs = atMs
+        // 連続している長さを数える。**崩れたら数え直す**（項目25）。
+        if (judge()) {
+            if (degradedSinceMs == null) degradedSinceMs = atMs
+        } else {
+            degradedSinceMs = null
+        }
     }
 
     /**
@@ -109,6 +122,8 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
         // 直後のバーストを窓に入れないため、抑制を掛け直す。
         suppressing = true
         suppressFromMs = null
+        degradedSinceMs = null
+        lastSampleAtMs = null
     }
 
     /**
@@ -146,6 +161,9 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
      */
     fun resetThroughput() {
         rx.reset()
+        // **連続成立の計時も捨てる。** 受信の窓が無いあいだ [judge] は偽なので、
+        // 計時を残すと「窓を捨てたのに判定が真のまま」になる（試験が捕らえた）。
+        degradedSinceMs = null
         // **抑制には触らない。** これは「同じトンネルでバイト数が1 tick 読めなかった」
         // だけで、接続直後のバーストは無い（裁定17）。ここで抑制を掛け直すと、
         // 読み取りが一度失敗するたびに検知が30秒遅れる。
@@ -154,7 +172,31 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
     /** 窓の中の応答時間のサンプル（一周の記録が使う。[LapRecord]）。 */
     fun rttSamples(): List<Long> = rtt.map { it.rttMs }
 
+    /**
+     * 項目25 の続き: **判定が連続 [SUSTAIN_MS] ぶん成立していなければ発火させない。**
+     *
+     * **なぜ。** 2026-10-10 の N-1 3回目（抑制を入れたあと）でも不合格だった。
+     * 接続直後のバーストは抑制で外せたが、**端末は待機中にも自発的にバーストを出す**
+     * （実測 247.8 / 259.2 kbps。接続から7分後・14分後で、接続とは無関係）。
+     * 抑制はこれには効かない。一方、観測したバーストはいずれも**20秒ほどの単発**だった。
+     * 単発は窓（60秒）に一度しか入らないので、**連続2窓ぶんは成立し続けられない。**
+     *
+     * **連続の計時は [onSample] の時刻で行う。** 判定器は時計を持たないという作法を
+     * 崩さないため、呼び出し側に時刻を渡させない（この関数の形も変えない）。
+     * プローブ（[onProbe]）だけでは計時を動かさない——次の採取で拾う。
+     * 採取は画面点灯中5秒・待機中30秒間隔なので、120秒を測るには充分である。
+     *
+     * **代償。** 切替後の最短検知時間が、抑制30秒＋窓60秒＋連続120秒で**約3分半**になる。
+     * 検知の速さより待機中の静けさを採るという判断である（仕様書 §2）。
+     */
     fun isDegraded(): Boolean {
+        val since = degradedSinceMs ?: return false
+        val last = lastSampleAtMs ?: return false
+        return last - since >= SUSTAIN_MS
+    }
+
+    /** その瞬間に条件が揃っているか。連続性は見ない（[isDegraded] が見る）。 */
+    private fun judge(): Boolean {
         // 受信速度の帯。上限は既存の判定器が持つが、**送信の条件は使わない**ので
         // ここでは窓の平均を直接見る。
         val avg = rx.windowAverage() ?: return false
@@ -193,5 +235,17 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
          * 足りなければこの値を上げること——ただし検知がそのぶん遅くなる。
          */
         const val SUPPRESS_AFTER_RESET_MS = 30_000L
+
+        /**
+         * 項目25 の続き: 判定が**連続して**成立していなければならない長さ（ミリ秒）。
+         *
+         * **窓2つぶん（120秒）である。** 観測した待機中のバーストはいずれも20秒ほどの
+         * 単発で、窓（60秒）に一度しか入らない。窓から抜ければ平均が下限を割って
+         * 判定が偽になるので、**単発では120秒続けられない。**
+         *
+         * **効かない場合を正直に書く。** 20秒より遥かに長く続くバーストには効かない。
+         * 観測できたのが単発だっただけで、常にそうだという保証は無い。
+         */
+        const val SUSTAIN_MS = WINDOW_SEC * 2 * 1_000L
     }
 }
