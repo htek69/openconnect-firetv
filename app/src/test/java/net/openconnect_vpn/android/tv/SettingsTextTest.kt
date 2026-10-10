@@ -174,4 +174,16 @@ class SettingsTextTest {
         val t = SettingsText.pathQualitySummary(SlowLinkSettings())
         assertFalse(t, t.contains(emptyBandMarker))
     }
+
+    /**
+     * 項目25 の修正: 接続直後の30秒は受信を測らない（接続時のバーストを数えないため）。
+     * **検知のタイミングが変わったのだから、画面もそう言わなければならない。**
+     * 数字は `PathQualityDetector.SUPPRESS_AFTER_RESET_MS` から導き、直書きしない。
+     */
+    @Test
+    fun `接続直後は測らないことを文面に出す`() {
+        val t = SettingsText.pathQualitySummary(SlowLinkSettings())
+        assertTrue("接続直後に測らない旨を出すこと", t.contains("接続した直後の 30 秒は測りません"))
+    }
+
 }

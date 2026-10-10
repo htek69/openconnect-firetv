@@ -320,4 +320,93 @@ class PathQualityDetectorTest {
         d.onSample(70_000L + 61_000L, IfaceBytes(0L, 0L))
         assertTrue(d.rttSamples().isEmpty())
     }
+
+    // ---- 項目25: 接続直後のバーストを最初の窓に入れない（2026-10-10 の N-1 不合格） ----
+
+    /**
+     * 実機 2026-10-10 の N-1 で起きた形を固定する。トンネルが上がった直後の
+     * 23秒間に約504 KB（175 kbps）のバーストが来て、そのあとは 0.3 kbps だった。
+     * バーストは**利用者の通信ではない**（接続性の検証・名前解決・同期の再開）。
+     * 旧実装はこのバーストで窓が帯の内側に入り、待機中に切り替わった。
+     */
+    @Test
+    fun `接続直後のバーストは受信の窓に入らない`() {
+        val d = PathQualityDetector(settings)
+        d.reset()
+        var rx = 0L
+        // 0〜25秒: 175 kbps のバースト（実機 2026-10-10 の実測。約504 KB）
+        for (i in 0..5) {
+            d.onSample(i * 5_000L, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            rx += 175L * 5_000L / 8
+        }
+        // 25〜60秒: 待機中（実測 0.3 kbps はバイトに丸めると実質0）。応答時間は劣化している
+        for (i in 6..12) {
+            val atMs = i * 5_000L
+            d.onSample(atMs, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            if (atMs % 30_000L == 0L) {
+                d.onProbe(atMs, ProbeOutcome(reachable = true, rttMs = listOf(700L, 300L, 900L, 650L, 800L)))
+            }
+        }
+        // **ここが欠陥の瞬間である。** 窓は span 60 秒ぶん埋まり、その中身は
+        // ほぼ全部が接続直後のバースト（約504 KB → 約72 kbps で帯の内側）。
+        // 抑制が無いと判定が真になり、待機中に切り替わる（項目25）。
+        assertFalse("接続直後のバーストで待機中に発火してはならない", d.isDegraded())
+    }
+
+    /**
+     * 抑制は**候補が変わったとき**だけに掛かる。採取が続いている最中の
+     * 読み取り失敗（[PathQualityDetector.resetThroughput]）では掛からない——
+     * あれは同じトンネルでバイト数が読めなかっただけで、バーストは無い（裁定17）。
+     */
+    @Test
+    fun `読み取り失敗の窓の捨て直しでは抑制が掛からない`() {
+        val d = PathQualityDetector(settings)
+        // まず抑制を抜けるまで採取する（reset から 30 秒以上）
+        var rx = 0L
+        for (i in 0..7) {
+            d.onSample(i * 5_000L, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            rx += 424L * 5_000L / 8
+        }
+        // 読み取り失敗で受信の窓だけ捨てる
+        d.resetThroughput()
+        // 直後から 60 秒ぶん採取すれば平均が出る（抑制が掛かっていたら出ない）
+        val base = 40_000L
+        rx = 0L
+        for (i in 0..12) {
+            val atMs = base + i * 5_000L
+            d.onSample(atMs, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            if (atMs % 30_000L == 0L) {
+                d.onProbe(atMs, ProbeOutcome(reachable = true, rttMs = listOf(300L, 90L, 600L, 280L, 310L)))
+            }
+            rx += 424L * 5_000L / 8
+        }
+        assertTrue("読み取り失敗のあとは抑制せず、60秒で判定できること", d.isDegraded())
+    }
+
+    /**
+     * 抑制の起点は**リセット後の最初のサンプルの時刻**である。判定器は時計を
+     * 持たないので、`reset()` が呼ばれた時刻そのものは知りえない。
+     */
+    @Test
+    fun `抑制の起点はリセット後の最初のサンプルである`() {
+        val d = PathQualityDetector(settings)
+        d.reset()
+        // 最初のサンプルが t=1,000,000 でも、そこから 30 秒は抑制される
+        val t0 = 1_000_000L
+        var rx = 0L
+        for (i in 0..5) {
+            d.onSample(t0 + i * 5_000L, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            rx += 424L * 5_000L / 8
+        }
+        // t0+25秒までは抑制中なので、ここで 60 秒ぶん足しても平均は出ない
+        for (i in 6..12) {
+            val atMs = t0 + i * 5_000L
+            d.onSample(atMs, IfaceBytes(rxBytes = rx, txBytes = 0L))
+            d.onProbe(atMs, ProbeOutcome(reachable = true, rttMs = listOf(300L, 90L, 600L, 280L, 310L)))
+            rx += 424L * 5_000L / 8
+        }
+        // 抑制後に窓が埋まるのは t0+30秒 から 60 秒後＝t0+90秒。まだ届かない。
+        assertFalse("抑制の 30 秒を含めて窓を数えてはならない", d.isDegraded())
+    }
+
 }

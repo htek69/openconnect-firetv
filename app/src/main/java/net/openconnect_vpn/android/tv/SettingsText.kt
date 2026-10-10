@@ -30,7 +30,9 @@ object SettingsText {
     ): String {
         val head = "いまの設定では、往復が ${s.degradedRttMs} ms を超え、" +
             "かつばらつきが ${s.degradedJitterMs} ms を超える状態が $windowSec 秒続いたときに" +
-            "切り替えます。"
+            "切り替えます。接続した直後の " +
+            "${PathQualityDetector.SUPPRESS_AFTER_RESET_MS / 1000} 秒は測りません" +
+            "（接続時の通信を誤って数えないため）。"
         val floor = if (s.rxFloorKbps <= 0) {
             "受信の下限が 0 なので、何も再生していないときでも判定します" +
                 "（待機中でも切り替わることがあります）。"

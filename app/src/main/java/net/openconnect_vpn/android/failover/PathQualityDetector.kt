@@ -29,9 +29,45 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
 
     private val rtt = ArrayDeque<RttSample>()
 
+    /**
+     * 項目25: `reset()` のあと、受信のサンプルを窓に入れない期間。
+     *
+     * **なぜ必要か。** 2026-10-10 の実機（`docs/MANUAL-TEST.md` 節10 の N-1 2回目）で、
+     * トンネルが上がった直後の23秒間に約504 KB（175 kbps）のバーストが来た。
+     * 接続性の検証・名前解決・VPN 復帰で再開した同期などで、**利用者の通信ではない。**
+     * 窓は候補が変わると空になるので接続の瞬間から埋まり始め、**接続から60秒後の
+     * 最初の判定は、その大半がこのバーストで構成される。** 待機中に1回切り替わった。
+     *
+     * **猶予（`graceAfterConnectSec` = 15秒）を延ばしても直らない。** あれは判定の
+     * タイミングだけを遅らせるので、窓の中身は変わらない。バーストを窓から追い出すには
+     * 猶予が「窓＋バーストの長さ」以上でなければならず、バーストの長さは保証されない。
+     *
+     * **代償。** 切替のあと、最短の検知時間が 60 秒から 90 秒（抑制＋窓）に延びる。
+     * 一周の所要時間も候補あたり約30秒ぶん延びる。
+     */
+    private var suppressing = false
+
+    /** 抑制の起点。`reset()` では null に戻し、次のサンプルの時刻で決める。 */
+    private var suppressFromMs: Long? = null
+
     private val windowMs: Long get() = WINDOW_SEC * 1000L
 
     fun onSample(atMs: Long, bytes: IfaceBytes) {
+        if (suppressing) {
+            val from = suppressFromMs
+            if (from == null) {
+                // 判定器は時計を持たないので、`reset()` が呼ばれた時刻は知りえない。
+                // **リセット後の最初のサンプルの時刻**を抑制の起点にする。
+                suppressFromMs = atMs
+                pruneRtt(atMs)
+                return
+            }
+            if (atMs - from < SUPPRESS_AFTER_RESET_MS) {
+                pruneRtt(atMs)
+                return
+            }
+            suppressing = false
+        }
         rx.onSample(atMs, bytes)
         // 応答時間の窓も採取の時刻で刈る。プローブが止まっても採取は続くので、
         // ここで刈らないと窓より古い応答時間が判定を生かし続ける
@@ -69,6 +105,10 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
     fun reset() {
         rx.reset()
         rtt.clear()
+        // 項目25: 測る対象が変わった＝これからトンネルが張られる（または張り替わった）。
+        // 直後のバーストを窓に入れないため、抑制を掛け直す。
+        suppressing = true
+        suppressFromMs = null
     }
 
     /**
@@ -106,6 +146,9 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
      */
     fun resetThroughput() {
         rx.reset()
+        // **抑制には触らない。** これは「同じトンネルでバイト数が1 tick 読めなかった」
+        // だけで、接続直後のバーストは無い（裁定17）。ここで抑制を掛け直すと、
+        // 読み取りが一度失敗するたびに検知が30秒遅れる。
     }
 
     /** 窓の中の応答時間のサンプル（一周の記録が使う。[LapRecord]）。 */
@@ -140,5 +183,15 @@ class PathQualityDetector(private val settings: SlowLinkSettings) {
          * 窓を変えたとき画面だけが古い値を言い続ける。
          */
         const val WINDOW_SEC = 60
+
+        /**
+         * 項目25: `reset()` のあと受信のサンプルを窓に入れない時間（ミリ秒）。
+         *
+         * **30秒の根拠は実測1件である。** 2026-10-10 の実機で観測したバーストは
+         * 23秒だった。余裕を見て30秒にしてあるが、**一度の測定から選んだ値**であり、
+         * 別の端末・別の時間帯でより長いバーストが出れば足りない。
+         * 足りなければこの値を上げること——ただし検知がそのぶん遅くなる。
+         */
+        const val SUPPRESS_AFTER_RESET_MS = 30_000L
     }
 }
