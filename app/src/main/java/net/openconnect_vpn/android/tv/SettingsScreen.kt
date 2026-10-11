@@ -24,6 +24,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import net.openconnect_vpn.android.failover.FailoverService
 import net.openconnect_vpn.android.failover.GroupStore
+import net.openconnect_vpn.android.failover.PathQualityDetector
 import net.openconnect_vpn.android.failover.ProbeSchedule
 import net.openconnect_vpn.android.failover.ProbeTarget
 import net.openconnect_vpn.android.failover.SlowLinkBounds
@@ -231,9 +232,10 @@ fun SettingsScreen(
                 "接続先を切り替えます（判定の対象になる受信速度の範囲は、下に表示します）。" +
                 "実機では、以前の判定（受信が細く、かつ送信が出ていることを見る方式）が、何も再生していない待機中にも" +
                 "端末の裏側の通信で「遅い」と誤判定し、接続先を次々に切り替えてしまうことが" +
-                "確認されています。この誤判定を直すために判定の基準を変えましたが、" +
-                "変えたあとの動作はまだ実機で確認できていません。" +
-                "また、確認が済んだあとも、往復が遅い経路で見ているものが問題なく再生されていることはあり、" +
+                "確認されています。この誤判定を直すために判定の基準を変え、" +
+                "待機中に切り替わらないことを実機で確認しました。ただし、端末の裏側の通信が " +
+                "${PathQualityDetector.SUSTAIN_MS / 60_000} 分より長く続いた場合は、やはり誤判定しえます。" +
+                "また、往復が遅い経路で見ているものが問題なく再生されていることはあり、" +
                 "遅延とビットレートは別物なので、切り替える判断が実際の見え方と一致しない場合があります。" +
                 "これらの理由から、通常は OFF のままお使いください。",
             style = MaterialTheme.typography.bodySmall,
